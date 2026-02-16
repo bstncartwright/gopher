@@ -1,0 +1,165 @@
+package agentcore
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/bstncartwright/gopher/pkg/ai"
+)
+
+func LoadAgent(workspacePath string) (*Agent, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return nil, fmt.Errorf("workspace path is required")
+	}
+
+	workspaceAbs, err := filepath.Abs(workspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace path: %w", err)
+	}
+
+	agentsPath := filepath.Join(workspaceAbs, "AGENTS.md")
+	soulPath := filepath.Join(workspaceAbs, "soul.md")
+	configPath := filepath.Join(workspaceAbs, "config.json")
+	policiesPath := filepath.Join(workspaceAbs, "policies.json")
+
+	for _, required := range []string{agentsPath, soulPath, configPath, policiesPath} {
+		if err := requireFile(required); err != nil {
+			return nil, err
+		}
+	}
+
+	config := AgentConfig{}
+	if err := decodeJSONFile(configPath, &config); err != nil {
+		return nil, fmt.Errorf("read config.json: %w", err)
+	}
+	if config.MaxContextMessages <= 0 {
+		config.MaxContextMessages = DefaultContextWindow
+	}
+
+	policies := AgentPolicies{}
+	if err := decodeJSONFile(policiesPath, &policies); err != nil {
+		return nil, fmt.Errorf("read policies.json: %w", err)
+	}
+
+	providerName, modelID, err := parseModelPolicy(config.ModelPolicy)
+	if err != nil {
+		return nil, err
+	}
+	model, ok := ai.GetModel(providerName, modelID)
+	if !ok {
+		return nil, fmt.Errorf("model not found for model_policy %q", config.ModelPolicy)
+	}
+
+	agentsDoc, err := os.ReadFile(agentsPath)
+	if err != nil {
+		return nil, fmt.Errorf("read AGENTS.md: %w", err)
+	}
+	soulDoc, err := os.ReadFile(soulPath)
+	if err != nil {
+		return nil, fmt.Errorf("read soul.md: %w", err)
+	}
+
+	allowedRoots, err := resolveAllowedFSRoots(workspaceAbs, policies.FSRoots)
+	if err != nil {
+		return nil, err
+	}
+
+	agent := &Agent{
+		ID:             config.AgentID,
+		Name:           config.Name,
+		Role:           config.Role,
+		Workspace:      workspaceAbs,
+		Config:         config,
+		Policies:       policies,
+		Tools:          buildRegistry(config.EnabledTools),
+		Memory:         NewFileMemoryStore(filepath.Join(workspaceAbs, "memory", "working.json")),
+		Logger:         NewJSONLEventLogger(filepath.Join(workspaceAbs, "logs", "events.jsonl")),
+		Provider:       AIStreamProvider{},
+		agentsDoc:      string(agentsDoc),
+		soulDoc:        string(soulDoc),
+		model:          model,
+		allowedFSRoots: allowedRoots,
+	}
+
+	if strings.TrimSpace(agent.ID) == "" {
+		agent.ID = strings.TrimSpace(config.Name)
+	}
+	if strings.TrimSpace(agent.ID) == "" {
+		return nil, fmt.Errorf("config.agent_id is required")
+	}
+
+	return agent, nil
+}
+
+func parseModelPolicy(raw string) (providerName string, modelID string, err error) {
+	parts := strings.SplitN(strings.TrimSpace(raw), ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid model_policy %q: expected provider:model", raw)
+	}
+	providerName = strings.TrimSpace(parts[0])
+	modelID = strings.TrimSpace(parts[1])
+	if providerName == "" || modelID == "" {
+		return "", "", fmt.Errorf("invalid model_policy %q: provider and model are required", raw)
+	}
+	return providerName, modelID, nil
+}
+
+func requireFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("required file missing: %s", filepath.Base(path))
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("required file is a directory: %s", filepath.Base(path))
+	}
+	return nil
+}
+
+func decodeJSONFile(path string, out any) error {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(blob, out); err != nil {
+		return err
+	}
+	return nil
+}
+
+func resolveAllowedFSRoots(workspace string, roots []string) ([]string, error) {
+	if len(roots) == 0 {
+		roots = []string{"./"}
+	}
+
+	out := make([]string, 0, len(roots))
+	seen := map[string]struct{}{}
+	for _, root := range roots {
+		candidate := strings.TrimSpace(root)
+		if candidate == "" {
+			continue
+		}
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(workspace, candidate)
+		}
+		abs, err := filepath.Abs(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("resolve fs root %q: %w", root, err)
+		}
+		clean := filepath.Clean(abs)
+		if _, exists := seen[clean]; exists {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("policies.fs_roots resolves to empty set")
+	}
+	return out, nil
+}

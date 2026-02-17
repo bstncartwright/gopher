@@ -29,10 +29,10 @@ func TestLoopDetectorGenericRepeat(t *testing.T) {
 	args := map[string]any{"path": "/tmp/a"}
 
 	tests := []struct {
-		name     string
-		records  int
-		wantLvl  LoopDetectLevel
-		wantPat  string
+		name    string
+		records int
+		wantLvl LoopDetectLevel
+		wantPat string
 	}{
 		{"below warning", 1, LoopLevelNone, ""},
 		{"at warning", 2, LoopLevelWarning, "generic_repeat"},

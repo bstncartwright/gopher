@@ -16,7 +16,7 @@ type LoopDetectionConfig struct {
 type LoopDetectLevel int
 
 const (
-	LoopLevelNone           LoopDetectLevel = iota
+	LoopLevelNone LoopDetectLevel = iota
 	LoopLevelWarning
 	LoopLevelCritical
 	LoopLevelCircuitBreaker

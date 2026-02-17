@@ -244,27 +244,6 @@ func toInt(v any) (int, bool) {
 	}
 }
 
-func parseStringSlice(v any) ([]string, error) {
-	switch typed := v.(type) {
-	case []string:
-		out := make([]string, len(typed))
-		copy(out, typed)
-		return out, nil
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			str, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("args must contain only strings")
-			}
-			out = append(out, str)
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("args must be an array of strings")
-	}
-}
-
 func isInAllowlist(command string, allowlist []string) bool {
 	for _, allowed := range allowlist {
 		if command == allowed {

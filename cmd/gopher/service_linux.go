@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -32,9 +33,11 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if strings.TrimSpace(opts.ConfigPath) == "" {
 		return fmt.Errorf("config path is required")
 	}
+	workingDir := resolveServiceWorkingDir()
 	unit, err := service.RenderGatewayUnit(service.GatewayUnitConfig{
-		ExecStart: fmt.Sprintf("%s gateway run --config %s", opts.BinaryPath, opts.ConfigPath),
-		EnvFile:   opts.EnvPath,
+		ExecStart:  fmt.Sprintf("%s gateway run --config %s", opts.BinaryPath, opts.ConfigPath),
+		WorkingDir: workingDir,
+		EnvFile:    opts.EnvPath,
 	})
 	if err != nil {
 		return err
@@ -43,8 +46,8 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if err := os.MkdirAll("/etc/gopher", 0o755); err != nil {
 		return fmt.Errorf("create /etc/gopher: %w", err)
 	}
-	if err := os.MkdirAll("/var/lib/gopher", 0o755); err != nil {
-		return fmt.Errorf("create /var/lib/gopher: %w", err)
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", workingDir, err)
 	}
 	if err := os.WriteFile("/etc/systemd/system/gopher-gateway.service", []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
@@ -72,6 +75,24 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	}
 	fmt.Fprintln(r.stdout, "installed and started gopher-gateway.service")
 	return nil
+}
+
+func resolveServiceWorkingDir() string {
+	sudoUser := strings.TrimSpace(os.Getenv("SUDO_USER"))
+	if sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil {
+			home := strings.TrimSpace(u.HomeDir)
+			if home != "" {
+				return filepath.Join(home, ".gopher")
+			}
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".gopher")
+	}
+
+	return "/root/.gopher"
 }
 
 func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {

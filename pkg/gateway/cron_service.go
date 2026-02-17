@@ -58,10 +58,7 @@ func NewCronService(opts CronServiceOptions) (*CronService, error) {
 	}, nil
 }
 
-func (s *CronService) Create(ctx context.Context, input CronCreateInput) (CronJob, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+func (s *CronService) Create(_ context.Context, input CronCreateInput) (CronJob, error) {
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" {
 		return CronJob{}, fmt.Errorf("session id is required")

@@ -12,11 +12,11 @@ import (
 )
 
 type DMPipelineOptions struct {
-	Manager     sessionrt.SessionManager
-	Transport   transport.Transport
-	AgentID     sessionrt.ActorID
+	Manager       sessionrt.SessionManager
+	Transport     transport.Transport
+	AgentID       sessionrt.ActorID
 	Conversations *ConversationSessionMap
-	Logger      *log.Logger
+	Logger        *log.Logger
 }
 
 type DMPipeline struct {
@@ -26,9 +26,9 @@ type DMPipeline struct {
 	conversations *ConversationSessionMap
 	logger        *log.Logger
 
-	setupMu     sync.Mutex
+	setupMu      sync.Mutex
 	subscribedMu sync.Mutex
-	subscribed map[sessionrt.SessionID]struct{}
+	subscribed   map[sessionrt.SessionID]struct{}
 }
 
 func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {

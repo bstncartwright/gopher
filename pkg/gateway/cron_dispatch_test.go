@@ -74,7 +74,6 @@ func TestSessionCronDispatcherInjectsUserMessageToSession(t *testing.T) {
 			}
 			if msg.Role == sessionrt.RoleAgent && msg.Content == "ack" {
 				sawAgentReply = true
-				break
 			}
 		default:
 			time.Sleep(10 * time.Millisecond)

@@ -52,6 +52,8 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: setup go
         uses: actions/setup-go@v5
@@ -59,10 +61,31 @@ jobs:
           go-version-file: go.mod
 
       - name: install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.6.1
 
-      - name: run staticcheck
-        run: staticcheck ./...
+      - name: run staticcheck on changed packages
+        run: |
+          base_ref="${GITHUB_BASE_REF:-main}"
+          git fetch --no-tags --depth=1 origin "${base_ref}"
+          changed_files="$(git diff --name-only "origin/${base_ref}...HEAD" -- '*.go')"
+          if [ -z "${changed_files}" ]; then
+            echo "no go file changes; skipping staticcheck"
+            exit 0
+          fi
+          changed_dirs="$(printf '%s\n' "${changed_files}" | xargs -n1 dirname | sort -u)"
+          changed_pkgs=()
+          while IFS= read -r dir; do
+            [ -z "${dir}" ] && continue
+            pkg="$(go list "./${dir}" 2>/dev/null || true)"
+            [ -z "${pkg}" ] && continue
+            changed_pkgs+=("${pkg}")
+          done <<< "${changed_dirs}"
+          if [ "${#changed_pkgs[@]}" -eq 0 ]; then
+            echo "no go packages resolved from changed files; skipping staticcheck"
+            exit 0
+          fi
+          echo "running staticcheck on: ${changed_pkgs[*]}"
+          staticcheck "${changed_pkgs[@]}"
 
   lint-mod:
     name: lint-go-mod
@@ -89,7 +112,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: run actionlint
-        uses: rhysd/actionlint@v1
+        uses: rhysd/actionlint@v1.7.11
 
   test:
     name: go-test

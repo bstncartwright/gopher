@@ -56,14 +56,11 @@ func NewNodeRegistrySync(opts NodeRegistrySyncOptions) (*NodeRegistrySync, error
 	}, nil
 }
 
-func (s *NodeRegistrySync) Start(ctx context.Context) error {
+func (s *NodeRegistrySync) Start(_ context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running {
 		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	localCtx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel

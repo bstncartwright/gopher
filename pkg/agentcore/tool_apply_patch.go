@@ -39,7 +39,7 @@ const (
 type patchOp struct {
 	kind  patchOpKind
 	path  string
-	lines []string // +lines for Add; unused for Delete
+	lines []string    // +lines for Add; unused for Delete
 	hunks []patchHunk // for Update only
 }
 
@@ -194,7 +194,7 @@ func parsePatch(raw string) ([]patchOp, error) {
 				}
 			}
 			if len(hunks) == 0 {
-				return nil, fmt.Errorf("Update File %q has no hunks", path)
+				return nil, fmt.Errorf("update file %q has no hunks", path)
 			}
 			ops = append(ops, patchOp{kind: patchOpUpdate, path: path, hunks: hunks})
 

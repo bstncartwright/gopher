@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/transport"
@@ -22,6 +25,9 @@ type Options struct {
 	ListenAddr    string
 	BotUserID     string
 	HTTPClient    *http.Client
+	QueueCapacity int
+	MaxAttempts   int
+	DedupeTTL     time.Duration
 }
 
 type Transport struct {
@@ -35,8 +41,52 @@ type Transport struct {
 
 	mu      sync.RWMutex
 	handler transport.InboundHandler
-	seenTxn map[string]struct{}
+	seenTxn map[string]time.Time
+	events  map[string]eventDeliveryState
 	server  *http.Server
+
+	started         bool
+	workerCtx       context.Context
+	workerCancel    context.CancelFunc
+	outboundQueue   chan queuedOutbound
+	outboundDone    chan struct{}
+	queueCapacity   int
+	maxAttempts     int
+	dedupeTTL       time.Duration
+	stats           matrixStats
+	inboundFailures atomic.Uint64
+}
+
+type queuedOutbound struct {
+	message transport.OutboundMessage
+	eventID string
+	attempt int
+}
+
+type deliveryStatus string
+
+const (
+	deliveryStatusDelivered deliveryStatus = "delivered"
+	deliveryStatusRetryable deliveryStatus = "retryable_failure"
+)
+
+type eventDeliveryState struct {
+	Status    deliveryStatus
+	UpdatedAt time.Time
+}
+
+type matrixStats struct {
+	mu                     sync.RWMutex
+	LastInboundTxnAt       time.Time `json:"last_inbound_txn_at,omitempty"`
+	LastOutboundSuccessAt  time.Time `json:"last_outbound_success_at,omitempty"`
+	QueueDepth             int       `json:"queue_depth"`
+	OutboundRetries        uint64    `json:"outbound_retries"`
+	OutboundDropped        uint64    `json:"outbound_dropped"`
+	OutboundTransientErrs  uint64    `json:"outbound_transient_errors"`
+	OutboundPermanentErrs  uint64    `json:"outbound_permanent_errors"`
+	DuplicateTxnSeen       uint64    `json:"duplicate_txn_seen"`
+	DuplicateEventsSkipped uint64    `json:"duplicate_events_skipped"`
+	ReplayEventsProcessed  uint64    `json:"replay_events_processed"`
 }
 
 type transactionBody struct {
@@ -44,12 +94,15 @@ type transactionBody struct {
 }
 
 type matrixEvent struct {
-	EventID string                 `json:"event_id"`
-	Type    string                 `json:"type"`
-	RoomID  string                 `json:"room_id"`
-	Sender  string                 `json:"sender"`
-	Content map[string]interface{} `json:"content"`
+	EventID  string                 `json:"event_id"`
+	Type     string                 `json:"type"`
+	RoomID   string                 `json:"room_id"`
+	Sender   string                 `json:"sender"`
+	StateKey string                 `json:"state_key"`
+	Content  map[string]interface{} `json:"content"`
 }
+
+const inboundEventTimeout = 15 * time.Second
 
 var _ transport.Transport = (*Transport)(nil)
 
@@ -75,6 +128,18 @@ func New(opts Options) (*Transport, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
+	queueCapacity := opts.QueueCapacity
+	if queueCapacity <= 0 {
+		queueCapacity = 256
+	}
+	maxAttempts := opts.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 4
+	}
+	dedupeTTL := opts.DedupeTTL
+	if dedupeTTL <= 0 {
+		dedupeTTL = 15 * time.Minute
+	}
 	return &Transport{
 		homeserverURL: strings.TrimRight(hs, "/"),
 		appserviceID:  strings.TrimSpace(opts.AppserviceID),
@@ -83,7 +148,11 @@ func New(opts Options) (*Transport, error) {
 		listenAddr:    addr,
 		botUserID:     strings.TrimSpace(opts.BotUserID),
 		httpClient:    client,
-		seenTxn:       map[string]struct{}{},
+		seenTxn:       map[string]time.Time{},
+		events:        map[string]eventDeliveryState{},
+		queueCapacity: queueCapacity,
+		maxAttempts:   maxAttempts,
+		dedupeTTL:     dedupeTTL,
 	}, nil
 }
 
@@ -94,10 +163,45 @@ func (t *Transport) SetInboundHandler(handler transport.InboundHandler) {
 }
 
 func (t *Transport) Start(ctx context.Context) error {
+	t.mu.Lock()
+	if t.started {
+		t.mu.Unlock()
+		return fmt.Errorf("matrix transport already started")
+	}
+	t.started = true
+	t.mu.Unlock()
+
+	if err := t.ensureBotUser(ctx); err != nil {
+		t.mu.Lock()
+		t.started = false
+		t.mu.Unlock()
+		return fmt.Errorf("ensure matrix bot user: %w", err)
+	}
+
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	outboundQueue := make(chan queuedOutbound, t.queueCapacity)
+	outboundDone := make(chan struct{})
+
+	t.mu.Lock()
+	if !t.started {
+		t.mu.Unlock()
+		workerCancel()
+		return fmt.Errorf("matrix transport stopped during startup")
+	}
+	t.outboundQueue = outboundQueue
+	t.outboundDone = outboundDone
+	t.workerCtx = workerCtx
+	t.workerCancel = workerCancel
+	t.mu.Unlock()
+
+	go t.runOutboundWorker(workerCtx, outboundQueue, outboundDone)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_matrix/app/v1/transactions/", t.handleTransaction)
 	mux.HandleFunc("/_matrix/app/v1/users/", t.handleAppservicePing)
 	mux.HandleFunc("/_matrix/app/v1/rooms/", t.handleAppservicePing)
+	mux.HandleFunc("/_gopher/matrix/health", t.handleHealth)
+	mux.HandleFunc("/_gopher/matrix/metrics", t.handleMetrics)
 
 	server := &http.Server{
 		Addr:    t.listenAddr,
@@ -114,16 +218,21 @@ func (t *Transport) Start(ctx context.Context) error {
 	}()
 
 	err := server.ListenAndServe()
-	if err == nil || err == http.ErrServerClosed {
+	t.shutdownWorker()
+	if err == nil || err == http.ErrServerClosed || strings.Contains(strings.ToLower(err.Error()), "closed network connection") {
 		return nil
 	}
 	return err
 }
 
 func (t *Transport) Stop() error {
-	t.mu.RLock()
+	t.shutdownWorker()
+
+	t.mu.Lock()
 	server := t.server
-	t.mu.RUnlock()
+	t.server = nil
+	t.started = false
+	t.mu.Unlock()
 	if server == nil {
 		return nil
 	}
@@ -141,17 +250,46 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 	if bodyText == "" {
 		return nil
 	}
+	t.mu.RLock()
+	started := t.started
+	queue := t.outboundQueue
+	t.mu.RUnlock()
+	if !started || queue == nil {
+		return fmt.Errorf("matrix transport is not running")
+	}
 
+	item := queuedOutbound{
+		message: transport.OutboundMessage{
+			ConversationID: roomID,
+			Text:           bodyText,
+		},
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case queue <- item:
+		t.recordQueueDepth(len(queue))
+		return nil
+	default:
+		t.incrementDropped()
+		return fmt.Errorf("matrix outbound queue is full")
+	}
+}
+
+func (t *Transport) sendMessageNow(ctx context.Context, message transport.OutboundMessage) error {
 	txnID := fmt.Sprintf("gopher-%d", time.Now().UTC().UnixNano())
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%s?access_token=%s",
 		t.homeserverURL,
-		url.PathEscape(roomID),
+		url.PathEscape(message.ConversationID),
 		url.PathEscape(txnID),
 		url.QueryEscape(t.asToken),
 	)
+	if strings.TrimSpace(t.botUserID) != "" {
+		endpoint += "&user_id=" + url.QueryEscape(t.botUserID)
+	}
 	payload := map[string]string{
 		"msgtype": "m.text",
-		"body":    bodyText,
+		"body":    message.Text,
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
@@ -168,9 +306,120 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("matrix outbound status: %s", response.Status)
+		body, _ := io.ReadAll(response.Body)
+		return fmt.Errorf("matrix outbound status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+func (t *Transport) runOutboundWorker(workerCtx context.Context, outboundQueue <-chan queuedOutbound, done chan<- struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-workerCtx.Done():
+			return
+		case item := <-outboundQueue:
+			t.recordQueueDepth(len(outboundQueue))
+			t.processOutbound(item)
+		}
+	}
+}
+
+func (t *Transport) processOutbound(item queuedOutbound) {
+	for {
+		err := t.sendMessageNow(t.workerCtx, item.message)
+		if err == nil {
+			t.recordOutboundSuccess()
+			if strings.TrimSpace(item.eventID) != "" {
+				t.markEventState(item.eventID, deliveryStatusDelivered)
+			}
+			return
+		}
+		transient := isTransientSendError(err)
+		if transient {
+			t.incrementTransientError()
+		} else {
+			t.incrementPermanentError()
+		}
+		if transient && item.attempt < t.maxAttempts {
+			item.attempt++
+			t.incrementRetries()
+			delay := retryDelay(item.attempt)
+			timer := time.NewTimer(delay)
+			select {
+			case <-t.workerCtx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		t.incrementDropped()
+		if transient && strings.TrimSpace(item.eventID) != "" {
+			t.markEventState(item.eventID, deliveryStatusRetryable)
+		}
+		return
+	}
+}
+
+func retryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	base := 300 * time.Millisecond
+	maxDelay := 5 * time.Second
+	exp := 1 << maxInt(0, attempt-1)
+	delay := base * time.Duration(exp)
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func isTransientSendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "timeout") ||
+		strings.Contains(text, "connection refused") ||
+		strings.Contains(text, "connection reset") ||
+		strings.Contains(text, "temporary") {
+		return true
+	}
+	if strings.Contains(text, "status: 5") || strings.Contains(text, "status: 429") {
+		return true
+	}
+	return false
+}
+
+func (t *Transport) shutdownWorker() {
+	t.mu.Lock()
+	cancel := t.workerCancel
+	done := t.outboundDone
+	t.workerCancel = nil
+	t.workerCtx = nil
+	t.outboundQueue = nil
+	t.outboundDone = nil
+	t.started = false
+	t.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 func (t *Transport) handleAppservicePing(writer http.ResponseWriter, request *http.Request) {
@@ -180,6 +429,45 @@ func (t *Transport) handleAppservicePing(writer http.ResponseWriter, request *ht
 	}
 	writer.Header().Set("content-type", "application/json")
 	_, _ = writer.Write([]byte(`{}`))
+}
+
+func (t *Transport) handleHealth(writer http.ResponseWriter, request *http.Request) {
+	_ = request
+	stats := t.snapshotMetrics()
+	writer.Header().Set("content-type", "application/json")
+	_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+		"ok":                       true,
+		"listen_addr":              t.listenAddr,
+		"queue_depth":              stats.QueueDepth,
+		"last_inbound_txn_at":      formatTime(stats.LastInboundTxnAt),
+		"last_outbound_success_at": formatTime(stats.LastOutboundSuccessAt),
+	})
+}
+
+func (t *Transport) handleMetrics(writer http.ResponseWriter, request *http.Request) {
+	_ = request
+	stats := t.snapshotMetrics()
+	writer.Header().Set("content-type", "application/json")
+	_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+		"last_inbound_txn_at":       formatTime(stats.LastInboundTxnAt),
+		"last_outbound_success_at":  formatTime(stats.LastOutboundSuccessAt),
+		"queue_depth":               stats.QueueDepth,
+		"outbound_retries":          stats.OutboundRetries,
+		"outbound_dropped":          stats.OutboundDropped,
+		"outbound_transient_errors": stats.OutboundTransientErrs,
+		"outbound_permanent_errors": stats.OutboundPermanentErrs,
+		"duplicate_txn_seen":        stats.DuplicateTxnSeen,
+		"duplicate_events_skipped":  stats.DuplicateEventsSkipped,
+		"replay_events_processed":   stats.ReplayEventsProcessed,
+		"inbound_failures":          t.inboundFailures.Load(),
+	})
+}
+
+func formatTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func (t *Transport) handleTransaction(writer http.ResponseWriter, request *http.Request) {
@@ -197,30 +485,173 @@ func (t *Transport) handleTransaction(writer http.ResponseWriter, request *http.
 		http.Error(writer, "transaction id is required", http.StatusBadRequest)
 		return
 	}
-	if t.isDuplicateTransaction(txnID) {
-		writer.Header().Set("content-type", "application/json")
-		_, _ = writer.Write([]byte(`{}`))
-		return
-	}
+	t.recordTransactionSeen(txnID)
 
 	body := transactionBody{}
 	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 		http.Error(writer, "invalid payload", http.StatusBadRequest)
 		return
 	}
+	now := time.Now().UTC()
+	t.cleanupState(now)
+	t.recordInboundTxn(now)
+	hadFailure := false
+
 	for _, event := range body.Events {
+		if t.shouldSkipEvent(event) {
+			continue
+		}
+		eventCtx, cancelEvent := context.WithTimeout(context.Background(), inboundEventTimeout)
+		if t.isBotInvite(event) {
+			if err := t.joinRoom(eventCtx, event.RoomID); err != nil {
+				log.Printf("matrix inbound invite handling failed room_id=%q event_id=%q err=%v", event.RoomID, strings.TrimSpace(event.EventID), err)
+				// Do not fail the entire transaction on invite join errors.
+				// A single persistent join failure can wedge appservice retries
+				// and block unrelated DM events in the same delivery stream.
+				t.markEventState(event.EventID, deliveryStatusDelivered)
+				cancelEvent()
+				continue
+			}
+			t.markEventState(event.EventID, deliveryStatusDelivered)
+			cancelEvent()
+			continue
+		}
 		inbound, ok := t.toInboundMessage(event)
 		if !ok {
+			cancelEvent()
 			continue
 		}
 		handler := t.getHandler()
 		if handler == nil {
+			t.markEventState(event.EventID, deliveryStatusRetryable)
+			hadFailure = true
+			cancelEvent()
 			continue
 		}
-		_ = handler(request.Context(), inbound)
+		if err := handler(eventCtx, inbound); err != nil {
+			t.inboundFailures.Add(1)
+			log.Printf("matrix inbound handler failed event_id=%q room_id=%q sender=%q err=%v", strings.TrimSpace(event.EventID), inbound.ConversationID, inbound.SenderID, err)
+			t.markEventState(event.EventID, deliveryStatusRetryable)
+			hadFailure = true
+			cancelEvent()
+			continue
+		}
+		t.markEventState(event.EventID, deliveryStatusDelivered)
+		cancelEvent()
+	}
+	if hadFailure {
+		http.Error(writer, "temporary failure", http.StatusInternalServerError)
+		return
 	}
 	writer.Header().Set("content-type", "application/json")
 	_, _ = writer.Write([]byte(`{}`))
+}
+
+func (t *Transport) shouldSkipEvent(event matrixEvent) bool {
+	eventID := strings.TrimSpace(event.EventID)
+	if eventID == "" {
+		return false
+	}
+	state, ok := t.getEventState(eventID)
+	if !ok {
+		return false
+	}
+	if state.Status == deliveryStatusDelivered {
+		t.incrementDuplicateEvents()
+		return true
+	}
+	if state.Status == deliveryStatusRetryable {
+		t.incrementReplayEvents()
+		return false
+	}
+	return false
+}
+
+func (t *Transport) isBotInvite(event matrixEvent) bool {
+	if event.Type != "m.room.member" {
+		return false
+	}
+	if strings.TrimSpace(event.RoomID) == "" {
+		return false
+	}
+	if t.botUserID == "" {
+		return false
+	}
+	membership, _ := event.Content["membership"].(string)
+	if strings.TrimSpace(membership) != "invite" {
+		return false
+	}
+	// Some homeservers omit state_key in appservice transaction payloads.
+	stateKey := strings.TrimSpace(event.StateKey)
+	return stateKey == "" || stateKey == t.botUserID
+}
+
+func (t *Transport) joinRoom(ctx context.Context, roomID string) error {
+	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/join?access_token=%s",
+		t.homeserverURL,
+		url.PathEscape(strings.TrimSpace(roomID)),
+		url.QueryEscape(t.asToken),
+	)
+	if strings.TrimSpace(t.botUserID) != "" {
+		endpoint += "&user_id=" + url.QueryEscape(t.botUserID)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(`{}`))
+	if err != nil {
+		return fmt.Errorf("build matrix join request: %w", err)
+	}
+	request.Header.Set("content-type", "application/json")
+	response, err := t.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("send matrix join request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(response.Body)
+		return fmt.Errorf("matrix join status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func (t *Transport) ensureBotUser(ctx context.Context) error {
+	if strings.TrimSpace(t.botUserID) == "" {
+		return nil
+	}
+	localPart := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(t.botUserID, ":", 2)[0], "@"))
+	if localPart == "" {
+		return fmt.Errorf("invalid bot user id: %s", t.botUserID)
+	}
+	endpoint := fmt.Sprintf("%s/_matrix/client/v3/register?access_token=%s",
+		t.homeserverURL,
+		url.QueryEscape(t.asToken),
+	)
+	payload := map[string]string{
+		"type":     "m.login.application_service",
+		"username": localPart,
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal bot user register payload: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(blob)))
+	if err != nil {
+		return fmt.Errorf("build bot user register request: %w", err)
+	}
+	request.Header.Set("content-type", "application/json")
+	response, err := t.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("send bot user register request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return nil
+	}
+	body, _ := io.ReadAll(response.Body)
+	// synapse-like behavior may return M_USER_IN_USE for existing users.
+	if (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusConflict) &&
+		strings.Contains(string(body), "M_USER_IN_USE") {
+		return nil
+	}
+	return fmt.Errorf("matrix bot register status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
 }
 
 func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessage, bool) {
@@ -252,17 +683,132 @@ func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessag
 
 func (t *Transport) isAuthorized(request *http.Request) bool {
 	token := strings.TrimSpace(request.URL.Query().Get("access_token"))
+	if token != "" {
+		return token == t.hsToken
+	}
+	auth := strings.TrimSpace(request.Header.Get("authorization"))
+	if auth == "" {
+		return false
+	}
+	if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		return false
+	}
+	token = strings.TrimSpace(auth[len("bearer "):])
 	return token != "" && token == t.hsToken
 }
 
-func (t *Transport) isDuplicateTransaction(txnID string) bool {
+func (t *Transport) recordTransactionSeen(txnID string) {
+	if strings.TrimSpace(txnID) == "" {
+		return
+	}
+	now := time.Now().UTC()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, exists := t.seenTxn[txnID]; exists {
-		return true
+		t.stats.mu.Lock()
+		t.stats.DuplicateTxnSeen++
+		t.stats.mu.Unlock()
 	}
-	t.seenTxn[txnID] = struct{}{}
-	return false
+	t.seenTxn[txnID] = now
+}
+
+func (t *Transport) cleanupState(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for txnID, seenAt := range t.seenTxn {
+		if now.Sub(seenAt) > t.dedupeTTL {
+			delete(t.seenTxn, txnID)
+		}
+	}
+	for eventID, state := range t.events {
+		if now.Sub(state.UpdatedAt) > t.dedupeTTL {
+			delete(t.events, eventID)
+		}
+	}
+}
+
+func (t *Transport) markEventState(eventID string, status deliveryStatus) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events[eventID] = eventDeliveryState{
+		Status:    status,
+		UpdatedAt: time.Now().UTC(),
+	}
+}
+
+func (t *Transport) getEventState(eventID string) (eventDeliveryState, bool) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return eventDeliveryState{}, false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	state, ok := t.events[eventID]
+	return state, ok
+}
+
+func (t *Transport) recordInboundTxn(value time.Time) {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.LastInboundTxnAt = value
+}
+
+func (t *Transport) recordOutboundSuccess() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.LastOutboundSuccessAt = time.Now().UTC()
+}
+
+func (t *Transport) incrementRetries() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.OutboundRetries++
+}
+
+func (t *Transport) incrementDropped() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.OutboundDropped++
+}
+
+func (t *Transport) incrementTransientError() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.OutboundTransientErrs++
+}
+
+func (t *Transport) incrementPermanentError() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.OutboundPermanentErrs++
+}
+
+func (t *Transport) recordQueueDepth(depth int) {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.QueueDepth = depth
+}
+
+func (t *Transport) incrementDuplicateEvents() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.DuplicateEventsSkipped++
+}
+
+func (t *Transport) incrementReplayEvents() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.ReplayEventsProcessed++
+}
+
+func (t *Transport) snapshotMetrics() matrixStats {
+	t.stats.mu.RLock()
+	defer t.stats.mu.RUnlock()
+	return t.stats
 }
 
 func (t *Transport) getHandler() transport.InboundHandler {

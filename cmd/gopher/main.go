@@ -35,6 +35,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runServiceSubcommand(serviceArgs, stdout, stderr)
 	case "service":
 		return runServiceSubcommand(args[1:], stdout, stderr)
+	case "auth":
+		return runAuthSubcommand(args[1:], stdout, stderr)
 	default:
 		printRootUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -53,6 +55,7 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  status                show gopher service status")
 	fmt.Fprintln(out, "  restart               restart gopher service")
 	fmt.Fprintln(out, "  logs                  show gopher service logs")
+	fmt.Fprintln(out, "  auth ...              manage provider auth env settings")
 	fmt.Fprintln(out, "  service ...           install and manage linux systemd service")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "try:")

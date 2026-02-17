@@ -8,8 +8,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -135,6 +137,17 @@ func (r *linuxServiceRuntime) Status(ctx context.Context) error {
 	fmt.Fprintf(r.stdout, "nats binary:     %s\n", valueOrUnknown(natsPath))
 	fmt.Fprintf(r.stdout, "nats version:    %s\n", valueOrUnknown(natsVersion))
 
+	matrixLine, matrixWarning := readMatrixStatusLine(ctx)
+	if matrixLine != "" || matrixWarning != "" {
+		fmt.Fprintln(r.stdout, "")
+		if matrixLine != "" {
+			fmt.Fprintln(r.stdout, matrixLine)
+		}
+		if matrixWarning != "" {
+			fmt.Fprintln(r.stdout, matrixWarning)
+		}
+	}
+
 	if gateway.LoadState == "not-found" {
 		return fmt.Errorf("gopher-gateway.service is not installed")
 	}
@@ -142,6 +155,64 @@ func (r *linuxServiceRuntime) Status(ctx context.Context) error {
 		return fmt.Errorf("gopher-gateway.service is %s", valueOrUnknown(gateway.ActiveState))
 	}
 	return nil
+}
+
+type matrixRuntimeMetrics struct {
+	LastInboundTxnAt       string `json:"last_inbound_txn_at"`
+	LastOutboundSuccessAt  string `json:"last_outbound_success_at"`
+	QueueDepth             int    `json:"queue_depth"`
+	OutboundRetries        uint64 `json:"outbound_retries"`
+	OutboundDropped        uint64 `json:"outbound_dropped"`
+	OutboundTransientErrs  uint64 `json:"outbound_transient_errors"`
+	OutboundPermanentErrs  uint64 `json:"outbound_permanent_errors"`
+	DuplicateTxnSeen       uint64 `json:"duplicate_txn_seen"`
+	DuplicateEventsSkipped uint64 `json:"duplicate_events_skipped"`
+	ReplayEventsProcessed  uint64 `json:"replay_events_processed"`
+	InboundFailures        uint64 `json:"inbound_failures"`
+}
+
+func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
+	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: "/etc/gopher/gopher.toml"})
+	if err != nil || !cfg.Matrix.Enabled {
+		return "", ""
+	}
+	addr := strings.TrimSpace(cfg.Matrix.ListenAddr)
+	if addr == "" {
+		addr = "127.0.0.1:29328"
+	}
+	url := fmt.Sprintf("http://%s/_gopher/matrix/metrics", addr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Sprintf("matrix bridge: warning (invalid probe request: %v)", err)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: configured but listener not reachable at %s", addr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: metrics endpoint returned %s", resp.Status)
+	}
+	var metrics matrixRuntimeMetrics
+	if err := json.NewDecoder(resp.Body).Decode(&metrics); err != nil {
+		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: unable to decode metrics (%v)", err)
+	}
+	line = fmt.Sprintf(
+		"matrix bridge:   healthy (queue=%d retries=%d dropped=%d inbound_failures=%d)",
+		metrics.QueueDepth,
+		metrics.OutboundRetries,
+		metrics.OutboundDropped,
+		metrics.InboundFailures,
+	)
+	if strings.TrimSpace(metrics.LastInboundTxnAt) != "" || strings.TrimSpace(metrics.LastOutboundSuccessAt) != "" {
+		warning = fmt.Sprintf(
+			"matrix activity: inbound=%s outbound=%s",
+			valueOrUnknown(metrics.LastInboundTxnAt),
+			valueOrUnknown(metrics.LastOutboundSuccessAt),
+		)
+	}
+	return line, warning
 }
 
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {

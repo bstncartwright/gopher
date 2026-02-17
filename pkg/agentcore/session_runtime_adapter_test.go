@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
@@ -87,5 +88,38 @@ func TestSessionRuntimeAdapterRoutesUserToRunTurn(t *testing.T) {
 	}
 	if !foundAgent {
 		t.Fatalf("expected agent response event in session history")
+	}
+}
+
+func TestWithTurnTimeoutAddsDeadlineWhenMissing(t *testing.T) {
+	prev := sessionRuntimeTurnTimeout
+	sessionRuntimeTurnTimeout = time.Second
+	defer func() { sessionRuntimeTurnTimeout = prev }()
+
+	ctx, cancel := withTurnTimeout(context.Background())
+	defer cancel()
+
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatalf("expected deadline to be added")
+	}
+}
+
+func TestWithTurnTimeoutPreservesExistingDeadline(t *testing.T) {
+	prev := sessionRuntimeTurnTimeout
+	sessionRuntimeTurnTimeout = time.Second
+	defer func() { sessionRuntimeTurnTimeout = prev }()
+
+	base, baseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer baseCancel()
+	baseDeadline, _ := base.Deadline()
+
+	ctx, cancel := withTurnTimeout(base)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("expected existing deadline to be preserved")
+	}
+	if !deadline.Equal(baseDeadline) {
+		t.Fatalf("deadline changed: got %s want %s", deadline, baseDeadline)
 	}
 }

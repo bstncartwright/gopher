@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"sync"
+	"time"
 
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
@@ -13,6 +14,8 @@ type SessionRuntimeAdapter struct {
 	mu       sync.Mutex
 	sessions map[sessionrt.SessionID]*Session
 }
+
+var sessionRuntimeTurnTimeout = 20 * time.Second
 
 func NewSessionRuntimeAdapter(agent *Agent) *SessionRuntimeAdapter {
 	return &SessionRuntimeAdapter{
@@ -36,7 +39,10 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 	}
 	a.mu.Unlock()
 
-	result, err := a.agent.RunTurn(ctx, sessionData, TurnInput{UserMessage: userMsg.Content})
+	turnCtx, cancel := withTurnTimeout(ctx)
+	defer cancel()
+
+	result, err := a.agent.RunTurn(turnCtx, sessionData, TurnInput{UserMessage: userMsg.Content})
 	if err != nil {
 		return sessionrt.AgentOutput{}, err
 	}
@@ -70,6 +76,19 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 	}
 
 	return sessionrt.AgentOutput{Events: out}, nil
+}
+
+func withTurnTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if sessionRuntimeTurnTimeout <= 0 {
+		return ctx, func() {}
+	}
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, sessionRuntimeTurnTimeout)
 }
 
 func latestUserMessage(events []sessionrt.Event) (sessionrt.Message, bool) {

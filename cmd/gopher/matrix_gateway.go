@@ -20,6 +20,7 @@ type matrixDMBridge struct {
 	transport *matrixtransport.Transport
 	pipeline  *gateway.DMPipeline
 	cron      *gateway.CronRunner
+	cancel    context.CancelFunc
 }
 
 func loadGatewayRuntimeExecutor(workspace string) (sessionrt.AgentExecutor, error) {
@@ -115,21 +116,81 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 	}
 
 	bridge := &matrixDMBridge{transport: matrixBridge, pipeline: pipeline, cron: cronRunner}
-
-	go func() {
-		if err := matrixBridge.Start(ctx); err != nil && logger != nil {
-			logger.Printf("matrix transport stopped: %v", err)
-		}
-	}()
+	bridgeCtx, cancel := context.WithCancel(ctx)
+	bridge.cancel = cancel
+	go bridge.runSupervisor(bridgeCtx, logger)
 	if logger != nil {
 		logger.Printf("matrix dm bridge started appservice_id=%s listen_addr=%s", cfg.Matrix.AppserviceID, cfg.Matrix.ListenAddr)
 	}
 	return bridge, nil
 }
 
+func (b *matrixDMBridge) runSupervisor(ctx context.Context, logger *log.Logger) {
+	attempt := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		attempt++
+		if logger != nil {
+			logger.Printf("matrix_bridge_starting attempt=%d", attempt)
+		}
+		err := b.transport.Start(ctx)
+		if err == nil {
+			if logger != nil {
+				logger.Printf("matrix_bridge_ready")
+			}
+			if ctx.Err() != nil {
+				return
+			}
+		} else {
+			if logger != nil {
+				logger.Printf("matrix_bridge_degraded err=%v", err)
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		delay := matrixBridgeRetryDelay(attempt)
+		if logger != nil {
+			logger.Printf("matrix_bridge_retrying attempt=%d next_in=%s", attempt, delay.String())
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func matrixBridgeRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	base := 500 * time.Millisecond
+	maxDelay := 30 * time.Second
+	delay := base * time.Duration(1<<max(0, attempt-1))
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	return delay
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (b *matrixDMBridge) Stop() {
 	if b == nil {
 		return
+	}
+	if b.cancel != nil {
+		b.cancel()
 	}
 	if b.cron != nil {
 		b.cron.Stop()

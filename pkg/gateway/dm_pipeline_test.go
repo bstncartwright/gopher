@@ -24,6 +24,32 @@ func (m *flakySubscribeManager) Subscribe(ctx context.Context, sessionID session
 	return m.SessionManager.Subscribe(ctx, sessionID)
 }
 
+type delayedSendManager struct {
+	sessionrt.SessionManager
+	block chan struct{}
+}
+
+func (m *delayedSendManager) SendEvent(ctx context.Context, e sessionrt.Event) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.block:
+	}
+	return m.SessionManager.SendEvent(ctx, e)
+}
+
+type sendEventFailManager struct {
+	sessionrt.SessionManager
+	err error
+}
+
+func (m *sendEventFailManager) SendEvent(context.Context, sessionrt.Event) error {
+	if m.err != nil {
+		return m.err
+	}
+	return context.DeadlineExceeded
+}
+
 type fakeTransport struct {
 	mu      sync.Mutex
 	handler transport.InboundHandler
@@ -70,6 +96,51 @@ func (e *dmStaticExecutor) Step(_ context.Context, input sessionrt.AgentInput) (
 				Payload: sessionrt.Message{
 					Role:    sessionrt.RoleAgent,
 					Content: e.text,
+				},
+			},
+		},
+	}, nil
+}
+
+type dmErrorExecutor struct {
+	message string
+}
+
+func (e *dmErrorExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventError,
+				Payload: sessionrt.ErrorPayload{
+					Message: e.message,
+				},
+			},
+		},
+	}, nil
+}
+
+type dmFailThenSucceedExecutor struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (e *dmFailThenSucceedExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+	if call == 1 {
+		return sessionrt.AgentOutput{}, fmt.Errorf("boom")
+	}
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: "ack",
 				},
 			},
 		},
@@ -215,6 +286,267 @@ func TestDMPipelineRecoversAfterInitialSubscribeFailure(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		return fake.sentCount() > 0
 	})
+}
+
+func TestDMPipelineHandleInboundReturnsBeforeSlowSendCompletes(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	baseManager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	manager := &delayedSendManager{
+		SessionManager: baseManager,
+		block:          make(chan struct{}),
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:slow",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("HandleInbound() took too long: %s", elapsed)
+	}
+
+	close(manager.block)
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+}
+
+func TestDMPipelineRebindsConversationAfterSessionFailure(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmFailThenSucceedExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:recover",
+		SenderID:       "@user:hs",
+		Text:           "first",
+	}); err != nil {
+		t.Fatalf("first HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		sessions, listErr := store.ListSessions(context.Background())
+		if listErr != nil || len(sessions) == 0 {
+			return false
+		}
+		return sessions[0].Status == sessionrt.SessionFailed
+	})
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:recover",
+		SenderID:       "@user:hs",
+		Text:           "second",
+	}); err != nil {
+		t.Fatalf("second HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+
+	sessions, err := store.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions() error: %v", err)
+	}
+	if len(sessions) < 2 {
+		t.Fatalf("session count = %d, want >= 2 after rebinding", len(sessions))
+	}
+	active := 0
+	for _, session := range sessions {
+		if session.Status == sessionrt.SessionActive {
+			active++
+		}
+	}
+	if active == 0 {
+		t.Fatalf("expected at least one active session after rebinding")
+	}
+}
+
+func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmErrorExecutor{message: "429 status code"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:error",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	got := fake.lastSent()
+	if got.ConversationID != "!dm:error" {
+		t.Fatalf("conversation id = %q, want !dm:error", got.ConversationID)
+	}
+	if got.Text != dmRateLimitFallbackReply {
+		t.Fatalf("fallback reply = %q, want %q", got.Text, dmRateLimitFallbackReply)
+	}
+}
+
+func TestDMPipelineSendsFallbackWhenSendEventFails(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	baseManager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	manager := &sendEventFailManager{
+		SessionManager: baseManager,
+		err:            context.DeadlineExceeded,
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:timeout",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	got := fake.lastSent()
+	if got.ConversationID != "!dm:timeout" {
+		t.Fatalf("conversation id = %q, want !dm:timeout", got.ConversationID)
+	}
+	if got.Text != dmErrorFallbackReply {
+		t.Fatalf("fallback reply = %q, want %q", got.Text, dmErrorFallbackReply)
+	}
+}
+
+func TestDMPipelineIgnoresStaleSessionResponses(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "old-ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	createdA, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "human:a", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(A) error: %v", err)
+	}
+	createdB, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "human:b", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(B) error: %v", err)
+	}
+
+	conversationID := "!dm:stale"
+	if err := pipeline.ensureSubscription(conversationID, createdA.ID); err != nil {
+		t.Fatalf("ensureSubscription(A) error: %v", err)
+	}
+	pipeline.conversations.Set(conversationID, createdA.ID)
+	pipeline.conversations.Set(conversationID, createdB.ID)
+
+	if err := manager.SendEvent(ctx, sessionrt.Event{
+		SessionID: createdA.ID,
+		From:      "human:a",
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "hello",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent(A) error: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if fake.sentCount() != 0 {
+		t.Fatalf("expected no outbound from stale session, got %d", fake.sentCount())
+	}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, predicate func() bool) {

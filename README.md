@@ -46,7 +46,7 @@ run a gopher server on exe.dev and chat with it via matrix.
 **in progress:**
 
 - gateway executor is a stub – returns "gateway executor is not configured yet" on execution requests. wiring it to a real agent is next.
-- matrix interface – not yet implemented. the MVP is to connect to a matrix homeserver (e.g. conduit), map rooms to sessions, and reply via LLM.
+- matrix multi-agent routing – current bridge is single-agent DM first. task-room fanout and per-agent identity registry are phase 2.
 
 ## core concepts
 
@@ -173,6 +173,62 @@ install a worker node (binary only, no local service/nats):
 ```bash
 GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --role node
 ```
+
+## auth config cli
+
+`gopher auth` provides provider-aware auth key management for service env files:
+
+```bash
+# list provider auth status (configured/missing)
+gopher auth list --env-file /etc/gopher/gopher.env
+
+# list supported providers and env keys
+gopher auth providers
+
+# set provider key
+gopher auth set --env-file /etc/gopher/gopher.env --provider zai --api-key "$ZAI_API_KEY"
+
+# remove provider key
+gopher auth unset --env-file /etc/gopher/gopher.env --provider zai
+```
+
+for oauth-backed providers, use raw env keys until interactive oauth login is added:
+
+```bash
+gopher auth set --env-file /etc/gopher/gopher.env --key OPENAI_CODEX_TOKEN --value "<token>"
+```
+
+## matrix single-agent dm setup (conduit)
+
+phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages and routes them through one runtime agent workspace.
+
+1. prepare runtime workspace:
+   - `/home/exedev/.gopher/AGENTS.md`
+   - `/home/exedev/.gopher/soul.md`
+   - `/home/exedev/.gopher/config.json`
+   - `/home/exedev/.gopher/policies.json`
+2. configure gateway matrix block in `/etc/gopher/gopher.toml`:
+   - `enabled = true`
+   - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)
+   - `appservice_id`, `as_token`, `hs_token`, `listen_addr`, `bot_user_id`
+3. configure model provider key in `/etc/gopher/gopher.env` (example: `ZAI_API_KEY=...`) and restart:
+   - `sudo systemctl restart gopher-gateway.service`
+4. register appservice in conduit admin room using `/etc/gopher/gopher-appservice-registration.yaml`
+   - command message: `@conduit:<server_name>: register-appservice`
+   - then paste yaml payload
+   - verify with: `@conduit:<server_name>: list-appservices`
+5. run smoke test:
+
+```bash
+python3 scripts/matrix_dm_smoke.py \
+  --homeserver http://127.0.0.1:6167 \
+  --registration-token <matrix_registration_token> \
+  --bot-user-id @gopher:<server_name>
+```
+
+expected result:
+- `bot_membership=join`
+- `bot_reply_count>=1`
 
 ## releases
 

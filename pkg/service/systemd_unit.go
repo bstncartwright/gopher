@@ -43,7 +43,7 @@ func RenderGatewayUnit(cfg GatewayUnitConfig) (string, error) {
 	}
 	workingDir := strings.TrimSpace(cfg.WorkingDir)
 	if workingDir == "" {
-		workingDir = "/var/lib/gopher"
+		workingDir = "/root/.gopher"
 	}
 	envFile := strings.TrimSpace(cfg.EnvFile)
 	if envFile == "" {

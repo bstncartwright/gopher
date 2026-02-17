@@ -146,6 +146,34 @@ gopher gateway run --help
 
 config can be loaded from `gopher.toml` in the working directory; `gopher.local.toml` overrides. env vars `GOPHER_*` override config.
 
+## install on linux vm
+
+for private-release installs, use the bootstrap script:
+
+```bash
+GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --role gateway --with-nats
+```
+
+what it does:
+- downloads latest release asset for your linux arch
+- verifies checksums
+- installs binary to `/usr/local/bin/gopher`
+- initializes `/etc/gopher/gopher.toml` (if missing)
+- creates `/etc/gopher/gopher.env` (if missing)
+- installs/starts `gopher-gateway.service`
+
+use a specific release:
+
+```bash
+GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --version v0.1.0
+```
+
+install a worker node (binary only, no local service/nats):
+
+```bash
+GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --role node
+```
+
 ## releases
 
 gopher now includes a github actions release workflow at `.github/workflows/release.yml`.

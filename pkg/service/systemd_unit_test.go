@@ -19,6 +19,9 @@ func TestRenderGatewayUnit(t *testing.T) {
 	if !strings.Contains(unit, "EnvironmentFile=-/etc/gopher/gopher.env") {
 		t.Fatalf("missing env file in unit: %s", unit)
 	}
+	if !strings.Contains(unit, "WorkingDirectory=/root/.gopher") {
+		t.Fatalf("missing default working directory in unit: %s", unit)
+	}
 }
 
 func TestRenderUpdateTimerUnit(t *testing.T) {

@@ -203,6 +203,9 @@ func buildOpenAIResponsesParams(model Model, conversation Context, options *Open
 			params["reasoning"] = map[string]any{"effort": string(effort), "summary": summary}
 			params["include"] = []string{"reasoning.encrypted_content"}
 		} else if strings.HasPrefix(model.Name, "gpt-5") {
+			// When reasoning is enabled for GPT-5 models but no explicit effort/summary is
+			// requested, inject a developer hint that suppresses extended reasoning output.
+			// "Juice: 0" is an upstream convention from the pi-ai codebase.
 			messages = append(messages, map[string]any{
 				"role":    "developer",
 				"content": []map[string]any{{"type": "input_text", "text": "# Juice: 0 !important"}},
@@ -227,7 +230,7 @@ func resolveCacheRetention(cacheRetention CacheRetention) CacheRetention {
 	if cacheRetention != "" {
 		return cacheRetention
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("PI_CACHE_RETENTION")), "long") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GOPHER_CACHE_RETENTION")), "long") {
 		return CacheRetentionLong
 	}
 	return CacheRetentionShort

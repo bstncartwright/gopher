@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"os"
 	"testing"
 )
 
@@ -10,7 +9,7 @@ func TestGetEnvAPIKey(t *testing.T) {
 	t.Setenv("ZAI_API_KEY", "zai-key")
 	t.Setenv("KIMI_API_KEY", "kimi-key")
 	t.Setenv("OPENAI_CODEX_API_KEY", "codex-key")
-	_ = os.Setenv("OLLAMA_API_KEY", "ollama-key")
+	t.Setenv("OLLAMA_API_KEY", "ollama-key")
 
 	if got := GetEnvAPIKey(string(ProviderOpenAI)); got != "openai-key" {
 		t.Fatalf("expected openai key, got %q", got)

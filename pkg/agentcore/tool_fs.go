@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -32,20 +33,35 @@ func (t *fsReadTool) Run(_ context.Context, input ToolInput) (ToolOutput, error)
 	if err != nil {
 		return ToolOutput{Status: ToolStatusError}, err
 	}
-	blob, err := os.ReadFile(path)
+	const maxReadBytes = 10 << 20 // 10 MiB
+	f, err := os.Open(path)
 	if err != nil {
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
 		}, err
 	}
-	return ToolOutput{
-		Status: ToolStatusOK,
-		Result: map[string]any{
-			"path":    path,
-			"content": string(blob),
-		},
-	}, nil
+	defer f.Close()
+	blob, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
+	if err != nil {
+		return ToolOutput{
+			Status: ToolStatusError,
+			Result: map[string]any{"path": path, "error": err.Error()},
+		}, err
+	}
+	truncated := false
+	if len(blob) > maxReadBytes {
+		blob = blob[:maxReadBytes]
+		truncated = true
+	}
+	result := map[string]any{
+		"path":    path,
+		"content": string(blob),
+	}
+	if truncated {
+		result["truncated"] = true
+	}
+	return ToolOutput{Status: ToolStatusOK, Result: result}, nil
 }
 
 type fsWriteTool struct{}

@@ -10,17 +10,27 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 const (
-	openAICodexClientID  = "app_EMoamEEZ73f0CkXaXp7hrann"
-	openAICodexAuthorize = "https://auth.openai.com/oauth/authorize"
-	openAICodexToken     = "https://auth.openai.com/oauth/token"
-	openAICodexRedirect  = "http://localhost:1455/auth/callback"
-	openAICodexScope     = "openid profile email offline_access"
+	// defaultOpenAICodexClientID is the upstream OpenAI Codex CLI OAuth application ID.
+	// Override at runtime via the OPENAI_CODEX_CLIENT_ID environment variable.
+	defaultOpenAICodexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+	openAICodexAuthorize       = "https://auth.openai.com/oauth/authorize"
+	openAICodexToken           = "https://auth.openai.com/oauth/token"
+	openAICodexRedirect        = "http://localhost:1455/auth/callback"
+	openAICodexScope           = "openid profile email offline_access"
 )
+
+func openAICodexClientID() string {
+	if v := os.Getenv("OPENAI_CODEX_CLIENT_ID"); v != "" {
+		return v
+	}
+	return defaultOpenAICodexClientID
+}
 
 type OpenAICodexProvider struct{}
 
@@ -65,7 +75,7 @@ func (OpenAICodexProvider) RefreshToken(credentials Credentials) (Credentials, e
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", credentials.Refresh)
-	form.Set("client_id", openAICodexClientID)
+	form.Set("client_id", openAICodexClientID())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICodexToken, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -111,7 +121,7 @@ func buildOpenAICodexAuthorizationURL(challenge, state string) string {
 	u, _ := url.Parse(openAICodexAuthorize)
 	q := u.Query()
 	q.Set("response_type", "code")
-	q.Set("client_id", openAICodexClientID)
+	q.Set("client_id", openAICodexClientID())
 	q.Set("redirect_uri", openAICodexRedirect)
 	q.Set("scope", openAICodexScope)
 	q.Set("code_challenge", challenge)
@@ -183,7 +193,7 @@ func waitForOpenAICodexCode(ctx context.Context, server *oauthCodeServer, callba
 func exchangeOpenAICodexCode(ctx context.Context, code, verifier string) (Credentials, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
-	form.Set("client_id", openAICodexClientID)
+	form.Set("client_id", openAICodexClientID())
 	form.Set("code", code)
 	form.Set("code_verifier", verifier)
 	form.Set("redirect_uri", openAICodexRedirect)

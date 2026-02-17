@@ -9,12 +9,13 @@ import (
 var ErrStreamClosed = errors.New("assistant message event stream closed")
 
 type AssistantMessageEventStream struct {
-	mu     sync.Mutex
-	events chan AssistantMessageEvent
-	done   bool
-	result AssistantMessage
-	hasRes bool
-	wait   chan struct{}
+	mu      sync.Mutex
+	events  chan AssistantMessageEvent
+	done    bool
+	dropped int
+	result  AssistantMessage
+	hasRes  bool
+	wait    chan struct{}
 }
 
 func NewAssistantMessageEventStream(buffer int) *AssistantMessageEventStream {
@@ -37,8 +38,9 @@ func (s *AssistantMessageEventStream) Events() <-chan AssistantMessageEvent {
 
 func (s *AssistantMessageEventStream) Push(event AssistantMessageEvent) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.done {
-		s.mu.Unlock()
 		return
 	}
 
@@ -51,26 +53,28 @@ func (s *AssistantMessageEventStream) Push(event AssistantMessageEvent) {
 		s.hasRes = true
 		s.done = true
 	}
-	events := s.events
-	closed := s.done
-	s.mu.Unlock()
 
 	select {
-	case events <- event:
+	case s.events <- event:
 	default:
-		// Backpressure in callers can stall the stream forever.
-		// Keep behavior predictable by dropping oversized bursts.
+		s.dropped++
 	}
 
-	if closed {
-		s.closeOnce()
+	if s.done {
+		select {
+		case <-s.wait:
+		default:
+			close(s.wait)
+			close(s.events)
+		}
 	}
 }
 
 func (s *AssistantMessageEventStream) End(result *AssistantMessage) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.done {
-		s.mu.Unlock()
 		return
 	}
 	s.done = true
@@ -78,8 +82,19 @@ func (s *AssistantMessageEventStream) End(result *AssistantMessage) {
 		s.result = *result
 		s.hasRes = true
 	}
-	s.mu.Unlock()
-	s.closeOnce()
+
+	select {
+	case <-s.wait:
+	default:
+		close(s.wait)
+		close(s.events)
+	}
+}
+
+func (s *AssistantMessageEventStream) Dropped() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dropped
 }
 
 func (s *AssistantMessageEventStream) closeOnce() {

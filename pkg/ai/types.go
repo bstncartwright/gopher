@@ -24,6 +24,7 @@ const (
 	ProviderKimiCoding  Provider = "kimi-coding"
 	ProviderZAI         Provider = "zai"
 	ProviderOllama      Provider = "ollama"
+	ProviderAnthropic   Provider = "anthropic"
 )
 
 type ThinkingLevel string
@@ -182,7 +183,7 @@ type ContentBlock struct {
 func (b ContentBlock) Clone() ContentBlock {
 	out := b
 	if b.Arguments != nil {
-		out.Arguments = cloneMap(b.Arguments)
+		out.Arguments = CloneMap(b.Arguments)
 	}
 	return out
 }
@@ -231,7 +232,7 @@ func (m Message) Clone() Message {
 		}
 		out.Content = cloned
 	} else if v, ok := m.Content.(map[string]any); ok {
-		out.Content = cloneMap(v)
+		out.Content = CloneMap(v)
 	}
 	return out
 }
@@ -415,17 +416,17 @@ type AssistantMessageEvent struct {
 	Reason       StopReason                `json:"reason,omitempty"`
 }
 
-func cloneMap(in map[string]any) map[string]any {
+func CloneMap(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		switch t := v.(type) {
 		case map[string]any:
-			out[k] = cloneMap(t)
+			out[k] = CloneMap(t)
 		case []any:
 			cp := make([]any, len(t))
 			for i, item := range t {
 				if m, ok := item.(map[string]any); ok {
-					cp[i] = cloneMap(m)
+					cp[i] = CloneMap(m)
 				} else {
 					cp[i] = item
 				}

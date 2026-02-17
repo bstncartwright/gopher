@@ -11,10 +11,12 @@ import (
 	"github.com/bstncartwright/gopher/pkg/ai"
 )
 
+type ToolStatus string
+
 const (
-	ToolStatusOK     = "ok"
-	ToolStatusError  = "error"
-	ToolStatusDenied = "denied"
+	ToolStatusOK     ToolStatus = "ok"
+	ToolStatusError  ToolStatus = "error"
+	ToolStatusDenied ToolStatus = "denied"
 )
 
 type PolicyError struct {
@@ -75,7 +77,7 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 }
 
 func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string]any, error) {
-	out := cloneAnyMap(args)
+	out := ai.CloneMap(args)
 
 	switch name {
 	case "fs.read", "fs.write":
@@ -156,12 +158,28 @@ func (r *ToolRunner) resolvePathInAllowedRoots(rawPath string) (string, error) {
 		return "", fmt.Errorf("resolve path %q: %w", rawPath, err)
 	}
 	abs = filepath.Clean(abs)
+	// Resolve symlinks to prevent escaping allowed roots via symlink.
+	abs = evalSymlinksOrAncestor(abs)
 	for _, root := range r.agent.allowedFSRoots {
 		if isWithinRoot(abs, root) {
 			return abs, nil
 		}
 	}
 	return "", &PolicyError{Message: fmt.Sprintf("fs access denied for path %q", rawPath)}
+}
+
+// evalSymlinksOrAncestor resolves symlinks for the given path. If the path
+// doesn't exist (e.g. writing a new file), it walks up to the nearest existing
+// ancestor, resolves that, and re-joins the remaining segments.
+func evalSymlinksOrAncestor(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	dir := filepath.Dir(path)
+	if dir == path {
+		return path
+	}
+	return filepath.Join(evalSymlinksOrAncestor(dir), filepath.Base(path))
 }
 
 func isWithinRoot(path, root string) bool {

@@ -19,6 +19,8 @@ func GetEnvAPIKey(provider string) string {
 			return v
 		}
 		return ""
+	case ProviderAnthropic:
+		return os.Getenv("ANTHROPIC_API_KEY")
 	case ProviderOllama:
 		if v := os.Getenv("OLLAMA_API_KEY"); v != "" {
 			return v

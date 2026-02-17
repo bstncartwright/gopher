@@ -33,6 +33,9 @@ func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResu
 
 	runner := NewToolRunner(a)
 	for round := 0; round < MaxToolRounds; round++ {
+		if ctx.Err() != nil {
+			return TurnResult{Events: emitter.Events()}, ctx.Err()
+		}
 		stream := a.Provider.Stream(a.model, conversation, &ai.SimpleStreamOptions{
 			StreamOptions: ai.StreamOptions{
 				RequestContext: ctx,
@@ -137,8 +140,11 @@ func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResu
 				runErr != nil,
 			))
 		}
+		// Persist conversation progress after each tool round so retries don't replay executed calls.
+		s.Messages = boundMessages(conversation.Messages, a.Config.MaxContextMessages)
 	}
 
+	s.Messages = boundMessages(conversation.Messages, a.Config.MaxContextMessages)
 	err = fmt.Errorf("max tool rounds exceeded (%d)", MaxToolRounds)
 	if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": err.Error()}); emitErr != nil {
 		return TurnResult{Events: emitter.Events()}, emitErr

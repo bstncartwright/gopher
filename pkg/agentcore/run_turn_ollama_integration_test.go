@@ -135,8 +135,8 @@ func chooseSmallQwen3Model(models []string) string {
 }
 
 func registerOllamaModelForTest(modelID string) func() {
-	original := modelsToMapIntegration(ai.GetModels("ollama"))
-	updated := modelsToMapIntegration(ai.GetModels("ollama"))
+	original := modelsToMap(ai.GetModels("ollama"))
+	updated := modelsToMap(ai.GetModels("ollama"))
 	if _, exists := updated[modelID]; !exists {
 		updated[modelID] = ai.Model{
 			ID:            modelID,
@@ -157,7 +157,7 @@ func registerOllamaModelForTest(modelID string) func() {
 	}
 }
 
-func modelsToMapIntegration(models []ai.Model) map[string]ai.Model {
+func modelsToMap(models []ai.Model) map[string]ai.Model {
 	out := make(map[string]ai.Model, len(models))
 	for _, model := range models {
 		out[model.ID] = model

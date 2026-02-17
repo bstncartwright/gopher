@@ -16,10 +16,13 @@ func ParseStreamingJSON(partial string) map[string]any {
 		return obj
 	}
 
-	// Best effort: trim from the tail until a valid JSON object can be parsed.
+	// Scan backwards for structural JSON closing characters instead of trying every position.
 	for i := len(partial) - 1; i > 0; i-- {
-		if obj, ok := parseJSONObject(partial[:i]); ok {
-			return obj
+		ch := partial[i]
+		if ch == '}' || ch == ']' || ch == '"' || ch == 't' || ch == 'e' || ch == 'l' || (ch >= '0' && ch <= '9') {
+			if obj, ok := parseJSONObject(partial[:i+1]); ok {
+				return obj
+			}
 		}
 	}
 

@@ -2,6 +2,8 @@ package ai
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -27,7 +29,8 @@ func loadGeneratedModels() {
 
 	decoded := map[string]map[string]Model{}
 	if err := json.Unmarshal([]byte(generatedModelsJSON), &decoded); err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "ai: failed to load generated models JSON: %v\n", err)
+		return
 	}
 
 	out := make(map[Provider]map[string]Model, len(decoded))
@@ -133,12 +136,14 @@ func CalculateCost(model Model, usage *Usage) CostBreakdown {
 	if usage == nil {
 		return CostBreakdown{}
 	}
-	usage.Cost.Input = (model.Cost.Input / 1_000_000.0) * float64(usage.Input)
-	usage.Cost.Output = (model.Cost.Output / 1_000_000.0) * float64(usage.Output)
-	usage.Cost.CacheRead = (model.Cost.CacheRead / 1_000_000.0) * float64(usage.CacheRead)
-	usage.Cost.CacheWrite = (model.Cost.CacheWrite / 1_000_000.0) * float64(usage.CacheWrite)
-	usage.Cost.Total = usage.Cost.Input + usage.Cost.Output + usage.Cost.CacheRead + usage.Cost.CacheWrite
-	return usage.Cost
+	cost := CostBreakdown{
+		Input:      (model.Cost.Input / 1_000_000.0) * float64(usage.Input),
+		Output:     (model.Cost.Output / 1_000_000.0) * float64(usage.Output),
+		CacheRead:  (model.Cost.CacheRead / 1_000_000.0) * float64(usage.CacheRead),
+		CacheWrite: (model.Cost.CacheWrite / 1_000_000.0) * float64(usage.CacheWrite),
+	}
+	cost.Total = cost.Input + cost.Output + cost.CacheRead + cost.CacheWrite
+	return cost
 }
 
 func SupportsXHigh(model Model) bool {

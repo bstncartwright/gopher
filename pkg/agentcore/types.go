@@ -79,13 +79,16 @@ type TurnResult struct {
 type EventType string
 
 const (
-	EventTypeAgentDelta  EventType = "agent.delta"
-	EventTypeAgentMsg    EventType = "agent.message"
-	EventTypeToolCall    EventType = "tool.call"
-	EventTypeToolResult  EventType = "tool.result"
-	EventTypeError       EventType = "error"
-	DefaultContextWindow int       = 40
-	MaxToolRounds        int       = 8
+	EventTypeAgentDelta EventType = "agent.delta"
+	EventTypeAgentMsg   EventType = "agent.message"
+	EventTypeToolCall   EventType = "tool.call"
+	EventTypeToolResult EventType = "tool.result"
+	EventTypeError      EventType = "error"
+)
+
+const (
+	DefaultContextWindow = 40
+	MaxToolRounds        = 8
 )
 
 type Event struct {
@@ -128,8 +131,8 @@ type ToolInput struct {
 }
 
 type ToolOutput struct {
-	Status string `json:"status"`
-	Result any    `json:"result,omitempty"`
+	Status ToolStatus `json:"status"`
+	Result any        `json:"result,omitempty"`
 }
 
 type ToolRegistry interface {

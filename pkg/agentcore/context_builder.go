@@ -20,7 +20,7 @@ func (a *Agent) buildProviderContext(s *Session, userMessage string) (ai.Context
 	if working == nil {
 		working = map[string]any{}
 	}
-	s.WorkingState = cloneAnyMap(working)
+	s.WorkingState = ai.CloneMap(working)
 
 	includeWorking := true
 	if store, ok := a.Memory.(memoryExistence); ok {
@@ -75,25 +75,3 @@ func marshalStableJSON(v any) ([]byte, error) {
 	return json.MarshalIndent(v, "", "  ")
 }
 
-func cloneAnyMap(input map[string]any) map[string]any {
-	out := make(map[string]any, len(input))
-	for key, value := range input {
-		switch typed := value.(type) {
-		case map[string]any:
-			out[key] = cloneAnyMap(typed)
-		case []any:
-			copySlice := make([]any, len(typed))
-			for idx, item := range typed {
-				if nestedMap, ok := item.(map[string]any); ok {
-					copySlice[idx] = cloneAnyMap(nestedMap)
-					continue
-				}
-				copySlice[idx] = item
-			}
-			out[key] = copySlice
-		default:
-			out[key] = value
-		}
-	}
-	return out
-}

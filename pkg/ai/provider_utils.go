@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var defaultHTTPClient = &http.Client{Timeout: 0}
+var defaultHTTPClient = &http.Client{Timeout: 5 * time.Minute}
 
 type sseEvent struct {
 	Event string

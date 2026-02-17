@@ -19,7 +19,7 @@ func ValidateToolArguments(tool Tool, toolCall ContentBlock) (map[string]any, er
 		return nil, fmt.Errorf("content block %q is not a toolCall", toolCall.Type)
 	}
 	if tool.Parameters == nil {
-		return cloneMap(toolCall.Arguments), nil
+		return CloneMap(toolCall.Arguments), nil
 	}
 
 	validated, err := validateSchemaValue(tool.Parameters, toolCall.Arguments, "root")
@@ -36,10 +36,15 @@ func ValidateToolArguments(tool Tool, toolCall ContentBlock) (map[string]any, er
 func validateSchemaValue(schema map[string]any, value any, path string) (any, error) {
 	typeName, _ := schema["type"].(string)
 	if enumValues, ok := schema["enum"].([]any); ok && len(enumValues) > 0 {
+		matched := false
 		for _, candidate := range enumValues {
 			if fmt.Sprint(candidate) == fmt.Sprint(value) {
+				matched = true
 				break
 			}
+		}
+		if !matched {
+			return nil, fmt.Errorf("%s: value %v is not one of the allowed enum values", path, value)
 		}
 	}
 
@@ -49,7 +54,7 @@ func validateSchemaValue(schema map[string]any, value any, path string) (any, er
 		if !ok {
 			return nil, fmt.Errorf("%s: expected object", path)
 		}
-		out := cloneMap(input)
+		out := CloneMap(input)
 		props, _ := schema["properties"].(map[string]any)
 		requiredRaw, _ := schema["required"].([]any)
 

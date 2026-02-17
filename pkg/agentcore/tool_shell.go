@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -36,9 +37,9 @@ func (t *shellExecTool) Run(ctx context.Context, input ToolInput) (ToolOutput, e
 	if err != nil {
 		return ToolOutput{Status: ToolStatusError}, err
 	}
-	cwd, err := requiredStringArg(input.Args, "cwd")
-	if err != nil {
-		return ToolOutput{Status: ToolStatusError}, err
+	cwd, ok := optionalStringArg(input.Args, "cwd")
+	if !ok || cwd == "" {
+		cwd, _ = os.Getwd()
 	}
 	args, err := parseStringSlice(input.Args["args"])
 	if err != nil {
@@ -60,8 +61,11 @@ func (t *shellExecTool) Run(ctx context.Context, input ToolInput) (ToolOutput, e
 	cmd := exec.CommandContext(runCtx, command, args...)
 	cmd.Dir = cwd
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	const maxOutputBytes = 1 << 20 // 1 MiB per stream
+	var stdout limitedBuffer
+	var stderr limitedBuffer
+	stdout.max = maxOutputBytes
+	stderr.max = maxOutputBytes
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -90,4 +94,29 @@ func (t *shellExecTool) Run(ctx context.Context, input ToolInput) (ToolOutput, e
 	}
 
 	return ToolOutput{Status: ToolStatusOK, Result: result}, nil
+}
+
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func (lb *limitedBuffer) Write(p []byte) (int, error) {
+	if lb.buf.Len()+len(p) > lb.max {
+		remaining := lb.max - lb.buf.Len()
+		if remaining > 0 {
+			lb.buf.Write(p[:remaining])
+		}
+		lb.truncated = true
+		return len(p), nil
+	}
+	return lb.buf.Write(p)
+}
+
+func (lb *limitedBuffer) String() string {
+	if lb.truncated {
+		return lb.buf.String() + "\n[output truncated]"
+	}
+	return lb.buf.String()
 }

@@ -152,6 +152,10 @@ func resolveAllowedFSRoots(workspace string, roots []string) ([]string, error) {
 			return nil, fmt.Errorf("resolve fs root %q: %w", root, err)
 		}
 		clean := filepath.Clean(abs)
+		// Resolve symlinks so roots match paths resolved in resolvePathInAllowedRoots.
+		// Use the same ancestor-walking strategy so non-existent roots with
+		// symlinked ancestors resolve identically on both sides.
+		clean = evalSymlinksOrAncestor(clean)
 		if _, exists := seen[clean]; exists {
 			continue
 		}

@@ -34,6 +34,7 @@ type GatewayConfig struct {
 	Capabilities      []scheduler.Capability
 	Matrix            MatrixConfig
 	Cron              CronConfig
+	Update            UpdateConfig
 	PrimaryConfigPath string
 	LocalConfigPath   string
 }
@@ -54,23 +55,38 @@ type CronConfig struct {
 	DefaultTimezone string
 }
 
+type UpdateConfig struct {
+	Enabled            bool
+	RepoOwner          string
+	RepoName           string
+	Channel            string
+	CheckInterval      time.Duration
+	BinaryAssetPattern string
+}
+
 type GatewayOverrides struct {
-	NodeID            *string
-	GatewayNodeID     *string
-	NATSURL           *string
-	HeartbeatInterval *time.Duration
-	PruneInterval     *time.Duration
-	Capabilities      *[]scheduler.Capability
-	MatrixEnabled     *bool
-	MatrixHomeserver  *string
-	MatrixAppservice  *string
-	MatrixASToken     *string
-	MatrixHSToken     *string
-	MatrixListenAddr  *string
-	MatrixBotUserID   *string
-	CronEnabled       *bool
-	CronPollInterval  *time.Duration
-	CronTimezone      *string
+	NodeID              *string
+	GatewayNodeID       *string
+	NATSURL             *string
+	HeartbeatInterval   *time.Duration
+	PruneInterval       *time.Duration
+	Capabilities        *[]scheduler.Capability
+	MatrixEnabled       *bool
+	MatrixHomeserver    *string
+	MatrixAppservice    *string
+	MatrixASToken       *string
+	MatrixHSToken       *string
+	MatrixListenAddr    *string
+	MatrixBotUserID     *string
+	CronEnabled         *bool
+	CronPollInterval    *time.Duration
+	CronTimezone        *string
+	UpdateEnabled       *bool
+	UpdateRepoOwner     *string
+	UpdateRepoName      *string
+	UpdateChannel       *string
+	UpdateCheckInterval *time.Duration
+	UpdateAssetPattern  *string
 }
 
 type GatewayLoadOptions struct {
@@ -92,6 +108,7 @@ type rawGatewayConfig struct {
 	Capabilities []rawCapabilityItem `toml:"capabilities"`
 	Matrix       *rawMatrixConfig    `toml:"matrix"`
 	Cron         *rawCronConfig      `toml:"cron"`
+	Update       *rawUpdateConfig    `toml:"update"`
 }
 
 type rawNATSConfig struct {
@@ -124,6 +141,15 @@ type rawCronConfig struct {
 	Enabled         *bool   `toml:"enabled"`
 	PollInterval    *string `toml:"poll_interval"`
 	DefaultTimezone *string `toml:"default_timezone"`
+}
+
+type rawUpdateConfig struct {
+	Enabled            *bool   `toml:"enabled"`
+	RepoOwner          *string `toml:"repo_owner"`
+	RepoName           *string `toml:"repo_name"`
+	Channel            *string `toml:"channel"`
+	CheckInterval      *string `toml:"check_interval"`
+	BinaryAssetPattern *string `toml:"binary_asset_pattern"`
 }
 
 func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error) {
@@ -228,6 +254,14 @@ bot_user_id = "@gopher:localhost"
 enabled = false
 poll_interval = "1s"
 default_timezone = "UTC"
+
+[gateway.update]
+enabled = false
+repo_owner = "replace-owner"
+repo_name = "replace-private-repo"
+channel = "stable"
+check_interval = "1h"
+binary_asset_pattern = "linux"
 `) + "\n"
 }
 
@@ -280,6 +314,14 @@ func defaultGatewayConfig() GatewayConfig {
 			Enabled:         false,
 			PollInterval:    DefaultCronPollInterval,
 			DefaultTimezone: "UTC",
+		},
+		Update: UpdateConfig{
+			Enabled:            false,
+			RepoOwner:          "",
+			RepoName:           "",
+			Channel:            "stable",
+			CheckInterval:      time.Hour,
+			BinaryAssetPattern: "linux",
 		},
 	}
 }
@@ -422,6 +464,30 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 			cfg.Cron.DefaultTimezone = strings.TrimSpace(*gateway.Cron.DefaultTimezone)
 		}
 	}
+	if gateway.Update != nil {
+		if gateway.Update.Enabled != nil {
+			cfg.Update.Enabled = *gateway.Update.Enabled
+		}
+		if gateway.Update.RepoOwner != nil {
+			cfg.Update.RepoOwner = strings.TrimSpace(*gateway.Update.RepoOwner)
+		}
+		if gateway.Update.RepoName != nil {
+			cfg.Update.RepoName = strings.TrimSpace(*gateway.Update.RepoName)
+		}
+		if gateway.Update.Channel != nil {
+			cfg.Update.Channel = strings.TrimSpace(*gateway.Update.Channel)
+		}
+		if gateway.Update.CheckInterval != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.Update.CheckInterval))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.update.check_interval: %w", err)
+			}
+			cfg.Update.CheckInterval = duration
+		}
+		if gateway.Update.BinaryAssetPattern != nil {
+			cfg.Update.BinaryAssetPattern = strings.TrimSpace(*gateway.Update.BinaryAssetPattern)
+		}
+	}
 	return nil
 }
 
@@ -520,6 +586,32 @@ func applyGatewayEnv(cfg *GatewayConfig, env map[string]string) error {
 	if value, ok := env["GOPHER_GATEWAY_CRON_DEFAULT_TIMEZONE"]; ok {
 		cfg.Cron.DefaultTimezone = strings.TrimSpace(value)
 	}
+	if value, ok := env["GOPHER_GATEWAY_UPDATE_ENABLED"]; ok {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_UPDATE_ENABLED: %w", err)
+		}
+		cfg.Update.Enabled = enabled
+	}
+	if value, ok := env["GOPHER_GATEWAY_UPDATE_REPO_OWNER"]; ok {
+		cfg.Update.RepoOwner = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_UPDATE_REPO_NAME"]; ok {
+		cfg.Update.RepoName = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_UPDATE_CHANNEL"]; ok {
+		cfg.Update.Channel = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_UPDATE_CHECK_INTERVAL"]; ok {
+		duration, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_UPDATE_CHECK_INTERVAL: %w", err)
+		}
+		cfg.Update.CheckInterval = duration
+	}
+	if value, ok := env["GOPHER_GATEWAY_UPDATE_BINARY_ASSET_PATTERN"]; ok {
+		cfg.Update.BinaryAssetPattern = strings.TrimSpace(value)
+	}
 	return nil
 }
 
@@ -572,6 +664,24 @@ func applyGatewayOverrides(cfg *GatewayConfig, overrides GatewayOverrides) error
 	if overrides.CronTimezone != nil {
 		cfg.Cron.DefaultTimezone = strings.TrimSpace(*overrides.CronTimezone)
 	}
+	if overrides.UpdateEnabled != nil {
+		cfg.Update.Enabled = *overrides.UpdateEnabled
+	}
+	if overrides.UpdateRepoOwner != nil {
+		cfg.Update.RepoOwner = strings.TrimSpace(*overrides.UpdateRepoOwner)
+	}
+	if overrides.UpdateRepoName != nil {
+		cfg.Update.RepoName = strings.TrimSpace(*overrides.UpdateRepoName)
+	}
+	if overrides.UpdateChannel != nil {
+		cfg.Update.Channel = strings.TrimSpace(*overrides.UpdateChannel)
+	}
+	if overrides.UpdateCheckInterval != nil {
+		cfg.Update.CheckInterval = *overrides.UpdateCheckInterval
+	}
+	if overrides.UpdateAssetPattern != nil {
+		cfg.Update.BinaryAssetPattern = strings.TrimSpace(*overrides.UpdateAssetPattern)
+	}
 	return nil
 }
 
@@ -599,6 +709,9 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 	}
 	if cfg.Cron.PollInterval <= 0 {
 		return fmt.Errorf("gateway.cron.poll_interval must be > 0")
+	}
+	if cfg.Update.CheckInterval <= 0 {
+		return fmt.Errorf("gateway.update.check_interval must be > 0")
 	}
 	if strings.TrimSpace(cfg.Cron.DefaultTimezone) == "" {
 		cfg.Cron.DefaultTimezone = "UTC"
@@ -635,6 +748,14 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 		}
 		if strings.TrimSpace(cfg.Matrix.ListenAddr) == "" {
 			return fmt.Errorf("gateway.matrix.listen_addr is required when matrix is enabled")
+		}
+	}
+	if cfg.Update.Enabled {
+		if strings.TrimSpace(cfg.Update.RepoOwner) == "" {
+			return fmt.Errorf("gateway.update.repo_owner is required when update is enabled")
+		}
+		if strings.TrimSpace(cfg.Update.RepoName) == "" {
+			return fmt.Errorf("gateway.update.repo_name is required when update is enabled")
 		}
 	}
 	return nil
@@ -685,5 +806,11 @@ func hasGatewayOverrides(overrides GatewayOverrides) bool {
 		overrides.MatrixBotUserID != nil ||
 		overrides.CronEnabled != nil ||
 		overrides.CronPollInterval != nil ||
-		overrides.CronTimezone != nil
+		overrides.CronTimezone != nil ||
+		overrides.UpdateEnabled != nil ||
+		overrides.UpdateRepoOwner != nil ||
+		overrides.UpdateRepoName != nil ||
+		overrides.UpdateChannel != nil ||
+		overrides.UpdateCheckInterval != nil ||
+		overrides.UpdateAssetPattern != nil
 }

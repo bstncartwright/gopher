@@ -146,6 +146,24 @@ gopher gateway run --help
 
 config can be loaded from `gopher.toml` in the working directory; `gopher.local.toml` overrides. env vars `GOPHER_*` override config.
 
+## releases
+
+gopher now includes a github actions release workflow at `.github/workflows/release.yml`.
+
+- trigger: push a tag like `v0.1.0` (or run manual dispatch with a `v*` tag)
+- build outputs:
+  - `gopher-linux-amd64`
+  - `gopher-linux-arm64`
+  - `checksums.txt`
+- release publishing: github release is created automatically with those assets
+
+example:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## durability
 
 gopher persists sessions, event history, and memory records. on restart, the gateway reloads sessions, replays events, reconstructs state, and resumes. no manual recovery required.

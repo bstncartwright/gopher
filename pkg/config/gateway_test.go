@@ -214,8 +214,8 @@ default_timezone = "America/New_York"
 	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
 		Env: map[string]string{
-			"GOPHER_GATEWAY_CRON_ENABLED":         "false",
-			"GOPHER_GATEWAY_CRON_POLL_INTERVAL":   "5s",
+			"GOPHER_GATEWAY_CRON_ENABLED":          "false",
+			"GOPHER_GATEWAY_CRON_POLL_INTERVAL":    "5s",
 			"GOPHER_GATEWAY_CRON_DEFAULT_TIMEZONE": "Asia/Tokyo",
 		},
 		Overrides: GatewayOverrides{
@@ -284,6 +284,53 @@ default_timezone = ""
 	}
 	if cfg.Cron.DefaultTimezone != "UTC" {
 		t.Fatalf("cron default timezone = %q, want UTC", cfg.Cron.DefaultTimezone)
+	}
+}
+
+func TestLoadGatewayConfigUpdateValidation(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.update]
+enabled = true
+repo_owner = ""
+repo_name = "repo"
+channel = "stable"
+check_interval = "1h"
+binary_asset_pattern = "linux"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected update validation error for missing repo_owner")
+	}
+}
+
+func TestLoadGatewayConfigUpdateEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+`)
+	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env: map[string]string{
+			"GOPHER_GATEWAY_UPDATE_ENABLED":              "true",
+			"GOPHER_GATEWAY_UPDATE_REPO_OWNER":           "acme",
+			"GOPHER_GATEWAY_UPDATE_REPO_NAME":            "gopher",
+			"GOPHER_GATEWAY_UPDATE_CHECK_INTERVAL":       "2h",
+			"GOPHER_GATEWAY_UPDATE_BINARY_ASSET_PATTERN": "linux-amd64",
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadGatewayConfig() error: %v", err)
+	}
+	if !cfg.Update.Enabled || cfg.Update.RepoOwner != "acme" || cfg.Update.RepoName != "gopher" {
+		t.Fatalf("update env overrides not applied: %+v", cfg.Update)
 	}
 }
 

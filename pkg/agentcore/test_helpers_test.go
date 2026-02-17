@@ -13,7 +13,7 @@ func defaultConfig() AgentConfig {
 		Name:               "Test Agent",
 		Role:               "coder",
 		ModelPolicy:        "openai:gpt-4o-mini",
-		EnabledTools:       []string{"fs", "shell"},
+		EnabledTools:       []string{"group:fs", "group:runtime"},
 		MaxContextMessages: 40,
 	}
 }

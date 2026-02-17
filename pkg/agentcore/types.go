@@ -27,11 +27,13 @@ type BudgetPolicy struct {
 }
 
 type AgentPolicies struct {
-	FSRoots        []string      `json:"fs_roots"`
-	CanShell       bool          `json:"can_shell"`
-	ShellAllowlist []string      `json:"shell_allowlist"`
-	Network        NetworkPolicy `json:"network"`
-	Budget         BudgetPolicy  `json:"budget"`
+	FSRoots           []string             `json:"fs_roots"`
+	CanShell          bool                 `json:"can_shell"`
+	ShellAllowlist    []string             `json:"shell_allowlist"`
+	Network           NetworkPolicy        `json:"network"`
+	Budget            BudgetPolicy         `json:"budget"`
+	ApplyPatchEnabled bool                 `json:"apply_patch_enabled"`
+	LoopDetection     LoopDetectionConfig  `json:"loop_detection"`
 }
 
 type Agent struct {
@@ -42,10 +44,11 @@ type Agent struct {
 	Config    AgentConfig
 	Policies  AgentPolicies
 
-	Tools    ToolRegistry
-	Memory   MemoryStore
-	Logger   EventLogger
-	Provider AIProvider
+	Tools     ToolRegistry
+	Memory    MemoryStore
+	Logger    EventLogger
+	Provider  AIProvider
+	Processes *ProcessManager
 
 	agentsDoc      string
 	soulDoc        string

@@ -1,39 +1,43 @@
 package agentcore
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-type fsReadTool struct{}
+type readTool struct{}
 
-func (t *fsReadTool) Name() string {
-	return "fs.read"
+func (t *readTool) Name() string {
+	return "read"
 }
 
-func (t *fsReadTool) Schema() ToolSchema {
+func (t *readTool) Schema() ToolSchema {
 	return ToolSchema{
 		Name:        t.Name(),
 		Description: "Read a UTF-8 text file from the workspace.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path": map[string]any{"type": "string"},
+				"path":   map[string]any{"type": "string"},
+				"offset": map[string]any{"type": "integer"},
+				"limit":  map[string]any{"type": "integer"},
 			},
 			"required": []any{"path"},
 		},
 	}
 }
 
-func (t *fsReadTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
+func (t *readTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	path, err := requiredStringArg(input.Args, "path")
 	if err != nil {
 		return ToolOutput{Status: ToolStatusError}, err
 	}
-	const maxReadBytes = 10 << 20 // 10 MiB
+
 	f, err := os.Open(path)
 	if err != nil {
 		return ToolOutput{
@@ -42,21 +46,92 @@ func (t *fsReadTool) Run(_ context.Context, input ToolInput) (ToolOutput, error)
 		}, err
 	}
 	defer f.Close()
-	blob, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
+
+	var offset, limit int
+	var hasOffset, hasLimit bool
+	if raw, exists := input.Args["offset"]; exists {
+		if v, ok := toInt(raw); ok {
+			offset = v
+			hasOffset = true
+		}
+	}
+	if raw, exists := input.Args["limit"]; exists {
+		if v, ok := toInt(raw); ok {
+			limit = v
+			hasLimit = true
+		}
+	}
+
+	if hasOffset || hasLimit {
+		return readRange(f, path, offset, hasOffset, limit, hasLimit)
+	}
+	return readFull(f, path)
+}
+
+func readRange(f *os.File, path string, offset int, hasOffset bool, limit int, hasLimit bool) (ToolOutput, error) {
+	startLine := 1
+	if hasOffset && offset > 1 {
+		startLine = offset
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var lines []string
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		if lineNum < startLine {
+			continue
+		}
+		if !hasLimit || len(lines) < limit {
+			lines = append(lines, fmt.Sprintf("%6d|%s", lineNum, scanner.Text()))
+		}
+		// keep scanning to EOF so lineNum reflects actual total line count
+	}
+	if err := scanner.Err(); err != nil {
+		return ToolOutput{
+			Status: ToolStatusError,
+			Result: map[string]any{"path": path, "error": err.Error()},
+		}, err
+	}
+
+	return ToolOutput{
+		Status: ToolStatusOK,
+		Result: map[string]any{
+			"path":        path,
+			"content":     strings.Join(lines, "\n"),
+			"total_lines": lineNum,
+		},
+	}, nil
+}
+
+func readFull(f *os.File, path string) (ToolOutput, error) {
+	const maxBytes = 10 << 20 // 10 MiB
+
+	blob, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
 	if err != nil {
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
 		}, err
 	}
-	truncated := false
-	if len(blob) > maxReadBytes {
-		blob = blob[:maxReadBytes]
-		truncated = true
+
+	truncated := len(blob) > maxBytes
+	if truncated {
+		blob = blob[:maxBytes]
 	}
+
+	rawLines := strings.Split(string(blob), "\n")
+	numbered := make([]string, len(rawLines))
+	for i, line := range rawLines {
+		numbered[i] = fmt.Sprintf("%6d|%s", i+1, line)
+	}
+
 	result := map[string]any{
-		"path":    path,
-		"content": string(blob),
+		"path":        path,
+		"content":     strings.Join(numbered, "\n"),
+		"total_lines": len(rawLines),
 	}
 	if truncated {
 		result["truncated"] = true
@@ -64,13 +139,13 @@ func (t *fsReadTool) Run(_ context.Context, input ToolInput) (ToolOutput, error)
 	return ToolOutput{Status: ToolStatusOK, Result: result}, nil
 }
 
-type fsWriteTool struct{}
+type writeTool struct{}
 
-func (t *fsWriteTool) Name() string {
-	return "fs.write"
+func (t *writeTool) Name() string {
+	return "write"
 }
 
-func (t *fsWriteTool) Schema() ToolSchema {
+func (t *writeTool) Schema() ToolSchema {
 	return ToolSchema{
 		Name:        t.Name(),
 		Description: "Write UTF-8 text content to a file in the workspace.",
@@ -85,7 +160,7 @@ func (t *fsWriteTool) Schema() ToolSchema {
 	}
 }
 
-func (t *fsWriteTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
+func (t *writeTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	path, err := requiredStringArg(input.Args, "path")
 	if err != nil {
 		return ToolOutput{Status: ToolStatusError}, err

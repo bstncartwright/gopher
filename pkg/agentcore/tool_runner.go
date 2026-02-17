@@ -33,11 +33,15 @@ func IsPolicyError(err error) bool {
 }
 
 type ToolRunner struct {
-	agent *Agent
+	agent        *Agent
+	loopDetector *LoopDetector
 }
 
 func NewToolRunner(agent *Agent) *ToolRunner {
-	return &ToolRunner{agent: agent}
+	return &ToolRunner{
+		agent:        agent,
+		loopDetector: NewLoopDetector(agent.Policies.LoopDetection),
+	}
 }
 
 func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) (ToolOutput, error) {
@@ -50,6 +54,20 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 	validatedArgs, err := ai.ValidateToolCall(toolSchemasToAITools(r.agent.Tools), call)
 	if err != nil {
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+	}
+
+	loopResult := r.loopDetector.Check(call.Name, validatedArgs)
+	if loopResult.Level == LoopLevelCircuitBreaker {
+		return ToolOutput{
+			Status: ToolStatusDenied,
+			Result: map[string]any{"error": loopResult.Message},
+		}, fmt.Errorf("%s", loopResult.Message)
+	}
+	if loopResult.Level == LoopLevelCritical {
+		return ToolOutput{
+			Status: ToolStatusDenied,
+			Result: map[string]any{"error": loopResult.Message},
+		}, fmt.Errorf("%s", loopResult.Message)
 	}
 
 	sanitizedArgs, err := r.enforcePolicy(call.Name, validatedArgs)
@@ -73,6 +91,14 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 		output.Result = map[string]any{"error": runErr.Error()}
 	}
 
+	r.loopDetector.Record(call.Name, validatedArgs, output.Result)
+
+	if loopResult.Level == LoopLevelWarning {
+		if resultMap, ok := output.Result.(map[string]any); ok {
+			resultMap["_loop_warning"] = loopResult.Message
+		}
+	}
+
 	return output, runErr
 }
 
@@ -80,7 +106,7 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 	out := ai.CloneMap(args)
 
 	switch name {
-	case "fs.read", "fs.write":
+	case "read", "write", "edit":
 		rawPath, err := requiredStringArg(out, "path")
 		if err != nil {
 			return nil, err
@@ -91,55 +117,47 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		}
 		out["path"] = resolved
 		return out, nil
-	case "shell.exec":
-		if !r.agent.Policies.CanShell {
-			return nil, &PolicyError{Message: "shell.exec denied: policies.can_shell=false"}
-		}
 
+	case "apply_patch":
+		if !r.agent.Policies.ApplyPatchEnabled {
+			return nil, &PolicyError{Message: "apply_patch denied: policies.apply_patch_enabled=false"}
+		}
+		return out, nil
+
+	case "exec":
+		if !r.agent.Policies.CanShell {
+			return nil, &PolicyError{Message: "exec denied: policies.can_shell=false"}
+		}
 		command, err := requiredStringArg(out, "command")
 		if err != nil {
 			return nil, err
 		}
-		if !isInAllowlist(command, r.agent.Policies.ShellAllowlist) {
-			return nil, &PolicyError{Message: fmt.Sprintf("shell.exec denied: command %q is not in shell_allowlist", command)}
+		if len(r.agent.Policies.ShellAllowlist) > 0 {
+			if containsShellOperators(command) {
+				return nil, &PolicyError{Message: "exec denied: command contains shell operators (;, |, &&, ||, `, $(), newline, &) which bypass allowlist; use a single command"}
+			}
+			bin := extractCommandBinary(command)
+			if !isInAllowlist(bin, r.agent.Policies.ShellAllowlist) {
+				return nil, &PolicyError{Message: fmt.Sprintf("exec denied: command %q is not in shell_allowlist", bin)}
+			}
 		}
-
-		cwd := r.agent.Workspace
-		if rawCWD, ok := optionalStringArg(out, "cwd"); ok && rawCWD != "" {
-			cwd = rawCWD
+		workdir := r.agent.Workspace
+		if rawWorkdir, ok := optionalStringArg(out, "workdir"); ok && rawWorkdir != "" {
+			workdir = rawWorkdir
 		}
-		resolvedCWD, err := r.resolvePathInAllowedRoots(cwd)
+		resolvedWorkdir, err := r.resolvePathInAllowedRoots(workdir)
 		if err != nil {
 			return nil, err
 		}
-
-		timeoutSeconds := 30
-		if rawTimeout, exists := out["timeout_seconds"]; exists {
-			if parsed, ok := toInt(rawTimeout); ok {
-				timeoutSeconds = parsed
-			}
-		}
-		if timeoutSeconds <= 0 {
-			timeoutSeconds = 30
-		}
-		if timeoutSeconds > 600 {
-			timeoutSeconds = 600
-		}
-
-		toolArgs := []string{}
-		if rawArgs, exists := out["args"]; exists {
-			parsed, err := parseStringSlice(rawArgs)
-			if err != nil {
-				return nil, err
-			}
-			toolArgs = parsed
-		}
-
-		out["command"] = command
-		out["cwd"] = resolvedCWD
-		out["timeout_seconds"] = timeoutSeconds
-		out["args"] = toolArgs
+		out["workdir"] = resolvedWorkdir
 		return out, nil
+
+	case "process":
+		if !r.agent.Policies.CanShell {
+			return nil, &PolicyError{Message: "process denied: policies.can_shell=false"}
+		}
+		return out, nil
+
 	default:
 		return out, nil
 	}
@@ -254,4 +272,55 @@ func isInAllowlist(command string, allowlist []string) bool {
 		}
 	}
 	return false
+}
+
+// containsShellOperators reports whether the command contains operators that could
+// invoke additional commands beyond the first word. Used when shell_allowlist is
+// active to prevent bypasses (e.g. "echo ok; curl evil.com").
+func containsShellOperators(command string) bool {
+	if strings.Contains(command, ";") ||
+		strings.Contains(command, "|") ||
+		strings.Contains(command, "&&") ||
+		strings.Contains(command, "||") ||
+		strings.Contains(command, "`") ||
+		strings.Contains(command, "$(") ||
+		strings.Contains(command, "\n") ||
+		strings.Contains(command, " & ") {
+		return true
+	}
+	// "cmd &" (background)
+	if strings.HasSuffix(strings.TrimRight(command, " \t"), "&") {
+		return true
+	}
+	return false
+}
+
+func extractCommandBinary(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return command
+	}
+	return filepath.Base(fields[0])
+}
+
+func (a *Agent) ResolvePath(rawPath string) (string, error) {
+	candidate := strings.TrimSpace(rawPath)
+	if candidate == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(a.Workspace, candidate)
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", rawPath, err)
+	}
+	abs = filepath.Clean(abs)
+	abs = evalSymlinksOrAncestor(abs)
+	for _, root := range a.allowedFSRoots {
+		if isWithinRoot(abs, root) {
+			return abs, nil
+		}
+	}
+	return "", &PolicyError{Message: fmt.Sprintf("fs access denied for path %q", rawPath)}
 }

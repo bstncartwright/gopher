@@ -62,8 +62,8 @@ func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {
 	roundOneAssistant := ai.NewAssistantMessage(agent.model)
 	roundOneAssistant.StopReason = ai.StopReasonToolUse
 	roundOneAssistant.Content = []ai.ContentBlock{
-		{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "fs.read", Arguments: map[string]any{"path": "a.txt"}},
-		{Type: ai.ContentTypeToolCall, ID: "call_2", Name: "fs.read", Arguments: map[string]any{"path": "b.txt"}},
+		{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "read", Arguments: map[string]any{"path": "a.txt"}},
+		{Type: ai.ContentTypeToolCall, ID: "call_2", Name: "read", Arguments: map[string]any{"path": "b.txt"}},
 	}
 
 	roundTwoAssistant := ai.NewAssistantMessage(agent.model)
@@ -74,8 +74,8 @@ func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {
 		{
 			assistant: roundOneAssistant,
 			events: []ai.AssistantMessageEvent{
-				{Type: ai.EventToolCallEnd, ToolCall: &ai.ContentBlock{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "fs.read", Arguments: map[string]any{"path": "a.txt"}}},
-				{Type: ai.EventToolCallEnd, ToolCall: &ai.ContentBlock{Type: ai.ContentTypeToolCall, ID: "call_2", Name: "fs.read", Arguments: map[string]any{"path": "b.txt"}}},
+				{Type: ai.EventToolCallEnd, ToolCall: &ai.ContentBlock{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "read", Arguments: map[string]any{"path": "a.txt"}}},
+				{Type: ai.EventToolCallEnd, ToolCall: &ai.ContentBlock{Type: ai.ContentTypeToolCall, ID: "call_2", Name: "read", Arguments: map[string]any{"path": "b.txt"}}},
 			},
 		},
 		{

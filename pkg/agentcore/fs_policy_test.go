@@ -20,7 +20,7 @@ func TestFSPolicyBlocksTraversalAndAllowsInRoot(t *testing.T) {
 
 	blockedCall := ai.ContentBlock{
 		Type: ai.ContentTypeToolCall,
-		Name: "fs.read",
+		Name: "read",
 		Arguments: map[string]any{
 			"path": "../secret.txt",
 		},
@@ -38,7 +38,7 @@ func TestFSPolicyBlocksTraversalAndAllowsInRoot(t *testing.T) {
 
 	allowedCall := ai.ContentBlock{
 		Type: ai.ContentTypeToolCall,
-		Name: "fs.write",
+		Name: "write",
 		Arguments: map[string]any{
 			"path":    "notes/out.txt",
 			"content": "hello",
@@ -46,7 +46,7 @@ func TestFSPolicyBlocksTraversalAndAllowsInRoot(t *testing.T) {
 	}
 	allowedOutput, allowedErr := runner.Run(context.Background(), session, allowedCall)
 	if allowedErr != nil {
-		t.Fatalf("expected fs.write to succeed, got %v", allowedErr)
+		t.Fatalf("expected write to succeed, got %v", allowedErr)
 	}
 	if allowedOutput.Status != ToolStatusOK {
 		t.Fatalf("expected ok status, got %q", allowedOutput.Status)

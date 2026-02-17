@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 	"github.com/bstncartwright/gopher/pkg/ai"
 )
 
-func TestRunTurnWithOllamaQwen3Provider(t *testing.T) {
+func TestOllamaSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping ollama integration test in short mode")
 	}
@@ -36,50 +37,143 @@ func TestRunTurnWithOllamaQwen3Provider(t *testing.T) {
 	restoreModels := registerOllamaModelForTest(modelID)
 	defer restoreModels()
 
+	t.Run("plain_text_reply", func(t *testing.T) {
+		agent, workspace := setupOllamaAgent(t, modelID, nil, false)
+		_ = workspace
+
+		session := agent.NewSession()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		result, err := agent.RunTurn(ctx, session, TurnInput{UserMessage: "Reply with exactly OK."})
+		if err != nil {
+			t.Fatalf("RunTurn() error: %v", err)
+		}
+
+		if strings.TrimSpace(result.FinalText) == "" {
+			t.Fatalf("expected non-empty final text")
+		}
+		if !strings.Contains(strings.ToLower(result.FinalText), "ok") {
+			t.Fatalf("expected response to contain OK, got %q", result.FinalText)
+		}
+
+		assertHasEvent(t, result.Events, EventTypeAgentMsg)
+		if len(session.Messages) == 0 {
+			t.Fatalf("expected session messages to be updated")
+		}
+	})
+
+	t.Run("tool_read_file", func(t *testing.T) {
+		agent, workspace := setupOllamaAgent(t, modelID, []string{"group:fs"}, false)
+		mustWriteFile(t, filepath.Join(workspace, "secret.txt"), "the launch code is 8675309")
+
+		session := agent.NewSession()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		result, err := agent.RunTurn(ctx, session, TurnInput{
+			UserMessage: "Read the file secret.txt and tell me the launch code. Reply with ONLY the number.",
+		})
+		if err != nil {
+			t.Fatalf("RunTurn() error: %v", err)
+		}
+
+		assertHasEvent(t, result.Events, EventTypeToolCall)
+		assertHasEvent(t, result.Events, EventTypeToolResult)
+
+		if !strings.Contains(result.FinalText, "8675309") {
+			t.Fatalf("expected final text to contain 8675309, got %q", result.FinalText)
+		}
+	})
+
+	t.Run("tool_write_and_read", func(t *testing.T) {
+		agent, workspace := setupOllamaAgent(t, modelID, []string{"group:fs"}, false)
+
+		session := agent.NewSession()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		result, err := agent.RunTurn(ctx, session, TurnInput{
+			UserMessage: "Write the text 'hello from qwen3' to a file called greeting.txt, then read it back and confirm the contents.",
+		})
+		if err != nil {
+			t.Fatalf("RunTurn() error: %v", err)
+		}
+
+		toolCallCount := countEvents(result.Events, EventTypeToolCall)
+		if toolCallCount < 1 {
+			t.Fatalf("expected at least 1 tool call, got %d", toolCallCount)
+		}
+
+		content, err := os.ReadFile(filepath.Join(workspace, "greeting.txt"))
+		if err != nil {
+			t.Fatalf("expected greeting.txt to exist: %v", err)
+		}
+		if !strings.Contains(string(content), "hello from qwen3") {
+			t.Fatalf("expected file to contain 'hello from qwen3', got %q", string(content))
+		}
+	})
+
+	t.Run("tool_exec", func(t *testing.T) {
+		agent, _ := setupOllamaAgent(t, modelID, []string{"group:fs", "group:runtime"}, true)
+
+		session := agent.NewSession()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		result, err := agent.RunTurn(ctx, session, TurnInput{
+			UserMessage: "Run the command 'echo smoke_test_pass' and tell me exactly what it printed.",
+		})
+		if err != nil {
+			t.Fatalf("RunTurn() error: %v", err)
+		}
+
+		assertHasEvent(t, result.Events, EventTypeToolCall)
+		if !strings.Contains(result.FinalText, "smoke_test_pass") {
+			t.Fatalf("expected final text to contain smoke_test_pass, got %q", result.FinalText)
+		}
+	})
+}
+
+func setupOllamaAgent(t *testing.T, modelID string, enabledTools []string, canShell bool) (*Agent, string) {
+	t.Helper()
+
 	config := defaultConfig()
 	config.ModelPolicy = "ollama:" + modelID
-	config.EnabledTools = nil
+	config.EnabledTools = enabledTools
 
 	policies := defaultPolicies()
-	policies.CanShell = false
-	policies.ShellAllowlist = nil
+	policies.CanShell = canShell
+	if !canShell {
+		policies.ShellAllowlist = nil
+	}
 
 	workspace := createTestWorkspace(t, config, policies)
 	agent, err := LoadAgent(workspace)
 	if err != nil {
 		t.Fatalf("LoadAgent() error: %v", err)
 	}
+	return agent, workspace
+}
 
-	session := agent.NewSession()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	result, err := agent.RunTurn(ctx, session, TurnInput{UserMessage: "Reply with exactly OK."})
-	if err != nil {
-		t.Fatalf("RunTurn() error: %v", err)
-	}
-
-	if strings.TrimSpace(result.FinalText) == "" {
-		t.Fatalf("expected non-empty final text")
-	}
-	if !strings.Contains(strings.ToLower(result.FinalText), "ok") {
-		t.Fatalf("expected response to contain OK, got %q", result.FinalText)
-	}
-
-	hasMessageEvent := false
-	for _, event := range result.Events {
-		if event.Type == EventTypeAgentMsg {
-			hasMessageEvent = true
-			break
+func assertHasEvent(t *testing.T, events []Event, eventType EventType) {
+	t.Helper()
+	for _, e := range events {
+		if e.Type == eventType {
+			return
 		}
 	}
-	if !hasMessageEvent {
-		t.Fatalf("expected at least one agent.message event")
-	}
+	t.Fatalf("expected at least one %s event", eventType)
+}
 
-	if len(session.Messages) == 0 {
-		t.Fatalf("expected session messages to be updated")
+func countEvents(events []Event, eventType EventType) int {
+	n := 0
+	for _, e := range events {
+		if e.Type == eventType {
+			n++
+		}
 	}
+	return n
 }
 
 func listOllamaModels() ([]string, error) {
@@ -100,7 +194,7 @@ func listOllamaModels() ([]string, error) {
 	models := make([]string, 0, len(lines)-1)
 	for idx, line := range lines {
 		if idx == 0 {
-			continue // header
+			continue
 		}
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
@@ -155,12 +249,4 @@ func registerOllamaModelForTest(modelID string) func() {
 	return func() {
 		ai.SetModels(ai.ProviderOllama, original)
 	}
-}
-
-func modelsToMap(models []ai.Model) map[string]ai.Model {
-	out := make(map[string]ai.Model, len(models))
-	for _, model := range models {
-		out[model.ID] = model
-	}
-	return out
 }

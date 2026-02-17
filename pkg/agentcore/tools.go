@@ -40,12 +40,12 @@ func (r *simpleToolRegistry) Get(name string) (Tool, bool) {
 	return tool, ok
 }
 
-func buildRegistry(enabled []string) ToolRegistry {
+func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 	if len(enabled) == 0 {
 		return NewToolRegistry(nil)
 	}
 
-	selected := make([]Tool, 0, 3)
+	selected := make([]Tool, 0, 8)
 	added := map[string]struct{}{}
 	add := func(tool Tool) {
 		if tool == nil {
@@ -60,15 +60,33 @@ func buildRegistry(enabled []string) ToolRegistry {
 
 	for _, enabledTool := range enabled {
 		switch enabledTool {
-		case "fs":
-			add(&fsReadTool{})
-			add(&fsWriteTool{})
-		case "fs.read":
-			add(&fsReadTool{})
-		case "fs.write":
-			add(&fsWriteTool{})
-		case "shell", "shell.exec":
-			add(&shellExecTool{})
+		case "group:fs":
+			add(&readTool{})
+			add(&writeTool{})
+			add(&editTool{})
+			if policies.ApplyPatchEnabled {
+				add(&applyPatchTool{})
+			}
+		case "fs", "read_write":
+			add(&readTool{})
+			add(&writeTool{})
+		case "fs.read", "read":
+			add(&readTool{})
+		case "fs.write", "write":
+			add(&writeTool{})
+		case "edit":
+			add(&editTool{})
+		case "apply_patch":
+			if policies.ApplyPatchEnabled {
+				add(&applyPatchTool{})
+			}
+		case "group:runtime":
+			add(&execTool{})
+			add(&processTool{})
+		case "shell", "shell.exec", "exec":
+			add(&execTool{})
+		case "process":
+			add(&processTool{})
 		case "git", "git.status", "git.diff":
 			// intentionally ignored in v0
 		}

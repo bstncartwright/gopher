@@ -154,9 +154,9 @@ func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stde
 			BinaryPath:   strings.TrimSpace(*binaryPath),
 			ServiceName:  strings.TrimSpace(*serviceName),
 			Token:        ghToken,
-			AssetURL:     asset.URL,
+			AssetURL:     asset.DownloadURL(),
 			AssetName:    asset.Name,
-			ChecksumsURL: checksumsAsset.URL,
+			ChecksumsURL: checksumsAsset.DownloadURL(),
 			Runner:       systemctlRunner{},
 		})
 		if applyErr != nil {

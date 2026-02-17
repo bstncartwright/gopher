@@ -11,8 +11,17 @@ import (
 )
 
 type ReleaseAsset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
+	Name               string `json:"name"`
+	URL                string `json:"url"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+func (a ReleaseAsset) DownloadURL() string {
+	url := strings.TrimSpace(a.URL)
+	if url != "" {
+		return url
+	}
+	return strings.TrimSpace(a.BrowserDownloadURL)
 }
 
 type Release struct {

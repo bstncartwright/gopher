@@ -21,17 +21,21 @@ type SessionManager interface {
 type AgentSelector func(session *Session, trigger Event) (ActorID, bool)
 
 type ManagerOptions struct {
-	Store         EventStore
-	Executor      AgentExecutor
-	AgentSelector AgentSelector
-	Now           func() time.Time
+	Store          EventStore
+	Executor       AgentExecutor
+	AgentSelector  AgentSelector
+	Publisher      EventPublisher
+	Now            func() time.Time
+	RecoverOnStart bool
 }
 
 type Manager struct {
-	store    EventStore
-	executor AgentExecutor
-	selectFn AgentSelector
-	now      func() time.Time
+	store     EventStore
+	registry  SessionRegistryStore
+	executor  AgentExecutor
+	selectFn  AgentSelector
+	publisher EventPublisher
+	now       func() time.Time
 
 	counter uint64
 
@@ -54,13 +58,24 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		selectFn = DefaultAgentSelector
 	}
 
-	return &Manager{
-		store:    opts.Store,
-		executor: opts.Executor,
-		selectFn: selectFn,
-		now:      nowFn,
-		sessions: make(map[SessionID]*sessionRuntime),
-	}, nil
+	manager := &Manager{
+		store:     opts.Store,
+		executor:  opts.Executor,
+		selectFn:  selectFn,
+		publisher: opts.Publisher,
+		now:       nowFn,
+		sessions:  make(map[SessionID]*sessionRuntime),
+		registry:  nil,
+	}
+	if registry, ok := opts.Store.(SessionRegistryStore); ok {
+		manager.registry = registry
+	}
+	if opts.RecoverOnStart {
+		if err := manager.Recover(context.Background()); err != nil {
+			return nil, err
+		}
+	}
+	return manager, nil
 }
 
 func DefaultAgentSelector(session *Session, _ Event) (ActorID, bool) {

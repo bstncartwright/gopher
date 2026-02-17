@@ -24,6 +24,7 @@ type runtimeRequest struct {
 type sessionRuntime struct {
 	sessionID SessionID
 	session   *Session
+	inFlight  bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -79,7 +80,7 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 		return err, false
 	}
 
-	if err := m.store.Append(req.ctx, e); err != nil {
+	if err := m.appendPersistedEvent(req.ctx, rt, e); err != nil {
 		return m.failSession(rt, fmt.Errorf("append event: %w", err)), true
 	}
 
@@ -97,6 +98,13 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 	if err != nil {
 		return m.failSession(rt, fmt.Errorf("list history: %w", err)), true
 	}
+
+	if err := m.setInFlight(req.ctx, rt, true); err != nil {
+		return m.failSession(rt, fmt.Errorf("set in-flight: %w", err)), true
+	}
+	defer func() {
+		_ = m.setInFlight(context.Background(), rt, false)
+	}()
 
 	output, err := m.executor.Step(rt.ctx, AgentInput{
 		SessionID: rt.sessionID,
@@ -120,7 +128,7 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 		if err != nil {
 			return m.failSession(rt, fmt.Errorf("canonicalize agent event: %w", err)), true
 		}
-		if err := m.store.Append(req.ctx, canonical); err != nil {
+		if err := m.appendPersistedEvent(req.ctx, rt, canonical); err != nil {
 			return m.failSession(rt, fmt.Errorf("append agent event: %w", err)), true
 		}
 	}
@@ -146,10 +154,12 @@ func (m *Manager) handleCancelRequest(rt *sessionRuntime, req runtimeRequest) er
 	if err != nil {
 		return err
 	}
-	if err := m.store.Append(req.ctx, cancelEvent); err != nil {
+	if err := m.appendPersistedEvent(req.ctx, rt, cancelEvent); err != nil {
 		return err
 	}
 
+	rt.inFlight = false
+	_ = m.persistSessionRecord(context.Background(), rt, cancelEvent.Timestamp)
 	m.setSessionStatus(rt, SessionPaused)
 	rt.cancel()
 	return nil
@@ -167,7 +177,7 @@ func (m *Manager) failSession(rt *sessionRuntime, cause error) error {
 		},
 	})
 	if err == nil {
-		_ = m.store.Append(context.Background(), errEvent)
+		_ = m.appendPersistedEvent(context.Background(), rt, errEvent)
 	}
 
 	failedEvent, err := m.canonicalizeEvent(rt, Event{
@@ -180,9 +190,11 @@ func (m *Manager) failSession(rt *sessionRuntime, cause error) error {
 		},
 	})
 	if err == nil {
-		_ = m.store.Append(context.Background(), failedEvent)
+		_ = m.appendPersistedEvent(context.Background(), rt, failedEvent)
 	}
 
+	rt.inFlight = false
+	_ = m.persistSessionRecord(context.Background(), rt, m.now().UTC())
 	m.setSessionStatus(rt, SessionFailed)
 	rt.cancel()
 	return cause

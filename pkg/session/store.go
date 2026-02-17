@@ -6,14 +6,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type EventStore interface {
 	Append(ctx context.Context, e Event) error
 	List(ctx context.Context, sessionID SessionID) ([]Event, error)
 	Stream(ctx context.Context, sessionID SessionID) (<-chan Event, error)
+}
+
+type SessionRecord struct {
+	SessionID SessionID     `json:"session_id"`
+	Status    SessionStatus `json:"status"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	LastSeq   uint64        `json:"last_seq"`
+	InFlight  bool          `json:"in_flight"`
+}
+
+type SessionRegistryStore interface {
+	UpsertSession(ctx context.Context, record SessionRecord) error
+	GetSessionRecord(ctx context.Context, sessionID SessionID) (SessionRecord, error)
+	ListSessions(ctx context.Context) ([]SessionRecord, error)
 }
 
 type InMemoryEventStoreOptions struct {
@@ -24,6 +41,7 @@ type InMemoryEventStoreOptions struct {
 type InMemoryEventStore struct {
 	mu          sync.RWMutex
 	events      map[SessionID][]Event
+	sessions    map[SessionID]SessionRecord
 	subscribers map[SessionID]map[uint64]chan Event
 	nextSubID   uint64
 	jsonlDir    string
@@ -37,6 +55,7 @@ func NewInMemoryEventStore(opts InMemoryEventStoreOptions) *InMemoryEventStore {
 	}
 	return &InMemoryEventStore{
 		events:      make(map[SessionID][]Event),
+		sessions:    make(map[SessionID]SessionRecord),
 		subscribers: make(map[SessionID]map[uint64]chan Event),
 		jsonlDir:    strings.TrimSpace(opts.JSONLDir),
 		streamBuf:   streamBuf,
@@ -56,11 +75,33 @@ func (s *InMemoryEventStore) Append(ctx context.Context, e Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	previousRecord, hadRecord := s.sessions[e.SessionID]
 	s.events[e.SessionID] = append(s.events[e.SessionID], e)
+	s.updateSessionRecordLocked(e.SessionID, func(record SessionRecord) SessionRecord {
+		if record.SessionID == "" {
+			record.SessionID = e.SessionID
+		}
+		if e.Seq > record.LastSeq {
+			record.LastSeq = e.Seq
+		}
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = e.Timestamp
+		}
+		if !e.Timestamp.IsZero() {
+			record.UpdatedAt = e.Timestamp
+		}
+		record.Status = applyStatusTransition(record.Status, e)
+		return record
+	})
 	if s.jsonlDir != "" {
 		if err := appendJSONLEvent(s.jsonlDir, e); err != nil {
 			events := s.events[e.SessionID]
 			s.events[e.SessionID] = events[:len(events)-1]
+			if hadRecord {
+				s.sessions[e.SessionID] = previousRecord
+			} else {
+				delete(s.sessions, e.SessionID)
+			}
 			return err
 		}
 	}
@@ -76,6 +117,84 @@ func (s *InMemoryEventStore) Append(ctx context.Context, e Event) error {
 	}
 
 	return nil
+}
+
+func (s *InMemoryEventStore) UpsertSession(ctx context.Context, record SessionRecord) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if strings.TrimSpace(string(record.SessionID)) == "" {
+		return fmt.Errorf("%w: session ID is required", ErrInvalidSession)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.sessions[record.SessionID]
+	if ok {
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = existing.CreatedAt
+		}
+		if record.UpdatedAt.IsZero() {
+			record.UpdatedAt = existing.UpdatedAt
+		}
+		if record.LastSeq < existing.LastSeq {
+			record.LastSeq = existing.LastSeq
+		}
+	}
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	s.sessions[record.SessionID] = record
+	return nil
+}
+
+func (s *InMemoryEventStore) GetSessionRecord(ctx context.Context, sessionID SessionID) (SessionRecord, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return SessionRecord{}, ctx.Err()
+	default:
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.sessions[sessionID]
+	if !ok {
+		return SessionRecord{}, ErrSessionNotFound
+	}
+	return record, nil
+}
+
+func (s *InMemoryEventStore) ListSessions(ctx context.Context) ([]SessionRecord, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	records := make([]SessionRecord, 0, len(s.sessions))
+	for _, record := range s.sessions {
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].SessionID < records[j].SessionID
+	})
+	return records, nil
 }
 
 func (s *InMemoryEventStore) List(ctx context.Context, sessionID SessionID) ([]Event, error) {
@@ -171,4 +290,11 @@ func sanitizeSessionFilePart(value string) string {
 		return "session"
 	}
 	return cleaned
+}
+
+func (s *InMemoryEventStore) updateSessionRecordLocked(sessionID SessionID, fn func(SessionRecord) SessionRecord) {
+	record := s.sessions[sessionID]
+	record.SessionID = sessionID
+	record = fn(record)
+	s.sessions[sessionID] = record
 }

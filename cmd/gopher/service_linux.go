@@ -3,7 +3,11 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -109,10 +113,35 @@ func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {
 }
 
 func (r *linuxServiceRuntime) Status(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "systemctl", "status", "gopher-gateway.service", "--no-pager")
-	cmd.Stdout = r.stdout
-	cmd.Stderr = r.stderr
-	return cmd.Run()
+	gateway, err := readUnitStatus(ctx, "gopher-gateway.service")
+	if err != nil {
+		return err
+	}
+	nats, _ := readUnitStatus(ctx, "nats-server.service")
+	updater, _ := readUnitStatus(ctx, "gopher-gateway-update.timer")
+
+	gopherPath, gopherVersion, gopherSHA := readBinaryDetails("gopher")
+	natsPath, natsVersion, _ := readBinaryDetails("nats-server")
+
+	fmt.Fprintln(r.stdout, "gopher status")
+	fmt.Fprintln(r.stdout, "")
+	fmt.Fprintf(r.stdout, "gateway service: %s\n", formatUnitStatus(gateway))
+	fmt.Fprintf(r.stdout, "nats service:    %s\n", formatUnitStatus(nats))
+	fmt.Fprintf(r.stdout, "update timer:    %s\n", formatUnitStatus(updater))
+	fmt.Fprintln(r.stdout, "")
+	fmt.Fprintf(r.stdout, "gopher binary:   %s\n", valueOrUnknown(gopherPath))
+	fmt.Fprintf(r.stdout, "gopher version:  %s\n", valueOrUnknown(gopherVersion))
+	fmt.Fprintf(r.stdout, "gopher sha256:   %s\n", valueOrUnknown(gopherSHA))
+	fmt.Fprintf(r.stdout, "nats binary:     %s\n", valueOrUnknown(natsPath))
+	fmt.Fprintf(r.stdout, "nats version:    %s\n", valueOrUnknown(natsVersion))
+
+	if gateway.LoadState == "not-found" {
+		return fmt.Errorf("gopher-gateway.service is not installed")
+	}
+	if gateway.ActiveState != "active" {
+		return fmt.Errorf("gopher-gateway.service is %s", valueOrUnknown(gateway.ActiveState))
+	}
+	return nil
 }
 
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {
@@ -202,4 +231,135 @@ func durationToOnCalendar(d time.Duration) string {
 	default:
 		return "weekly"
 	}
+}
+
+type unitStatus struct {
+	LoadState     string
+	ActiveState   string
+	SubState      string
+	UnitFileState string
+}
+
+func readUnitStatus(ctx context.Context, unit string) (unitStatus, error) {
+	cmd := exec.CommandContext(ctx, "systemctl", "show", unit, "--no-pager",
+		"--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=UnitFileState")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(output))
+		if strings.Contains(text, "could not be found") {
+			return unitStatus{LoadState: "not-found", ActiveState: "inactive", SubState: "dead", UnitFileState: "not-found"}, nil
+		}
+		return unitStatus{}, fmt.Errorf("read %s status: %w: %s", unit, err, text)
+	}
+	status := unitStatus{}
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		switch key {
+		case "LoadState":
+			status.LoadState = value
+		case "ActiveState":
+			status.ActiveState = value
+		case "SubState":
+			status.SubState = value
+		case "UnitFileState":
+			status.UnitFileState = value
+		}
+	}
+	if status.LoadState == "" {
+		status.LoadState = "unknown"
+	}
+	if status.ActiveState == "" {
+		status.ActiveState = "unknown"
+	}
+	if status.SubState == "" {
+		status.SubState = "unknown"
+	}
+	if status.UnitFileState == "" {
+		status.UnitFileState = "unknown"
+	}
+	return status, nil
+}
+
+func formatUnitStatus(status unitStatus) string {
+	if status.LoadState == "not-found" {
+		return "not installed"
+	}
+	return fmt.Sprintf("%s/%s (%s)", valueOrUnknown(status.ActiveState), valueOrUnknown(status.SubState), valueOrUnknown(status.UnitFileState))
+}
+
+func valueOrUnknown(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "unknown"
+	}
+	return trimmed
+}
+
+func readBinaryDetails(binaryName string) (path string, version string, sha string) {
+	path, err := exec.LookPath(binaryName)
+	if err != nil {
+		return "", "", ""
+	}
+	version = readBinaryVersion(path)
+	sha = readFileSHA256(path)
+	return path, version, sha
+}
+
+func readBinaryVersion(path string) string {
+	cmd := exec.Command("go", "version", "-m", path)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		moduleLine := ""
+		revision := ""
+		for _, raw := range strings.Split(string(output), "\n") {
+			line := strings.TrimSpace(raw)
+			if strings.HasPrefix(line, "mod\t") && moduleLine == "" {
+				moduleLine = strings.TrimPrefix(line, "mod\t")
+			}
+			if strings.Contains(line, "vcs.revision=") {
+				revision = strings.TrimPrefix(line, "build\tvcs.revision=")
+			}
+		}
+		if revision != "" && moduleLine != "" {
+			return fmt.Sprintf("%s @ %s", moduleLine, revision)
+		}
+		if moduleLine != "" {
+			return moduleLine
+		}
+	}
+
+	name := filepath.Base(path)
+	versionCmd := exec.Command(path, "--version")
+	output, err = versionCmd.CombinedOutput()
+	if err == nil {
+		text := strings.TrimSpace(string(output))
+		if text != "" {
+			return text
+		}
+	}
+	return name
+}
+
+func readFileSHA256(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
 }

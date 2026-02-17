@@ -16,7 +16,7 @@ func TestLatestReleaseAndSelectAsset(t *testing.T) {
 			t.Fatalf("missing bearer token header")
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","assets":[{"name":"gopher-linux-amd64.tar.gz","browser_download_url":"https://download/linux"},{"name":"checksums.txt","browser_download_url":"https://download/checksums"}]}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","assets":[{"name":"gopher-linux-amd64.tar.gz","url":"https://api.example/assets/linux","browser_download_url":"https://download/linux"},{"name":"checksums.txt","url":"https://api.example/assets/checksums","browser_download_url":"https://download/checksums"}]}`))
 	}))
 	defer server.Close()
 
@@ -39,6 +39,9 @@ func TestLatestReleaseAndSelectAsset(t *testing.T) {
 	}
 	if asset.Name != "gopher-linux-amd64.tar.gz" {
 		t.Fatalf("asset = %q", asset.Name)
+	}
+	if asset.DownloadURL() != "https://api.example/assets/linux" {
+		t.Fatalf("asset download url = %q", asset.DownloadURL())
 	}
 	if _, err := SelectChecksumsAsset(release); err != nil {
 		t.Fatalf("SelectChecksumsAsset() error: %v", err)

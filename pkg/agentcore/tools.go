@@ -87,6 +87,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&execTool{})
 		case "process":
 			add(&processTool{})
+		case "cron":
+			add(&cronTool{})
 		case "git", "git.status", "git.diff":
 			// intentionally ignored in v0
 		}

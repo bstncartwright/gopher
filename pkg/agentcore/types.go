@@ -53,6 +53,7 @@ type Agent struct {
 	Logger         EventLogger
 	Provider       AIProvider
 	Processes      *ProcessManager
+	Cron           CronToolService
 
 	agentsDoc      string
 	soulDoc        string

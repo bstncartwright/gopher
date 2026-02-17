@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
+	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
+	"github.com/bstncartwright/gopher/pkg/memory"
 )
 
 type Message = ai.Message
@@ -27,13 +29,13 @@ type BudgetPolicy struct {
 }
 
 type AgentPolicies struct {
-	FSRoots           []string             `json:"fs_roots"`
-	CanShell          bool                 `json:"can_shell"`
-	ShellAllowlist    []string             `json:"shell_allowlist"`
-	Network           NetworkPolicy        `json:"network"`
-	Budget            BudgetPolicy         `json:"budget"`
-	ApplyPatchEnabled bool                 `json:"apply_patch_enabled"`
-	LoopDetection     LoopDetectionConfig  `json:"loop_detection"`
+	FSRoots           []string            `json:"fs_roots"`
+	CanShell          bool                `json:"can_shell"`
+	ShellAllowlist    []string            `json:"shell_allowlist"`
+	Network           NetworkPolicy       `json:"network"`
+	Budget            BudgetPolicy        `json:"budget"`
+	ApplyPatchEnabled bool                `json:"apply_patch_enabled"`
+	LoopDetection     LoopDetectionConfig `json:"loop_detection"`
 }
 
 type Agent struct {
@@ -44,11 +46,13 @@ type Agent struct {
 	Config    AgentConfig
 	Policies  AgentPolicies
 
-	Tools     ToolRegistry
-	Memory    MemoryStore
-	Logger    EventLogger
-	Provider  AIProvider
-	Processes *ProcessManager
+	Tools          ToolRegistry
+	Memory         MemoryStore
+	LongTermMemory memory.MemoryManager
+	Assembler      ctxbundle.Assembler
+	Logger         EventLogger
+	Provider       AIProvider
+	Processes      *ProcessManager
 
 	agentsDoc      string
 	soulDoc        string

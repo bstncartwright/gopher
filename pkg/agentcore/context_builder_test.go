@@ -1,6 +1,7 @@
 package agentcore
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -29,11 +30,11 @@ func TestContextBuilderOrderingTruncationAndDeterminism(t *testing.T) {
 		WorkingState: map[string]any{},
 	}
 
-	ctxA, err := agent.buildProviderContext(session, "new")
+	ctxA, err := agent.buildProviderContext(context.Background(), session, "new")
 	if err != nil {
 		t.Fatalf("buildProviderContext() error: %v", err)
 	}
-	ctxB, err := agent.buildProviderContext(session, "new")
+	ctxB, err := agent.buildProviderContext(context.Background(), session, "new")
 	if err != nil {
 		t.Fatalf("buildProviderContext() second error: %v", err)
 	}

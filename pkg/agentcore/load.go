@@ -8,6 +8,10 @@ import (
 	"strings"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
+	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
+	"github.com/bstncartwright/gopher/pkg/memory"
+	"github.com/bstncartwright/gopher/pkg/memory/retrieval"
+	memsqlite "github.com/bstncartwright/gopher/pkg/memory/store/sqlite"
 )
 
 func LoadAgent(workspacePath string) (*Agent, error) {
@@ -66,6 +70,10 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	contextWindow := model.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = 12000
+	}
 
 	agent := &Agent{
 		ID:             config.AgentID,
@@ -76,6 +84,8 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		Policies:       policies,
 		Tools:          buildRegistry(config.EnabledTools, policies),
 		Memory:         NewFileMemoryStore(filepath.Join(workspaceAbs, "memory", "working.json")),
+		LongTermMemory: buildLongTermMemoryManager(workspaceAbs),
+		Assembler:      ctxbundle.NewAssembler(ctxbundle.AssemblerOptions{DefaultMaxTokens: contextWindow}),
 		Logger:         NewJSONLEventLogger(filepath.Join(workspaceAbs, "logs", "events.jsonl")),
 		Provider:       AIStreamProvider{},
 		Processes:      NewProcessManager(),
@@ -93,6 +103,26 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	}
 
 	return agent, nil
+}
+
+func buildLongTermMemoryManager(workspaceAbs string) memory.MemoryManager {
+	path := filepath.Join(workspaceAbs, "memory", "memory.db")
+	store, err := memsqlite.NewStore(memsqlite.StoreOptions{Path: path})
+	if err != nil {
+		return nil
+	}
+
+	manager, err := memory.NewManager(memory.ManagerOptions{
+		Store:     store,
+		Retriever: retrieval.NewHybridRetriever(retrieval.HybridRetrieverOptions{}),
+		Embedder:  memory.NewHashEmbedder(128),
+		FailOpen:  true,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil
+	}
+	return manager
 }
 
 func parseModelPolicy(raw string) (providerName string, modelID string, err error) {

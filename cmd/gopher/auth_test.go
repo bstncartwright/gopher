@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bstncartwright/gopher/pkg/ai"
 )
 
 func TestAuthSetListUnsetProvider(t *testing.T) {
@@ -71,5 +74,66 @@ func TestAuthSetRawKey(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "CUSTOM_TOKEN=abc") {
 		t.Fatalf("expected CUSTOM_TOKEN to be set, got: %s", string(data))
+	}
+}
+
+func TestAuthLoginOpenAICodex(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "gopher.env")
+	restore := loginOpenAICodexForAuth
+	t.Cleanup(func() {
+		loginOpenAICodexForAuth = restore
+	})
+	loginOpenAICodexForAuth = func(callbacks ai.OAuthLoginCallbacks) (ai.OAuthCredentials, error) {
+		if callbacks.OnAuth != nil {
+			callbacks.OnAuth(ai.OAuthAuthInfo{
+				URL:          "https://auth.openai.com/oauth/authorize?example=1",
+				Instructions: "Open this URL in your browser and complete login.",
+			})
+		}
+		return ai.OAuthCredentials{
+			Access:  "oauth-access",
+			Refresh: "oauth-refresh",
+			Expires: time.Now().Add(time.Hour).UnixMilli(),
+		}, nil
+	}
+
+	var out bytes.Buffer
+	if err := runAuthSubcommand([]string{
+		"login",
+		"--env-file", envPath,
+		"--provider", "openai-codex",
+	}, &out, &out); err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env file failed: %v", err)
+	}
+	envText := string(data)
+	if !strings.Contains(envText, "OPENAI_CODEX_TOKEN=oauth-access") {
+		t.Fatalf("expected OPENAI_CODEX_TOKEN in env file, got: %s", envText)
+	}
+	if !strings.Contains(envText, "OPENAI_CODEX_REFRESH_TOKEN=oauth-refresh") {
+		t.Fatalf("expected OPENAI_CODEX_REFRESH_TOKEN in env file, got: %s", envText)
+	}
+	if !strings.Contains(envText, "OPENAI_CODEX_TOKEN_EXPIRES=") {
+		t.Fatalf("expected OPENAI_CODEX_TOKEN_EXPIRES in env file, got: %s", envText)
+	}
+	if !strings.Contains(out.String(), "logged in openai-codex") {
+		t.Fatalf("expected success output, got: %s", out.String())
+	}
+}
+
+func TestAuthLoginUnsupportedProvider(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	err := runAuthSubcommand([]string{"login", "--provider", "openai"}, &out, &out)
+	if err == nil {
+		t.Fatalf("expected unsupported provider error")
+	}
+	if !strings.Contains(err.Error(), "interactive oauth login is not supported") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

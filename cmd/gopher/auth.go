@@ -2,13 +2,19 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/bstncartwright/gopher/pkg/ai"
 )
 
 type providerAuthSpec struct {
@@ -23,8 +29,10 @@ var providerAuthSpecs = []providerAuthSpec{
 	{Provider: "kimi-coding", EnvKeys: []string{"KIMI_API_KEY"}, Mode: "api_key"},
 	{Provider: "anthropic", EnvKeys: []string{"ANTHROPIC_API_KEY"}, Mode: "api_key"},
 	{Provider: "ollama", EnvKeys: []string{"OLLAMA_API_KEY"}, Mode: "optional_api_key"},
-	{Provider: "openai-codex", EnvKeys: []string{"OPENAI_CODEX_API_KEY", "OPENAI_CODEX_TOKEN"}, Mode: "oauth_or_api_key"},
+	{Provider: "openai-codex", EnvKeys: []string{"OPENAI_CODEX_API_KEY", "OPENAI_CODEX_TOKEN", "OPENAI_CODEX_REFRESH_TOKEN", "OPENAI_CODEX_TOKEN_EXPIRES"}, Mode: "oauth_or_api_key"},
 }
+
+var loginOpenAICodexForAuth = ai.LoginOpenAICodex
 
 func runAuthSubcommand(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || wantsHelp(args) {
@@ -37,6 +45,8 @@ func runAuthSubcommand(args []string, stdout, stderr io.Writer) error {
 		return runAuthProviders(stdout)
 	case "list":
 		return runAuthList(args[1:], stdout)
+	case "login":
+		return runAuthLogin(args[1:], os.Stdin, stdout)
 	case "set", "create":
 		return runAuthSet(args[1:], stdout)
 	case "unset", "delete", "remove":
@@ -51,6 +61,7 @@ func printAuthUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage:")
 	fmt.Fprintln(out, "  gopher auth providers")
 	fmt.Fprintln(out, "  gopher auth list [--env-file /etc/gopher/gopher.env]")
+	fmt.Fprintln(out, "  gopher auth login --provider openai-codex [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth set --provider zai --api-key <value> [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth set --key <ENV_KEY> --value <value> [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth unset --provider zai [--env-file ...]")
@@ -148,6 +159,93 @@ func runAuthSet(args []string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "set %s in %s\n", targetKey, strings.TrimSpace(*envFile))
+	return nil
+}
+
+func runAuthLogin(args []string, in io.Reader, out io.Writer) error {
+	flags := flag.NewFlagSet("auth login", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	envFile := flags.String("env-file", "/etc/gopher/gopher.env", "env file path")
+	provider := flags.String("provider", "", "provider id")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if len(flags.Args()) > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+
+	providerID := strings.TrimSpace(strings.ToLower(*provider))
+	if providerID == "" {
+		return fmt.Errorf("--provider is required")
+	}
+	if providerID != "openai-codex" {
+		return fmt.Errorf("interactive oauth login is not supported for provider %q", providerID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	reader := bufio.NewReader(in)
+	credentials, err := loginOpenAICodexForAuth(ai.OAuthLoginCallbacks{
+		Context: ctx,
+		OnAuth: func(info ai.OAuthAuthInfo) {
+			if text := strings.TrimSpace(info.Instructions); text != "" {
+				fmt.Fprintln(out, text)
+			}
+			if u := strings.TrimSpace(info.URL); u != "" {
+				fmt.Fprintf(out, "login url: %s\n", u)
+			}
+			fmt.Fprintln(out, "waiting for callback on http://localhost:1455/auth/callback")
+			fmt.Fprintln(out, "if callback forwarding is unavailable, paste callback URL or code, then press Enter:")
+		},
+		OnProgress: func(message string) {
+			if text := strings.TrimSpace(message); text != "" {
+				fmt.Fprintln(out, text)
+			}
+		},
+		OnManualCodeInput: func() (string, error) {
+			for {
+				text, err := reader.ReadString('\n')
+				if err != nil {
+					if errors.Is(err, io.EOF) && strings.TrimSpace(text) != "" {
+						return strings.TrimSpace(text), nil
+					}
+					if errors.Is(err, io.EOF) {
+						time.Sleep(100 * time.Millisecond)
+						continue
+					}
+					return "", err
+				}
+				if strings.TrimSpace(text) != "" {
+					return strings.TrimSpace(text), nil
+				}
+			}
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(credentials.Access) == "" {
+		return fmt.Errorf("oauth login succeeded but did not return an access token")
+	}
+	if strings.TrimSpace(credentials.Refresh) == "" {
+		return fmt.Errorf("oauth login succeeded but did not return a refresh token")
+	}
+
+	values := map[string]string{
+		"OPENAI_CODEX_TOKEN":         credentials.Access,
+		"OPENAI_CODEX_REFRESH_TOKEN": credentials.Refresh,
+		"OPENAI_CODEX_TOKEN_EXPIRES": strconv.FormatInt(credentials.Expires, 10),
+	}
+	for key, value := range values {
+		if err := upsertEnvKey(strings.TrimSpace(*envFile), key, value); err != nil {
+			return err
+		}
+	}
+	if err := removeEnvKeys(strings.TrimSpace(*envFile), []string{"OPENAI_CODEX_API_KEY"}); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "logged in %s and wrote credentials to %s\n", providerID, strings.TrimSpace(*envFile))
 	return nil
 }
 

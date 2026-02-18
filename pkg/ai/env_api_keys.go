@@ -1,6 +1,13 @@
 package ai
 
-import "os"
+import (
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+var refreshOpenAICodexTokenForEnv = RefreshOpenAICodexToken
 
 func GetEnvAPIKey(provider string) string {
 	switch Provider(provider) {
@@ -11,14 +18,7 @@ func GetEnvAPIKey(provider string) string {
 	case ProviderKimiCoding:
 		return os.Getenv("KIMI_API_KEY")
 	case ProviderOpenAICodex:
-		// openai-codex is OAuth-first; allow explicit env fallback when present.
-		if v := os.Getenv("OPENAI_CODEX_API_KEY"); v != "" {
-			return v
-		}
-		if v := os.Getenv("OPENAI_CODEX_TOKEN"); v != "" {
-			return v
-		}
-		return ""
+		return resolveOpenAICodexEnvAPIKey()
 	case ProviderAnthropic:
 		return os.Getenv("ANTHROPIC_API_KEY")
 	case ProviderOllama:
@@ -29,4 +29,42 @@ func GetEnvAPIKey(provider string) string {
 	default:
 		return ""
 	}
+}
+
+func resolveOpenAICodexEnvAPIKey() string {
+	// Respect explicit key overrides first.
+	if v := strings.TrimSpace(os.Getenv("OPENAI_CODEX_API_KEY")); v != "" {
+		return v
+	}
+	access := strings.TrimSpace(os.Getenv("OPENAI_CODEX_TOKEN"))
+	refresh := strings.TrimSpace(os.Getenv("OPENAI_CODEX_REFRESH_TOKEN"))
+	expiresRaw := strings.TrimSpace(os.Getenv("OPENAI_CODEX_TOKEN_EXPIRES"))
+
+	expired := access == ""
+	if expiresRaw != "" {
+		if expiresAt, err := strconv.ParseInt(expiresRaw, 10, 64); err == nil {
+			expired = time.Now().UnixMilli() >= expiresAt
+		}
+	}
+
+	if refresh != "" && expired {
+		refreshed, err := refreshOpenAICodexTokenForEnv(OAuthCredentials{
+			Access:  access,
+			Refresh: refresh,
+		})
+		if err == nil {
+			if strings.TrimSpace(refreshed.Access) != "" {
+				access = strings.TrimSpace(refreshed.Access)
+				_ = os.Setenv("OPENAI_CODEX_TOKEN", access)
+			}
+			if strings.TrimSpace(refreshed.Refresh) != "" {
+				refresh = strings.TrimSpace(refreshed.Refresh)
+				_ = os.Setenv("OPENAI_CODEX_REFRESH_TOKEN", refresh)
+			}
+			if refreshed.Expires > 0 {
+				_ = os.Setenv("OPENAI_CODEX_TOKEN_EXPIRES", strconv.FormatInt(refreshed.Expires, 10))
+			}
+		}
+	}
+	return access
 }

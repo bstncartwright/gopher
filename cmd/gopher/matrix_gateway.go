@@ -22,6 +22,7 @@ type matrixDMBridge struct {
 	transport *matrixtransport.Transport
 	pipeline  *gateway.DMPipeline
 	cron      *gateway.CronRunner
+	heartbeat *gateway.HeartbeatRunner
 	cancel    context.CancelFunc
 }
 
@@ -111,6 +112,7 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 		PresenceEnabled:   cfg.Matrix.PresenceEnabled,
 		PresenceInterval:  cfg.Matrix.PresenceInterval,
 		PresenceStatusMsg: cfg.Matrix.PresenceStatusMsg,
+		AvatarProvider:    newMatrixManagedAvatarProvider(agentRuntime, identities, logger),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create matrix transport: %w", err)
@@ -129,7 +131,27 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 		return nil, fmt.Errorf("create matrix dm pipeline: %w", err)
 	}
 
-	bridge := &matrixDMBridge{transport: matrixBridge, pipeline: pipeline, cron: cronRunner}
+	heartbeatSchedules := collectHeartbeatSchedules(agentRuntime)
+	var heartbeatRunner *gateway.HeartbeatRunner
+	if len(heartbeatSchedules) > 0 {
+		heartbeatRunner, err = gateway.NewHeartbeatRunner(gateway.HeartbeatRunnerOptions{
+			Manager:   manager,
+			Pipeline:  pipeline,
+			Schedules: heartbeatSchedules,
+			Logger:    logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create heartbeat runner: %w", err)
+		}
+		if err := heartbeatRunner.Start(ctx); err != nil {
+			return nil, fmt.Errorf("start heartbeat runner: %w", err)
+		}
+		if logger != nil {
+			logger.Printf("heartbeat runner started agents=%d", len(heartbeatSchedules))
+		}
+	}
+
+	bridge := &matrixDMBridge{transport: matrixBridge, pipeline: pipeline, cron: cronRunner, heartbeat: heartbeatRunner}
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge.cancel = cancel
 	go bridge.runSupervisor(bridgeCtx, logger)
@@ -208,6 +230,9 @@ func (b *matrixDMBridge) Stop() {
 	}
 	if b.cron != nil {
 		b.cron.Stop()
+	}
+	if b.heartbeat != nil {
+		b.heartbeat.Stop()
 	}
 	if b.transport != nil {
 		_ = b.transport.Stop()
@@ -350,5 +375,27 @@ func toAgentCronJob(job gateway.CronJob) agentcore.CronJob {
 		value := job.NextRunAt.UTC().Format(time.RFC3339Nano)
 		out.NextRunAt = &value
 	}
+	return out
+}
+
+func collectHeartbeatSchedules(runtime *gatewayAgentRuntime) []gateway.HeartbeatSchedule {
+	if runtime == nil {
+		return nil
+	}
+	out := make([]gateway.HeartbeatSchedule, 0, len(runtime.Agents))
+	for actorID, agent := range runtime.Agents {
+		if agent == nil || !agent.Heartbeat.Enabled || agent.Heartbeat.Every <= 0 {
+			continue
+		}
+		out = append(out, gateway.HeartbeatSchedule{
+			AgentID:     actorID,
+			Every:       agent.Heartbeat.Every,
+			Prompt:      agent.Heartbeat.Prompt,
+			AckMaxChars: agent.Heartbeat.AckMaxChars,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return string(out[i].AgentID) < string(out[j].AgentID)
+	})
 	return out
 }

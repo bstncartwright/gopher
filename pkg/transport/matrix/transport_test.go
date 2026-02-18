@@ -873,6 +873,113 @@ func TestEnsureBotUserRegistersManagedUsers(t *testing.T) {
 	}
 }
 
+func TestEnsureBotUserSetsProfileAvatarWhenMissing(t *testing.T) {
+	uploaded := false
+	updated := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/_matrix/client/v3/register":
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"user_id":"@gopher:local"}`))
+		case "/_matrix/client/v3/profile/@gopher:local/avatar_url":
+			if request.Method == http.MethodGet {
+				writer.WriteHeader(http.StatusOK)
+				_, _ = writer.Write([]byte(`{"avatar_url":""}`))
+				return
+			}
+			if request.Method == http.MethodPut {
+				updated = true
+				writer.WriteHeader(http.StatusOK)
+				_, _ = writer.Write([]byte(`{}`))
+				return
+			}
+			t.Fatalf("unexpected profile method: %s", request.Method)
+		case "/_matrix/media/v3/upload":
+			uploaded = true
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"content_uri":"mxc://local/avatar"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	providerCalls := 0
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+		BotUserID:     "@gopher:local",
+		AvatarProvider: func(_ context.Context, userID string) (ManagedAvatar, error) {
+			providerCalls++
+			if userID != "@gopher:local" {
+				t.Fatalf("provider userID = %q", userID)
+			}
+			return ManagedAvatar{
+				ContentType: "image/png",
+				Data:        []byte{0x89, 'P', 'N', 'G'},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := instance.ensureBotUser(context.Background()); err != nil {
+		t.Fatalf("ensureBotUser error: %v", err)
+	}
+	if providerCalls != 1 {
+		t.Fatalf("providerCalls = %d, want 1", providerCalls)
+	}
+	if !uploaded {
+		t.Fatalf("expected avatar upload")
+	}
+	if !updated {
+		t.Fatalf("expected profile avatar update")
+	}
+}
+
+func TestEnsureBotUserSkipsProfileAvatarWhenAlreadySet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/_matrix/client/v3/register":
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"user_id":"@gopher:local"}`))
+		case "/_matrix/client/v3/profile/@gopher:local/avatar_url":
+			if request.Method != http.MethodGet {
+				t.Fatalf("unexpected profile method: %s", request.Method)
+			}
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"avatar_url":"mxc://local/existing"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	providerCalls := 0
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+		BotUserID:     "@gopher:local",
+		AvatarProvider: func(_ context.Context, _ string) (ManagedAvatar, error) {
+			providerCalls++
+			return ManagedAvatar{MXCURL: "mxc://local/new"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := instance.ensureBotUser(context.Background()); err != nil {
+		t.Fatalf("ensureBotUser error: %v", err)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("providerCalls = %d, want 0", providerCalls)
+	}
+}
+
 func TestSendMessageQueueFullWhenNotStarted(t *testing.T) {
 	instance, err := New(Options{
 		HomeserverURL: "http://127.0.0.1:8008",

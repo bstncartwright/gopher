@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
@@ -42,5 +43,43 @@ func TestBuildAgentMatrixIdentitySetRejectsMissingTemplateDomain(t *testing.T) {
 
 	if _, err := buildAgentMatrixIdentitySet(runtime, ""); err == nil {
 		t.Fatalf("expected error for missing template user id")
+	}
+}
+
+func TestCollectHeartbeatSchedulesIncludesOnlyEnabledAgents(t *testing.T) {
+	runtime := &gatewayAgentRuntime{
+		Agents: map[sessionrt.ActorID]*agentcore.Agent{
+			"writer": {
+				Heartbeat: agentcore.AgentHeartbeat{
+					Enabled:     true,
+					Every:       15 * time.Minute,
+					Prompt:      "hb",
+					AckMaxChars: 120,
+				},
+			},
+			"planner": {
+				Heartbeat: agentcore.AgentHeartbeat{
+					Enabled: false,
+					Every:   10 * time.Minute,
+				},
+			},
+		},
+	}
+
+	schedules := collectHeartbeatSchedules(runtime)
+	if len(schedules) != 1 {
+		t.Fatalf("schedule count = %d, want 1", len(schedules))
+	}
+	if schedules[0].AgentID != "writer" {
+		t.Fatalf("agent id = %q, want writer", schedules[0].AgentID)
+	}
+	if schedules[0].Every != 15*time.Minute {
+		t.Fatalf("every = %s, want 15m", schedules[0].Every)
+	}
+	if schedules[0].Prompt != "hb" {
+		t.Fatalf("prompt = %q, want hb", schedules[0].Prompt)
+	}
+	if schedules[0].AckMaxChars != 120 {
+		t.Fatalf("ack max = %d, want 120", schedules[0].AckMaxChars)
 	}
 }

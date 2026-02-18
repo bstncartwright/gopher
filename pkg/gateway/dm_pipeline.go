@@ -27,6 +27,12 @@ type conversationRoute struct {
 	RecipientID string
 }
 
+type HeartbeatTarget struct {
+	ConversationID string
+	SessionID      sessionrt.SessionID
+	AgentID        sessionrt.ActorID
+}
+
 type DMPipeline struct {
 	manager       sessionrt.SessionManager
 	transport     transport.Transport
@@ -45,6 +51,13 @@ type DMPipeline struct {
 	processing   map[string]int
 	routeMu      sync.RWMutex
 	routes       map[string]conversationRoute
+	heartbeatMu  sync.Mutex
+	heartbeats   map[string]heartbeatState
+}
+
+type heartbeatState struct {
+	pending     int
+	ackMaxChars int
 }
 
 const (
@@ -52,6 +65,8 @@ const (
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmFallbackMinInterval    = 5 * time.Second
 	dmTypingTimeout          = 3 * time.Second
+	heartbeatOKToken         = "HEARTBEAT_OK"
+	heartbeatAckDefaultChars = 300
 )
 
 type typingTransport interface {
@@ -91,6 +106,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		lastFallback:  map[string]time.Time{},
 		processing:    map[string]int{},
 		routes:        map[string]conversationRoute{},
+		heartbeats:    map[string]heartbeatState{},
 	}
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
 	return pipeline, nil
@@ -239,7 +255,14 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				continue
 			}
 			p.finishProcessing(conversationID)
-			if strings.TrimSpace(msg.Content) == "" {
+			content := strings.TrimSpace(msg.Content)
+			if suppress, normalized := p.consumeHeartbeatReply(conversationID, content); suppress {
+				continue
+			} else if normalized != "" && normalized != content {
+				msg.Content = normalized
+				content = normalized
+			}
+			if content == "" {
 				continue
 			}
 			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
@@ -387,6 +410,127 @@ func (p *DMPipeline) recipientForConversation(conversationID string) string {
 		return strings.TrimSpace(p.recipByAgent[route.AgentID])
 	}
 	return ""
+}
+
+func (p *DMPipeline) HeartbeatTargets() []HeartbeatTarget {
+	conversations := p.conversations.Snapshot()
+	if len(conversations) == 0 {
+		return nil
+	}
+	out := make([]HeartbeatTarget, 0, len(conversations))
+	for conversationID, sessionID := range conversations {
+		conversationID = strings.TrimSpace(conversationID)
+		if conversationID == "" || strings.TrimSpace(string(sessionID)) == "" {
+			continue
+		}
+		agentID := p.agentID
+		p.routeMu.RLock()
+		if route, ok := p.routes[conversationID]; ok && strings.TrimSpace(string(route.AgentID)) != "" {
+			agentID = route.AgentID
+		}
+		p.routeMu.RUnlock()
+		out = append(out, HeartbeatTarget{
+			ConversationID: conversationID,
+			SessionID:      sessionID,
+			AgentID:        agentID,
+		})
+	}
+	return out
+}
+
+func (p *DMPipeline) MarkHeartbeatPending(conversationID string, ackMaxChars int) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	if ackMaxChars <= 0 {
+		ackMaxChars = heartbeatAckDefaultChars
+	}
+	p.heartbeatMu.Lock()
+	defer p.heartbeatMu.Unlock()
+	state := p.heartbeats[conversationID]
+	state.pending++
+	state.ackMaxChars = ackMaxChars
+	p.heartbeats[conversationID] = state
+}
+
+func (p *DMPipeline) UnmarkHeartbeatPending(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.heartbeatMu.Lock()
+	defer p.heartbeatMu.Unlock()
+	state, ok := p.heartbeats[conversationID]
+	if !ok {
+		return
+	}
+	if state.pending <= 1 {
+		delete(p.heartbeats, conversationID)
+		return
+	}
+	state.pending--
+	p.heartbeats[conversationID] = state
+}
+
+func (p *DMPipeline) IsConversationProcessing(conversationID string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	p.processingMu.Lock()
+	defer p.processingMu.Unlock()
+	return p.processing[conversationID] > 0
+}
+
+func (p *DMPipeline) consumeHeartbeatReply(conversationID, text string) (bool, string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false, text
+	}
+	p.heartbeatMu.Lock()
+	state, ok := p.heartbeats[conversationID]
+	if !ok || state.pending <= 0 {
+		p.heartbeatMu.Unlock()
+		return false, text
+	}
+	if state.pending <= 1 {
+		delete(p.heartbeats, conversationID)
+	} else {
+		state.pending--
+		p.heartbeats[conversationID] = state
+	}
+	p.heartbeatMu.Unlock()
+
+	ackMaxChars := state.ackMaxChars
+	if ackMaxChars <= 0 {
+		ackMaxChars = heartbeatAckDefaultChars
+	}
+	normalized, hasToken := normalizeHeartbeatReply(text)
+	if !hasToken {
+		return false, text
+	}
+	if len([]rune(normalized)) <= ackMaxChars {
+		return true, ""
+	}
+	return false, normalized
+}
+
+func normalizeHeartbeatReply(text string) (string, bool) {
+	normalized := strings.TrimSpace(text)
+	hasToken := false
+	for {
+		switch {
+		case strings.HasPrefix(normalized, heartbeatOKToken):
+			normalized = strings.TrimSpace(strings.TrimPrefix(normalized, heartbeatOKToken))
+			hasToken = true
+		case strings.HasSuffix(normalized, heartbeatOKToken):
+			normalized = strings.TrimSpace(strings.TrimSuffix(normalized, heartbeatOKToken))
+			hasToken = true
+		default:
+			return normalized, hasToken
+		}
+	}
 }
 
 func errorTextFromPayload(payload any) string {

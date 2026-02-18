@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
@@ -23,6 +25,13 @@ type matrixDMBridge struct {
 	cancel    context.CancelFunc
 }
 
+type agentMatrixIdentitySet struct {
+	DefaultUserID  string
+	ManagedUserIDs []string
+	UserByActorID  map[sessionrt.ActorID]string
+	ActorByUserID  map[string]sessionrt.ActorID
+}
+
 func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *log.Logger) (*matrixDMBridge, error) {
 	workspace, err := os.Getwd()
 	if err != nil {
@@ -32,6 +41,10 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 	agentRuntime, err := loadGatewayAgentRuntime(workspace)
 	if err != nil {
 		return nil, fmt.Errorf("load gateway agents: %w", err)
+	}
+	identities, err := buildAgentMatrixIdentitySet(agentRuntime, cfg.Matrix.BotUserID)
+	if err != nil {
+		return nil, fmt.Errorf("build matrix identities: %w", err)
 	}
 	storeDir := filepath.Join(workspace, ".gopher", "sessions")
 	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: storeDir})
@@ -92,7 +105,8 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 		ASToken:           cfg.Matrix.ASToken,
 		HSToken:           cfg.Matrix.HSToken,
 		ListenAddr:        cfg.Matrix.ListenAddr,
-		BotUserID:         cfg.Matrix.BotUserID,
+		BotUserID:         identities.DefaultUserID,
+		ManagedUserIDs:    identities.ManagedUserIDs,
 		RichTextEnabled:   cfg.Matrix.RichTextEnabled,
 		PresenceEnabled:   cfg.Matrix.PresenceEnabled,
 		PresenceInterval:  cfg.Matrix.PresenceInterval,
@@ -103,11 +117,13 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 	}
 
 	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
-		Manager:       manager,
-		Transport:     matrixBridge,
-		AgentID:       agentRuntime.DefaultActorID,
-		Conversations: gateway.NewConversationSessionMap(),
-		Logger:        logger,
+		Manager:          manager,
+		Transport:        matrixBridge,
+		AgentID:          agentRuntime.DefaultActorID,
+		AgentByRecipient: identities.ActorByUserID,
+		RecipientByAgent: identities.UserByActorID,
+		Conversations:    gateway.NewConversationSessionMap(),
+		Logger:           logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create matrix dm pipeline: %w", err)
@@ -196,6 +212,68 @@ func (b *matrixDMBridge) Stop() {
 	if b.transport != nil {
 		_ = b.transport.Stop()
 	}
+}
+
+func buildAgentMatrixIdentitySet(runtime *gatewayAgentRuntime, templateUserID string) (agentMatrixIdentitySet, error) {
+	if runtime == nil {
+		return agentMatrixIdentitySet{}, fmt.Errorf("runtime is required")
+	}
+	domain, err := matrixDomainFromUserID(templateUserID)
+	if err != nil {
+		return agentMatrixIdentitySet{}, err
+	}
+	out := agentMatrixIdentitySet{
+		DefaultUserID:  "",
+		ManagedUserIDs: make([]string, 0, len(runtime.Agents)),
+		UserByActorID:  make(map[sessionrt.ActorID]string, len(runtime.Agents)),
+		ActorByUserID:  make(map[string]sessionrt.ActorID, len(runtime.Agents)),
+	}
+	for actorID := range runtime.Agents {
+		localpart, err := matrixLocalpartFromActorID(actorID)
+		if err != nil {
+			return agentMatrixIdentitySet{}, err
+		}
+		userID := "@" + localpart + ":" + domain
+		out.ManagedUserIDs = append(out.ManagedUserIDs, userID)
+		out.UserByActorID[actorID] = userID
+		out.ActorByUserID[strings.ToLower(userID)] = actorID
+		if actorID == runtime.DefaultActorID {
+			out.DefaultUserID = userID
+		}
+	}
+	sort.Strings(out.ManagedUserIDs)
+	if strings.TrimSpace(out.DefaultUserID) == "" && len(out.ManagedUserIDs) > 0 {
+		out.DefaultUserID = out.ManagedUserIDs[0]
+	}
+	return out, nil
+}
+
+func matrixDomainFromUserID(userID string) (string, error) {
+	value := strings.TrimSpace(userID)
+	if value == "" {
+		return "", fmt.Errorf("gateway.matrix.bot_user_id is required to derive matrix domain")
+	}
+	if !strings.HasPrefix(value, "@") {
+		return "", fmt.Errorf("invalid gateway.matrix.bot_user_id %q", userID)
+	}
+	parts := strings.SplitN(strings.TrimPrefix(value, "@"), ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return "", fmt.Errorf("invalid gateway.matrix.bot_user_id %q", userID)
+	}
+	return strings.TrimSpace(parts[1]), nil
+}
+
+func matrixLocalpartFromActorID(actorID sessionrt.ActorID) (string, error) {
+	value := strings.TrimSpace(string(actorID))
+	value = strings.TrimPrefix(value, "agent:")
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("invalid empty agent id for matrix user mapping")
+	}
+	if strings.ContainsAny(value, " @:") {
+		return "", fmt.Errorf("agent id %q cannot be mapped to matrix localpart", actorID)
+	}
+	return value, nil
 }
 
 type gatewayCronToolService struct {

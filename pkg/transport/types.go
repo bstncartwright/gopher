@@ -5,12 +5,14 @@ import "context"
 type InboundMessage struct {
 	ConversationID string
 	SenderID       string
+	RecipientID    string
 	EventID        string
 	Text           string
 }
 
 type OutboundMessage struct {
 	ConversationID string
+	SenderID       string
 	Text           string
 }
 

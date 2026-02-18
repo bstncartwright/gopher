@@ -13,17 +13,26 @@ import (
 )
 
 type DMPipelineOptions struct {
-	Manager       sessionrt.SessionManager
-	Transport     transport.Transport
-	AgentID       sessionrt.ActorID
-	Conversations *ConversationSessionMap
-	Logger        *log.Logger
+	Manager          sessionrt.SessionManager
+	Transport        transport.Transport
+	AgentID          sessionrt.ActorID
+	AgentByRecipient map[string]sessionrt.ActorID
+	RecipientByAgent map[sessionrt.ActorID]string
+	Conversations    *ConversationSessionMap
+	Logger           *log.Logger
+}
+
+type conversationRoute struct {
+	AgentID     sessionrt.ActorID
+	RecipientID string
 }
 
 type DMPipeline struct {
 	manager       sessionrt.SessionManager
 	transport     transport.Transport
 	agentID       sessionrt.ActorID
+	agentByRecip  map[string]sessionrt.ActorID
+	recipByAgent  map[sessionrt.ActorID]string
 	conversations *ConversationSessionMap
 	logger        *log.Logger
 
@@ -34,6 +43,8 @@ type DMPipeline struct {
 	lastFallback map[string]time.Time
 	processingMu sync.Mutex
 	processing   map[string]int
+	routeMu      sync.RWMutex
+	routes       map[string]conversationRoute
 }
 
 const (
@@ -61,15 +72,25 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 	if conversations == nil {
 		conversations = NewConversationSessionMap()
 	}
+	agentByRecip := normalizeRecipientAgents(opts.AgentByRecipient)
+	recipByAgent := normalizeAgentRecipients(opts.RecipientByAgent)
+	for recipientID, actorID := range agentByRecip {
+		if _, exists := recipByAgent[actorID]; !exists {
+			recipByAgent[actorID] = recipientID
+		}
+	}
 	pipeline := &DMPipeline{
 		manager:       opts.Manager,
 		transport:     opts.Transport,
 		agentID:       opts.AgentID,
+		agentByRecip:  agentByRecip,
+		recipByAgent:  recipByAgent,
 		conversations: conversations,
 		logger:        opts.Logger,
 		subscribed:    map[sessionrt.SessionID]struct{}{},
 		lastFallback:  map[string]time.Time{},
 		processing:    map[string]int{},
+		routes:        map[string]conversationRoute{},
 	}
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
 	return pipeline, nil
@@ -81,7 +102,8 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 		return nil
 	}
 
-	sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.SenderID)
+	agentID, recipientID := p.routeForInbound(inbound.RecipientID)
+	sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.SenderID, agentID, recipientID)
 	if err != nil {
 		return err
 	}
@@ -107,17 +129,21 @@ func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID,
 			if p.logger != nil {
 				p.logger.Printf("send dm session event failed conversation_id=%q sender=%q err=%v", conversationID, senderID, err)
 			}
-			p.sendErrorFallback(conversationID, err.Error())
+			p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), err.Error())
 		}
 	}()
 }
 
-func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversationID, senderID string) (sessionrt.SessionID, error) {
+func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversationID, senderID string, desiredAgentID sessionrt.ActorID, recipientID string) (sessionrt.SessionID, error) {
+	if strings.TrimSpace(string(desiredAgentID)) == "" {
+		desiredAgentID = p.agentID
+	}
 	if existing, ok := p.conversations.Get(conversationID); ok {
-		if p.isSessionActive(ctx, existing) {
+		if p.isSessionActive(ctx, existing) && p.conversationAgentCompatible(conversationID, desiredAgentID) {
 			if err := p.ensureSubscription(conversationID, existing); err != nil {
 				return "", err
 			}
+			p.setConversationRoute(conversationID, desiredAgentID, recipientID)
 			return existing, nil
 		}
 	}
@@ -126,17 +152,18 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 	defer p.setupMu.Unlock()
 
 	if existing, ok := p.conversations.Get(conversationID); ok {
-		if p.isSessionActive(ctx, existing) {
+		if p.isSessionActive(ctx, existing) && p.conversationAgentCompatible(conversationID, desiredAgentID) {
 			if err := p.ensureSubscription(conversationID, existing); err != nil {
 				return "", err
 			}
+			p.setConversationRoute(conversationID, desiredAgentID, recipientID)
 			return existing, nil
 		}
 	}
 
 	created, err := p.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
-			{ID: p.agentID, Type: sessionrt.ActorAgent},
+			{ID: desiredAgentID, Type: sessionrt.ActorAgent},
 			{ID: matrixActorID(senderID), Type: sessionrt.ActorHuman},
 		},
 	})
@@ -148,6 +175,7 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		return "", err
 	}
 	p.conversations.Set(conversationID, created.ID)
+	p.setConversationRoute(conversationID, desiredAgentID, recipientID)
 	return created.ID, nil
 }
 
@@ -187,7 +215,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			}
 			if event.Type == sessionrt.EventError {
 				p.finishProcessing(conversationID)
-				p.sendErrorFallback(conversationID, errorTextFromPayload(event.Payload))
+				p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), errorTextFromPayload(event.Payload))
 				continue
 			}
 
@@ -216,6 +244,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			}
 			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 				ConversationID: conversationID,
+				SenderID:       p.recipientForConversation(conversationID),
 				Text:           msg.Content,
 			}); err != nil && p.logger != nil {
 				p.logger.Printf("send dm response failed: %v", err)
@@ -287,6 +316,79 @@ func (p *DMPipeline) isCurrentConversationSession(conversationID string, session
 	return ok && current == sessionID
 }
 
+func (p *DMPipeline) routeForInbound(recipientID string) (sessionrt.ActorID, string) {
+	recipientNorm := normalizeRecipientID(recipientID)
+	if recipientNorm != "" {
+		if actorID, ok := p.agentByRecip[recipientNorm]; ok {
+			return actorID, recipientNorm
+		}
+	}
+	agentID := p.agentID
+	fallbackRecipient := strings.TrimSpace(p.recipByAgent[agentID])
+	if recipientNorm != "" {
+		fallbackRecipient = recipientNorm
+	}
+	return agentID, fallbackRecipient
+}
+
+func (p *DMPipeline) setConversationRoute(conversationID string, agentID sessionrt.ActorID, recipientID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	if strings.TrimSpace(string(agentID)) == "" {
+		agentID = p.agentID
+	}
+	recipientID = strings.TrimSpace(recipientID)
+	if recipientID == "" {
+		recipientID = strings.TrimSpace(p.recipByAgent[agentID])
+	}
+	p.routeMu.Lock()
+	defer p.routeMu.Unlock()
+	p.routes[conversationID] = conversationRoute{
+		AgentID:     agentID,
+		RecipientID: recipientID,
+	}
+}
+
+func (p *DMPipeline) conversationAgentCompatible(conversationID string, desired sessionrt.ActorID) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return true
+	}
+	desired = sessionrt.ActorID(strings.TrimSpace(string(desired)))
+	if desired == "" {
+		return true
+	}
+	p.routeMu.RLock()
+	defer p.routeMu.RUnlock()
+	route, ok := p.routes[conversationID]
+	if !ok || strings.TrimSpace(string(route.AgentID)) == "" {
+		return true
+	}
+	return route.AgentID == desired
+}
+
+func (p *DMPipeline) recipientForConversation(conversationID string) string {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return ""
+	}
+	p.routeMu.RLock()
+	route, ok := p.routes[conversationID]
+	p.routeMu.RUnlock()
+	if !ok {
+		return ""
+	}
+	if strings.TrimSpace(route.RecipientID) != "" {
+		return strings.TrimSpace(route.RecipientID)
+	}
+	if strings.TrimSpace(string(route.AgentID)) != "" {
+		return strings.TrimSpace(p.recipByAgent[route.AgentID])
+	}
+	return ""
+}
+
 func errorTextFromPayload(payload any) string {
 	switch value := payload.(type) {
 	case sessionrt.ErrorPayload:
@@ -307,7 +409,7 @@ func fallbackReplyForError(message string) string {
 	return dmErrorFallbackReply
 }
 
-func (p *DMPipeline) sendErrorFallback(conversationID, rawErr string) {
+func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return
@@ -326,6 +428,7 @@ func (p *DMPipeline) sendErrorFallback(conversationID, rawErr string) {
 	reply := fallbackReplyForError(rawErr)
 	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 		ConversationID: conversationID,
+		SenderID:       strings.TrimSpace(senderID),
 		Text:           reply,
 	}); err != nil && p.logger != nil {
 		p.logger.Printf("send dm error fallback failed: %v", err)
@@ -338,4 +441,38 @@ func matrixActorID(sender string) sessionrt.ActorID {
 		return "matrix:unknown"
 	}
 	return sessionrt.ActorID("matrix:" + sender)
+}
+
+func normalizeRecipientAgents(in map[string]sessionrt.ActorID) map[string]sessionrt.ActorID {
+	out := map[string]sessionrt.ActorID{}
+	for recipientID, actorID := range in {
+		recip := normalizeRecipientID(recipientID)
+		actor := sessionrt.ActorID(strings.TrimSpace(string(actorID)))
+		if recip == "" || strings.TrimSpace(string(actor)) == "" {
+			continue
+		}
+		out[recip] = actor
+	}
+	return out
+}
+
+func normalizeAgentRecipients(in map[sessionrt.ActorID]string) map[sessionrt.ActorID]string {
+	out := map[sessionrt.ActorID]string{}
+	for actorID, recipientID := range in {
+		actor := sessionrt.ActorID(strings.TrimSpace(string(actorID)))
+		recip := normalizeRecipientID(recipientID)
+		if strings.TrimSpace(string(actor)) == "" || recip == "" {
+			continue
+		}
+		out[actor] = recip
+	}
+	return out
+}
+
+func normalizeRecipientID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.ToLower(value)
 }

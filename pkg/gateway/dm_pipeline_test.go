@@ -244,6 +244,67 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}
 }
 
+func TestDMPipelineRoutesByRecipientToMatchingAgentWorkspace(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:planner",
+		AgentByRecipient: map[string]sessionrt.ActorID{
+			"@writer:hs": "agent:writer",
+		},
+		RecipientByAgent: map[sessionrt.ActorID]string{
+			"agent:planner": "@planner:hs",
+			"agent:writer":  "@writer:hs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:writer",
+		SenderID:       "@user:hs",
+		RecipientID:    "@writer:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+
+	outbound := fake.lastSent()
+	if outbound.SenderID != "@writer:hs" {
+		t.Fatalf("outbound sender id = %q, want @writer:hs", outbound.SenderID)
+	}
+
+	sessionID, ok := pipeline.conversations.Get("!dm:writer")
+	if !ok {
+		t.Fatalf("expected conversation session mapping")
+	}
+	loaded, err := manager.GetSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetSession() error: %v", err)
+	}
+	participant, ok := loaded.Participants["agent:writer"]
+	if !ok || participant.Type != sessionrt.ActorAgent {
+		t.Fatalf("expected agent:writer participant, got %#v", loaded.Participants)
+	}
+}
+
 func TestDMPipelineDoesNotCreateDuplicateSessionsForSameConversation(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

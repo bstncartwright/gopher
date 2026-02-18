@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ type Options struct {
 	HSToken           string
 	ListenAddr        string
 	BotUserID         string
+	ManagedUserIDs    []string
 	RichTextEnabled   bool
 	PresenceEnabled   bool
 	PresenceInterval  time.Duration
@@ -42,6 +44,9 @@ type Transport struct {
 	hsToken           string
 	listenAddr        string
 	botUserID         string
+	managedUserIDs    []string
+	managedUsers      map[string]struct{}
+	roomManagedUsers  map[string]map[string]struct{}
 	richTextEnabled   bool
 	presenceEnabled   bool
 	presenceInterval  time.Duration
@@ -60,6 +65,8 @@ type Transport struct {
 	workerCancel    context.CancelFunc
 	outboundQueue   chan queuedOutbound
 	outboundDone    chan struct{}
+	typingQueue     chan queuedOutbound
+	typingDone      chan struct{}
 	presenceDone    chan struct{}
 	queueCapacity   int
 	maxAttempts     int
@@ -133,6 +140,7 @@ const inboundEventTimeout = 15 * time.Second
 const matrixMessageHTMLFormat = "org.matrix.custom.html"
 const defaultPresenceInterval = 60 * time.Second
 const presenceRequestTimeout = 5 * time.Second
+const matrixTypingTimeoutMillis = 8000
 const (
 	presenceStateOnline  = "online"
 	presenceStateOffline = "offline"
@@ -186,7 +194,7 @@ func New(opts Options) (*Transport, error) {
 	if presenceInterval <= 0 {
 		presenceInterval = defaultPresenceInterval
 	}
-	botUserID := strings.TrimSpace(opts.BotUserID)
+	botUserID, managedUserIDs, managedUsers := normalizeManagedUserIDs(strings.TrimSpace(opts.BotUserID), opts.ManagedUserIDs)
 	presenceEnabled := opts.PresenceEnabled && botUserID != ""
 	return &Transport{
 		homeserverURL:     strings.TrimRight(hs, "/"),
@@ -195,6 +203,9 @@ func New(opts Options) (*Transport, error) {
 		hsToken:           strings.TrimSpace(opts.HSToken),
 		listenAddr:        addr,
 		botUserID:         botUserID,
+		managedUserIDs:    managedUserIDs,
+		managedUsers:      managedUsers,
+		roomManagedUsers:  map[string]map[string]struct{}{},
 		richTextEnabled:   opts.RichTextEnabled,
 		presenceEnabled:   presenceEnabled,
 		presenceInterval:  presenceInterval,
@@ -238,6 +249,8 @@ func (t *Transport) Start(ctx context.Context) error {
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	outboundQueue := make(chan queuedOutbound, t.queueCapacity)
 	outboundDone := make(chan struct{})
+	typingQueue := make(chan queuedOutbound, typingQueueCapacity(t.queueCapacity))
+	typingDone := make(chan struct{})
 	var presenceDone chan struct{}
 	if t.presenceEnabled {
 		presenceDone = make(chan struct{})
@@ -251,12 +264,15 @@ func (t *Transport) Start(ctx context.Context) error {
 	}
 	t.outboundQueue = outboundQueue
 	t.outboundDone = outboundDone
+	t.typingQueue = typingQueue
+	t.typingDone = typingDone
 	t.presenceDone = presenceDone
 	t.workerCtx = workerCtx
 	t.workerCancel = workerCancel
 	t.mu.Unlock()
 
 	go t.runOutboundWorker(workerCtx, outboundQueue, outboundDone)
+	go t.runTypingWorker(workerCtx, typingQueue, typingDone)
 	if presenceDone != nil {
 		t.applyPresenceUpdate(ctx, presenceStateOnline, false)
 		go t.runPresenceWorker(workerCtx, presenceDone)
@@ -355,13 +371,13 @@ func (t *Transport) SendTyping(ctx context.Context, conversationID string, typin
 	if roomID == "" {
 		return fmt.Errorf("matrix typing conversation id is required")
 	}
-	userID := strings.TrimSpace(t.botUserID)
+	userID := strings.TrimSpace(t.resolveRoomManagedUser(roomID))
 	if userID == "" {
 		return nil
 	}
 	t.mu.RLock()
 	started := t.started
-	queue := t.outboundQueue
+	queue := t.typingQueue
 	t.mu.RUnlock()
 	if !started || queue == nil {
 		return fmt.Errorf("matrix transport is not running")
@@ -376,24 +392,31 @@ func (t *Transport) SendTyping(ctx context.Context, conversationID string, typin
 	case <-ctx.Done():
 		return ctx.Err()
 	case queue <- item:
-		t.recordQueueDepth(len(queue))
 		return nil
 	default:
+		if !typing {
+			// Best effort to clear sticky indicators if the typing queue is saturated.
+			return t.sendTypingNow(ctx, roomID, userID, false)
+		}
 		t.incrementDropped()
-		return fmt.Errorf("matrix outbound queue is full")
+		return fmt.Errorf("matrix typing queue is full")
 	}
 }
 
 func (t *Transport) sendMessageNow(ctx context.Context, message transport.OutboundMessage) error {
 	txnID := fmt.Sprintf("gopher-%d", time.Now().UTC().UnixNano())
+	senderID := strings.TrimSpace(message.SenderID)
+	if senderID == "" {
+		senderID = strings.TrimSpace(t.resolveRoomManagedUser(message.ConversationID))
+	}
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%s?access_token=%s",
 		t.homeserverURL,
 		url.PathEscape(message.ConversationID),
 		url.PathEscape(txnID),
 		url.QueryEscape(t.asToken),
 	)
-	if strings.TrimSpace(t.botUserID) != "" {
-		endpoint += "&user_id=" + url.QueryEscape(t.botUserID)
+	if senderID != "" {
+		endpoint += "&user_id=" + url.QueryEscape(senderID)
 	}
 	payload := outboundMessagePayload{
 		MsgType: "m.text",
@@ -445,7 +468,7 @@ func (t *Transport) sendTypingNow(ctx context.Context, roomID, userID string, ty
 		"typing": typing,
 	}
 	if typing {
-		payload["timeout"] = 30000
+		payload["timeout"] = matrixTypingTimeoutMillis
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
@@ -562,6 +585,18 @@ func (t *Transport) runOutboundWorker(workerCtx context.Context, outboundQueue <
 	}
 }
 
+func (t *Transport) runTypingWorker(workerCtx context.Context, typingQueue <-chan queuedOutbound, done chan<- struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-workerCtx.Done():
+			return
+		case item := <-typingQueue:
+			t.processTyping(item)
+		}
+	}
+}
+
 func (t *Transport) processOutbound(item queuedOutbound) {
 	for {
 		var err error
@@ -607,6 +642,48 @@ func (t *Transport) processOutbound(item queuedOutbound) {
 	}
 }
 
+func (t *Transport) processTyping(item queuedOutbound) {
+	for {
+		err := t.sendTypingNow(t.workerCtx, item.typingConversationID, item.typingUserID, item.typing)
+		if err == nil {
+			t.recordOutboundSuccess()
+			return
+		}
+		transient := isTransientSendError(err)
+		if transient {
+			t.incrementTransientError()
+		} else {
+			t.incrementPermanentError()
+		}
+		if transient && item.attempt < t.maxAttempts {
+			item.attempt++
+			t.incrementRetries()
+			delay := retryDelay(item.attempt)
+			timer := time.NewTimer(delay)
+			select {
+			case <-t.workerCtx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		t.incrementDropped()
+		return
+	}
+}
+
+func typingQueueCapacity(messageQueueCapacity int) int {
+	if messageQueueCapacity < 8 {
+		return 8
+	}
+	capacity := messageQueueCapacity / 4
+	if capacity < 8 {
+		return 8
+	}
+	return capacity
+}
+
 func retryDelay(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
@@ -649,11 +726,14 @@ func (t *Transport) shutdownWorker() {
 	t.mu.Lock()
 	cancel := t.workerCancel
 	done := t.outboundDone
+	typingDone := t.typingDone
 	presenceDone := t.presenceDone
 	t.workerCancel = nil
 	t.workerCtx = nil
 	t.outboundQueue = nil
 	t.outboundDone = nil
+	t.typingQueue = nil
+	t.typingDone = nil
 	t.presenceDone = nil
 	t.started = false
 	t.mu.Unlock()
@@ -664,6 +744,12 @@ func (t *Transport) shutdownWorker() {
 	if done != nil {
 		select {
 		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if typingDone != nil {
+		select {
+		case <-typingDone:
 		case <-time.After(2 * time.Second):
 		}
 	}
@@ -756,12 +842,13 @@ func (t *Transport) handleTransaction(writer http.ResponseWriter, request *http.
 	hadFailure := false
 
 	for _, event := range body.Events {
+		t.trackManagedRoomMembership(event)
 		if t.shouldSkipEvent(event) {
 			continue
 		}
 		eventCtx, cancelEvent := context.WithTimeout(context.Background(), inboundEventTimeout)
-		if t.isBotInvite(event) {
-			if err := t.joinRoom(eventCtx, event.RoomID); err != nil {
+		if inviteeUserID, ok := t.invitedManagedUser(event); ok {
+			if err := t.joinRoomAs(eventCtx, event.RoomID, inviteeUserID); err != nil {
 				log.Printf("matrix inbound invite handling failed room_id=%q event_id=%q err=%v", event.RoomID, strings.TrimSpace(event.EventID), err)
 				// Do not fail the entire transaction on invite join errors.
 				// A single persistent join failure can wedge appservice retries
@@ -825,33 +912,50 @@ func (t *Transport) shouldSkipEvent(event matrixEvent) bool {
 	return false
 }
 
-func (t *Transport) isBotInvite(event matrixEvent) bool {
+func (t *Transport) invitedManagedUser(event matrixEvent) (string, bool) {
 	if event.Type != "m.room.member" {
-		return false
+		return "", false
 	}
 	if strings.TrimSpace(event.RoomID) == "" {
-		return false
-	}
-	if t.botUserID == "" {
-		return false
+		return "", false
 	}
 	membership, _ := event.Content["membership"].(string)
 	if strings.TrimSpace(membership) != "invite" {
-		return false
+		return "", false
 	}
-	// Some homeservers omit state_key in appservice transaction payloads.
 	stateKey := strings.TrimSpace(event.StateKey)
-	return stateKey == "" || stateKey == t.botUserID
+	if stateKey != "" {
+		if t.isManagedUser(stateKey) {
+			return stateKey, true
+		}
+		return "", false
+	}
+	if strings.TrimSpace(t.botUserID) != "" {
+		return strings.TrimSpace(t.botUserID), true
+	}
+	if len(t.managedUserIDs) == 1 {
+		return t.managedUserIDs[0], true
+	}
+	return "", false
+}
+
+func (t *Transport) isBotInvite(event matrixEvent) bool {
+	_, ok := t.invitedManagedUser(event)
+	return ok
 }
 
 func (t *Transport) joinRoom(ctx context.Context, roomID string) error {
+	return t.joinRoomAs(ctx, roomID, t.resolveRoomManagedUser(roomID))
+}
+
+func (t *Transport) joinRoomAs(ctx context.Context, roomID string, userID string) error {
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/join?access_token=%s",
 		t.homeserverURL,
 		url.PathEscape(strings.TrimSpace(roomID)),
 		url.QueryEscape(t.asToken),
 	)
-	if strings.TrimSpace(t.botUserID) != "" {
-		endpoint += "&user_id=" + url.QueryEscape(t.botUserID)
+	if strings.TrimSpace(userID) != "" {
+		endpoint += "&user_id=" + url.QueryEscape(strings.TrimSpace(userID))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(`{}`))
 	if err != nil {
@@ -871,12 +975,28 @@ func (t *Transport) joinRoom(ctx context.Context, roomID string) error {
 }
 
 func (t *Transport) ensureBotUser(ctx context.Context) error {
-	if strings.TrimSpace(t.botUserID) == "" {
+	if len(t.managedUserIDs) == 0 {
+		if strings.TrimSpace(t.botUserID) == "" {
+			return nil
+		}
+		return t.ensureManagedUser(ctx, strings.TrimSpace(t.botUserID))
+	}
+	for _, userID := range t.managedUserIDs {
+		if err := t.ensureManagedUser(ctx, userID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *Transport) ensureManagedUser(ctx context.Context, userID string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
 		return nil
 	}
-	localPart := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(t.botUserID, ":", 2)[0], "@"))
+	localPart := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(userID, ":", 2)[0], "@"))
 	if localPart == "" {
-		return fmt.Errorf("invalid bot user id: %s", t.botUserID)
+		return fmt.Errorf("invalid bot user id: %s", userID)
 	}
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/register?access_token=%s",
 		t.homeserverURL,
@@ -919,7 +1039,7 @@ func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessag
 	if strings.TrimSpace(event.RoomID) == "" || strings.TrimSpace(event.Sender) == "" {
 		return transport.InboundMessage{}, false
 	}
-	if t.botUserID != "" && event.Sender == t.botUserID {
+	if t.isManagedUser(event.Sender) {
 		return transport.InboundMessage{}, false
 	}
 	msgType, _ := event.Content["msgtype"].(string)
@@ -934,9 +1054,139 @@ func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessag
 	return transport.InboundMessage{
 		ConversationID: event.RoomID,
 		SenderID:       event.Sender,
+		RecipientID:    t.resolveRoomManagedUser(event.RoomID),
 		EventID:        strings.TrimSpace(event.EventID),
 		Text:           body,
 	}, true
+}
+
+func normalizeManagedUserIDs(primary string, managed []string) (string, []string, map[string]struct{}) {
+	set := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		set[value] = struct{}{}
+	}
+	add(primary)
+	for _, userID := range managed {
+		add(userID)
+	}
+	out := make([]string, 0, len(set))
+	for userID := range set {
+		out = append(out, userID)
+	}
+	sort.Strings(out)
+	if strings.TrimSpace(primary) == "" && len(out) == 1 {
+		primary = out[0]
+	}
+	return strings.TrimSpace(primary), out, set
+}
+
+func (t *Transport) isManagedUser(userID string) bool {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	_, ok := t.managedUsers[userID]
+	return ok
+}
+
+func (t *Transport) trackManagedRoomMembership(event matrixEvent) {
+	if event.Type != "m.room.member" {
+		return
+	}
+	roomID := strings.TrimSpace(event.RoomID)
+	userID := strings.TrimSpace(event.StateKey)
+	if roomID == "" || userID == "" {
+		return
+	}
+	if !t.isManagedUser(userID) {
+		return
+	}
+	membership, _ := event.Content["membership"].(string)
+	membership = strings.TrimSpace(membership)
+	switch membership {
+	case "invite", "join":
+		t.setRoomManagedUser(roomID, userID)
+	case "leave", "ban":
+		t.clearRoomManagedUser(roomID, userID)
+	}
+}
+
+func (t *Transport) setRoomManagedUser(roomID, userID string) {
+	roomID = strings.TrimSpace(roomID)
+	userID = strings.TrimSpace(userID)
+	if roomID == "" || userID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.roomManagedUsers == nil {
+		t.roomManagedUsers = map[string]map[string]struct{}{}
+	}
+	users, ok := t.roomManagedUsers[roomID]
+	if !ok {
+		users = map[string]struct{}{}
+		t.roomManagedUsers[roomID] = users
+	}
+	users[userID] = struct{}{}
+}
+
+func (t *Transport) clearRoomManagedUser(roomID, userID string) {
+	roomID = strings.TrimSpace(roomID)
+	userID = strings.TrimSpace(userID)
+	if roomID == "" || userID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	users, ok := t.roomManagedUsers[roomID]
+	if !ok {
+		return
+	}
+	delete(users, userID)
+	if len(users) == 0 {
+		delete(t.roomManagedUsers, roomID)
+	}
+}
+
+func (t *Transport) resolveRoomManagedUser(roomID string) string {
+	roomID = strings.TrimSpace(roomID)
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if roomID != "" {
+		users, ok := t.roomManagedUsers[roomID]
+		if ok && len(users) > 0 {
+			if strings.TrimSpace(t.botUserID) != "" {
+				if _, exists := users[t.botUserID]; exists {
+					return t.botUserID
+				}
+			}
+			if len(users) == 1 {
+				for userID := range users {
+					return userID
+				}
+			}
+			choices := make([]string, 0, len(users))
+			for userID := range users {
+				choices = append(choices, userID)
+			}
+			sort.Strings(choices)
+			return choices[0]
+		}
+	}
+	if strings.TrimSpace(t.botUserID) != "" {
+		return strings.TrimSpace(t.botUserID)
+	}
+	if len(t.managedUserIDs) == 1 {
+		return t.managedUserIDs[0]
+	}
+	return ""
 }
 
 func (t *Transport) isAuthorized(request *http.Request) bool {

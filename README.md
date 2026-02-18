@@ -212,6 +212,9 @@ phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages 
    - `enabled = true`
    - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)
    - `appservice_id`, `as_token`, `hs_token`, `listen_addr`, `bot_user_id`
+   - `bot_user_id` is used as a domain template. runtime maps each `agent_id` to `@<agent_id>:<domain>`.
+     example: if `bot_user_id = "@gopher:gophers.bostonc.dev"` and `agent_id = "gateway-agent"`,
+     the runtime matrix user is `@gateway-agent:gophers.bostonc.dev`.
    - `presence_enabled = true` (default)
    - `presence_interval = "60s"` (default keepalive)
    - `presence_status_msg = ""` (optional custom status)

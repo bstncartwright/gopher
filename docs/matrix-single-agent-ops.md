@@ -44,6 +44,10 @@ presence_status_msg = ""
 rich_text_enabled = true
 ```
 
+runtime identity mapping:
+- each agent workspace `agent_id` maps to `@<agent_id>:<domain from bot_user_id>`.
+- with the config above, `agent_id = "gateway-agent"` maps to `@gateway-agent:gophers.bostonc.dev`.
+
 rich text defaults to enabled and sends both plain `body` and formatted `formatted_body`.
 disable it for compatibility checks with any of:
 - toml: `rich_text_enabled = false`

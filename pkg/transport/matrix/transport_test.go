@@ -74,6 +74,60 @@ func TestHandleTransactionParsesInboundDM(t *testing.T) {
 	}
 }
 
+func TestHandleTransactionSetsRecipientFromManagedMembership(t *testing.T) {
+	instance, err := New(Options{
+		HomeserverURL:  "http://127.0.0.1:8008",
+		AppserviceID:   "gopher",
+		ASToken:        "as-token",
+		HSToken:        "hs-token",
+		BotUserID:      "@planner:local",
+		ManagedUserIDs: []string{"@writer:local"},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	received := []transport.InboundMessage{}
+	instance.SetInboundHandler(func(_ context.Context, message transport.InboundMessage) error {
+		received = append(received, message)
+		return nil
+	})
+
+	payload := transactionBody{
+		Events: []matrixEvent{
+			{
+				EventID:  "$invite",
+				Type:     "m.room.member",
+				RoomID:   "!dm:writer",
+				Sender:   "@user:local",
+				StateKey: "@writer:local",
+				Content:  map[string]interface{}{"membership": "invite"},
+			},
+			{
+				EventID: "$msg",
+				Type:    "m.room.message",
+				RoomID:  "!dm:writer",
+				Sender:  "@user:local",
+				Content: map[string]interface{}{"msgtype": "m.text", "body": "hello"},
+			},
+		},
+	}
+	blob, _ := json.Marshal(payload)
+	request := httptest.NewRequest(http.MethodPut, "/_matrix/app/v1/transactions/txn-recipient?access_token=hs-token", bytes.NewReader(blob))
+	writer := httptest.NewRecorder()
+
+	instance.handleTransaction(writer, request)
+	if writer.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", writer.Code)
+	}
+	if len(received) != 1 {
+		t.Fatalf("received count = %d, want 1", len(received))
+	}
+	if received[0].RecipientID != "@writer:local" {
+		t.Fatalf("recipient id = %q, want @writer:local", received[0].RecipientID)
+	}
+}
+
 func TestHandleTransactionIsIdempotentPerTransactionID(t *testing.T) {
 	instance, err := New(Options{
 		HomeserverURL: "http://127.0.0.1:8008",
@@ -158,6 +212,37 @@ func TestSendMessageCallsHomeserverAPI(t *testing.T) {
 	}
 	if requestCount < 1 {
 		t.Fatalf("homeserver request count = %d, want >= 1", requestCount)
+	}
+}
+
+func TestSendMessageNowUsesProvidedSenderID(t *testing.T) {
+	seenUserID := ""
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		seenUserID = request.URL.Query().Get("user_id")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	if err := instance.sendMessageNow(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:writer",
+		SenderID:       "@writer:local",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("sendMessageNow() error: %v", err)
+	}
+	if seenUserID != "@writer:local" {
+		t.Fatalf("user_id = %q, want @writer:local", seenUserID)
 	}
 }
 
@@ -310,7 +395,7 @@ func TestSendTypingCallsHomeserverAPI(t *testing.T) {
 		if !bytes.Contains(body, []byte(`"typing":true`)) {
 			t.Fatalf("unexpected body: %s", string(body))
 		}
-		if !bytes.Contains(body, []byte(`"timeout":30000`)) {
+		if !bytes.Contains(body, []byte(`"timeout":8000`)) {
 			t.Fatalf("missing timeout in body: %s", string(body))
 		}
 		writer.WriteHeader(http.StatusOK)
@@ -751,6 +836,40 @@ func TestEnsureBotUserAllowsUserInUseConflict(t *testing.T) {
 	}
 	if err := instance.ensureBotUser(context.Background()); err != nil {
 		t.Fatalf("ensureBotUser error: %v", err)
+	}
+}
+
+func TestEnsureBotUserRegistersManagedUsers(t *testing.T) {
+	usernames := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		if strings.Contains(string(body), `"username":"planner"`) {
+			usernames = append(usernames, "planner")
+		}
+		if strings.Contains(string(body), `"username":"writer"`) {
+			usernames = append(usernames, "writer")
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"user_id":"ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:  server.URL,
+		AppserviceID:   "gopher",
+		ASToken:        "as-token",
+		HSToken:        "hs-token",
+		BotUserID:      "@planner:local",
+		ManagedUserIDs: []string{"@writer:local"},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := instance.ensureBotUser(context.Background()); err != nil {
+		t.Fatalf("ensureBotUser error: %v", err)
+	}
+	if len(usernames) != 2 {
+		t.Fatalf("registered users = %v, want planner+writer", usernames)
 	}
 }
 

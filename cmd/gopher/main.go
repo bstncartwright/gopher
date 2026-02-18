@@ -29,6 +29,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	case "gateway":
 		return runGatewaySubcommand(args[1:], stdout, stderr)
+	case "node":
+		return runNodeSubcommand(args[1:], stdout, stderr)
 	case "status":
 		return runServiceSubcommand([]string{"status"}, stdout, stderr)
 	case "restart":
@@ -59,6 +61,8 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "commands:")
 	fmt.Fprintln(out, "  gateway run           start gateway node runtime")
 	fmt.Fprintln(out, "  gateway config init   write starter gopher.toml")
+	fmt.Fprintln(out, "  node run              start worker node runtime")
+	fmt.Fprintln(out, "  node config init      write starter node.toml")
 	fmt.Fprintln(out, "  status                show gopher service status")
 	fmt.Fprintln(out, "  restart               restart gopher service")
 	fmt.Fprintln(out, "  logs                  show gopher service logs")
@@ -70,5 +74,6 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "try:")
 	fmt.Fprintln(out, "  gopher gateway run --help")
+	fmt.Fprintln(out, "  gopher node run --help")
 	fmt.Fprintln(out, "  gopher agent --help")
 }

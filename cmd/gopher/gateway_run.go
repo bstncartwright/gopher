@@ -74,6 +74,7 @@ type gatewayProcess struct {
 	scheduler *scheduler.Scheduler
 	syncer    *gateway.NodeRegistrySync
 	runtime   *node.Runtime
+	executor  sessionrt.AgentExecutor
 }
 
 func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
@@ -315,12 +316,16 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	if err != nil {
 		return fmt.Errorf("resolve workspace directory: %w", err)
 	}
-	executor, err := loadGatewayRuntimeExecutor(workspace)
+	agentRuntime, err := loadGatewayAgentRuntime(workspace)
+	if err != nil {
+		return err
+	}
+	capabilityResolver, err := buildRequiredCapabilityResolver(agentRuntime)
 	if err != nil {
 		return err
 	}
 
-	process, err := startGatewayProcess(ctx, cfg, client, executor, logger)
+	process, err := startGatewayProcessWithCapabilityResolver(ctx, cfg, client, agentRuntime.Executor, capabilityResolver, logger)
 	if err != nil {
 		return err
 	}
@@ -328,7 +333,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 
 	var matrixBridge *matrixDMBridge
 	if cfg.Matrix.Enabled {
-		matrixBridge, err = startMatrixDMBridge(ctx, cfg, logger)
+		matrixBridge, err = startMatrixDMBridgeWithRuntime(ctx, cfg, workspace, agentRuntime, process.executor, logger)
 		if err != nil {
 			return err
 		}
@@ -356,6 +361,17 @@ func startGatewayProcess(
 	executor sessionrt.AgentExecutor,
 	logger *log.Logger,
 ) (*gatewayProcess, error) {
+	return startGatewayProcessWithCapabilityResolver(ctx, cfg, fabric, executor, nil, logger)
+}
+
+func startGatewayProcessWithCapabilityResolver(
+	ctx context.Context,
+	cfg config.GatewayConfig,
+	fabric fabricts.Fabric,
+	executor sessionrt.AgentExecutor,
+	resolver gateway.CapabilityResolver,
+	logger *log.Logger,
+) (*gatewayProcess, error) {
 	registry := scheduler.NewRegistry(0)
 	registry.Upsert(scheduler.NodeInfo{
 		NodeID:       cfg.NodeID,
@@ -376,12 +392,24 @@ func startGatewayProcess(
 		return nil, fmt.Errorf("start node registry sync: %w", err)
 	}
 
+	distributedExecutor, err := gateway.NewDistributedExecutor(gateway.DistributedExecutorOptions{
+		GatewayNodeID:      cfg.GatewayNodeID,
+		LocalExecutor:      executor,
+		Scheduler:          schedulerInstance,
+		Fabric:             fabric,
+		CapabilityResolver: resolver,
+	})
+	if err != nil {
+		syncer.Stop()
+		return nil, fmt.Errorf("create distributed executor: %w", err)
+	}
+
 	runtime, err := node.NewRuntime(node.RuntimeOptions{
 		NodeID:            cfg.NodeID,
 		IsGateway:         true,
 		Capabilities:      cfg.Capabilities,
 		Fabric:            fabric,
-		Executor:          executor,
+		Executor:          distributedExecutor,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 	})
 	if err != nil {
@@ -401,6 +429,7 @@ func startGatewayProcess(
 		scheduler: schedulerInstance,
 		syncer:    syncer,
 		runtime:   runtime,
+		executor:  distributedExecutor,
 	}, nil
 }
 
@@ -468,4 +497,64 @@ func mustJSON(value any) string {
 		return "[]"
 	}
 	return string(blob)
+}
+
+func buildRequiredCapabilityResolver(runtime *gatewayAgentRuntime) (gateway.CapabilityResolver, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("agent runtime is required")
+	}
+	requiredByActor := make(map[sessionrt.ActorID][]scheduler.Capability, len(runtime.Agents)*2)
+	for actorID, agent := range runtime.Agents {
+		if agent == nil {
+			continue
+		}
+		canonicalActor := normalizeCapabilityResolverActorID(actorID)
+		if canonicalActor == "" {
+			continue
+		}
+		required := make([]scheduler.Capability, 0, len(agent.Config.Execution.RequiredCapabilities))
+		for _, raw := range agent.Config.Execution.RequiredCapabilities {
+			capability, err := config.ParseCapability(raw)
+			if err != nil {
+				return nil, fmt.Errorf("parse execution.required_capabilities for agent %q: %w", actorID, err)
+			}
+			required = append(required, capability)
+		}
+		requiredByActor[canonicalActor] = required
+		alt := alternateCapabilityResolverActorID(canonicalActor)
+		if alt != "" {
+			requiredByActor[alt] = required
+		}
+	}
+	return func(input sessionrt.AgentInput) []scheduler.Capability {
+		actorID := normalizeCapabilityResolverActorID(input.ActorID)
+		if actorID == "" {
+			return nil
+		}
+		required, ok := requiredByActor[actorID]
+		if !ok {
+			return nil
+		}
+		return append([]scheduler.Capability(nil), required...)
+	}, nil
+}
+
+func normalizeCapabilityResolverActorID(actorID sessionrt.ActorID) sessionrt.ActorID {
+	value := strings.TrimSpace(string(actorID))
+	if value == "" {
+		return ""
+	}
+	return sessionrt.ActorID(value)
+}
+
+func alternateCapabilityResolverActorID(actorID sessionrt.ActorID) sessionrt.ActorID {
+	value := string(actorID)
+	if strings.HasPrefix(value, "agent:") {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(value, "agent:"))
+		if trimmed == "" {
+			return ""
+		}
+		return sessionrt.ActorID(trimmed)
+	}
+	return sessionrt.ActorID("agent:" + value)
 }

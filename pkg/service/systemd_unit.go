@@ -14,6 +14,15 @@ type GatewayUnitConfig struct {
 	EnvFile     string
 }
 
+type NodeUnitConfig struct {
+	Description string
+	ExecStart   string
+	User        string
+	Group       string
+	WorkingDir  string
+	EnvFile     string
+}
+
 type UpdateUnitConfig struct {
 	Description string
 	ExecStart   string
@@ -26,12 +35,49 @@ type UpdateTimerConfig struct {
 }
 
 func RenderGatewayUnit(cfg GatewayUnitConfig) (string, error) {
+	return renderRuntimeUnit(runtimeUnitConfig{
+		Description: cfg.Description,
+		ExecStart:   cfg.ExecStart,
+		User:        cfg.User,
+		Group:       cfg.Group,
+		WorkingDir:  cfg.WorkingDir,
+		EnvFile:     cfg.EnvFile,
+		defaultDesc: "gopher gateway service",
+		errPrefix:   "gateway",
+	})
+}
+
+func RenderNodeUnit(cfg NodeUnitConfig) (string, error) {
+	return renderRuntimeUnit(runtimeUnitConfig{
+		Description: cfg.Description,
+		ExecStart:   cfg.ExecStart,
+		User:        cfg.User,
+		Group:       cfg.Group,
+		WorkingDir:  cfg.WorkingDir,
+		EnvFile:     cfg.EnvFile,
+		defaultDesc: "gopher node service",
+		errPrefix:   "node",
+	})
+}
+
+type runtimeUnitConfig struct {
+	Description string
+	ExecStart   string
+	User        string
+	Group       string
+	WorkingDir  string
+	EnvFile     string
+	defaultDesc string
+	errPrefix   string
+}
+
+func renderRuntimeUnit(cfg runtimeUnitConfig) (string, error) {
 	if strings.TrimSpace(cfg.ExecStart) == "" {
-		return "", fmt.Errorf("gateway exec start is required")
+		return "", fmt.Errorf("%s exec start is required", cfg.errPrefix)
 	}
 	description := strings.TrimSpace(cfg.Description)
 	if description == "" {
-		description = "gopher gateway service"
+		description = cfg.defaultDesc
 	}
 	user := strings.TrimSpace(cfg.User)
 	if user == "" {

@@ -7,6 +7,7 @@ VERSION_TAG="${VERSION_TAG:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="${BINARY_NAME:-gopher}"
 CONFIG_PATH="${CONFIG_PATH:-/etc/gopher/gopher.toml}"
+CONFIG_PATH_SET="false"
 ENV_PATH="${ENV_PATH:-/etc/gopher/gopher.env}"
 ROLE="${ROLE:-gateway}"
 WITH_NATS="false"
@@ -41,7 +42,7 @@ required env:
 
 examples:
   GOPHER_GITHUB_TOKEN=... ./scripts/install.sh --role gateway --with-nats
-  GOPHER_GITHUB_TOKEN=... ./scripts/install.sh --role node --no-service --no-config-init
+  GOPHER_GITHUB_TOKEN=... ./scripts/install.sh --role node
 EOF
 }
 
@@ -69,6 +70,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --config-path)
       CONFIG_PATH="${2:-}"
+      CONFIG_PATH_SET="true"
       shift 2
       ;;
     --env-path)
@@ -116,8 +118,9 @@ if [[ "$ROLE" == "node" ]]; then
     echo "--with-nats is only valid for --role gateway" >&2
     exit 1
   fi
-  INSTALL_SERVICE="false"
-  INIT_CONFIG="false"
+  if [[ "$CONFIG_PATH_SET" == "false" ]]; then
+    CONFIG_PATH="/etc/gopher/node.toml"
+  fi
 fi
 
 for cmd in curl sha256sum python3 mktemp; do
@@ -287,7 +290,11 @@ fi
 if [[ "$INIT_CONFIG" == "true" ]]; then
   if ! run_as_root test -f "$CONFIG_PATH"; then
     run_as_root mkdir -p "$(dirname "$CONFIG_PATH")"
-    run_as_root "$INSTALL_DIR/$BINARY_NAME" gateway config init --path "$CONFIG_PATH"
+    if [[ "$ROLE" == "node" ]]; then
+      run_as_root "$INSTALL_DIR/$BINARY_NAME" node config init --path "$CONFIG_PATH"
+    else
+      run_as_root "$INSTALL_DIR/$BINARY_NAME" gateway config init --path "$CONFIG_PATH"
+    fi
     echo "initialized config at $CONFIG_PATH"
   else
     echo "config exists, keeping: $CONFIG_PATH"
@@ -303,10 +310,15 @@ fi
 
 if [[ "$INSTALL_SERVICE" == "true" ]]; then
   run_as_root "$INSTALL_DIR/$BINARY_NAME" service install \
+    --role "$ROLE" \
     --config "$CONFIG_PATH" \
     --env-file "$ENV_PATH" \
     --binary-path "$INSTALL_DIR/$BINARY_NAME"
-  echo "service installed. check status with: $BINARY_NAME status"
+  if [[ "$ROLE" == "node" ]]; then
+    echo "service installed. check logs with: $BINARY_NAME logs --unit gopher-node.service --lines 200"
+  else
+    echo "service installed. check status with: $BINARY_NAME status"
+  fi
 else
   if [[ "$ROLE" == "node" ]]; then
     echo "skipped service install for node role"

@@ -127,7 +127,7 @@ pkg/
 
 ## running
 
-**prerequisites:** go 1.24+, nats (for gateway mode)
+**prerequisites:** go 1.24+, nats (for gateway/node distributed mode)
 
 ```bash
 # build
@@ -135,16 +135,21 @@ go build -o gopher ./cmd/gopher
 
 # init config (optional)
 gopher gateway config init
+gopher node config init
 
 # run gateway
 gopher gateway run --node-id gateway --nats-url nats://127.0.0.1:4222
 
+# run worker node
+gopher node run --node-id node-1 --nats-url nats://127.0.0.1:4222
+
 # help
 gopher help
 gopher gateway run --help
+gopher node run --help
 ```
 
-config can be loaded from `gopher.toml` in the working directory; `gopher.local.toml` overrides. env vars `GOPHER_*` override config.
+gateway config is loaded from `gopher.toml` in the working directory (`gopher.local.toml` overrides). node config is loaded from `node.toml` (`node.local.toml` overrides). env vars `GOPHER_*` override config.
 
 ## install on linux vm
 
@@ -168,10 +173,17 @@ use a specific release:
 GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --version v0.1.0
 ```
 
-install a worker node (binary only, no local service/nats):
+install a worker node (includes `/etc/gopher/node.toml` + `gopher-node.service`):
 
 ```bash
 GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --role node
+```
+
+service checks:
+
+```bash
+gopher status
+gopher logs --unit gopher-node.service --lines 200
 ```
 
 ## auth config cli
@@ -268,6 +280,17 @@ Run the accessibility audit and apply fixes.
        - `MEMORY.md` / `memory.md` can be injected as bootstrap context
        - JSON working memory remains injected as a gopher extension
      - long-term memory retrieval is injected only for `full` prompt mode
+   - optional distributed routing per agent in `config.json`:
+
+```json
+{
+  "execution": {
+    "required_capabilities": ["tool:gpu"]
+  }
+}
+```
+
+   - if `execution.required_capabilities` is empty/missing, the gateway keeps execution local by default.
 2. configure gateway matrix block in `/etc/gopher/gopher.toml`:
    - `enabled = true`
    - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)
@@ -348,7 +371,7 @@ env overrides:
 
 ## distributed execution (phase 2)
 
-optional. when enabled, nodes advertise capabilities, the gateway schedules work across nodes, and agents can run remotely. the gateway remains authoritative. if nodes disappear, the system continues locally. the plumbing exists; the gateway executor is not yet wired to a real agent.
+optional. when enabled, nodes advertise capabilities, the gateway schedules work across nodes, and agents can run remotely. the gateway remains authoritative. if nodes disappear, sessions requiring unavailable capabilities fail with an explicit scheduler error; agents without required capabilities continue locally.
 
 ## safety philosophy
 

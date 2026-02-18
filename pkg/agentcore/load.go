@@ -51,6 +51,9 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	} else {
 		config.TimeFormat = "auto"
 	}
+	if err := validateRequiredCapabilities(config.Execution.RequiredCapabilities); err != nil {
+		return nil, err
+	}
 
 	policies := AgentPolicies{}
 	if err := decodeJSONFile(policiesPath, &policies); err != nil {
@@ -222,4 +225,24 @@ func normalizeTimeFormat(raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func validateRequiredCapabilities(required []string) error {
+	for _, raw := range required {
+		parts := strings.SplitN(strings.TrimSpace(raw), ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid execution.required_capabilities entry %q: expected kind:name", raw)
+		}
+		kind := strings.ToLower(strings.TrimSpace(parts[0]))
+		name := strings.TrimSpace(parts[1])
+		if name == "" {
+			return fmt.Errorf("invalid execution.required_capabilities entry %q: name is required", raw)
+		}
+		switch kind {
+		case "agent", "tool", "system":
+		default:
+			return fmt.Errorf("invalid execution.required_capabilities entry %q: unknown kind %q", raw, strings.TrimSpace(parts[0]))
+		}
+	}
+	return nil
 }

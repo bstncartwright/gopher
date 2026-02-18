@@ -77,3 +77,18 @@ task routing:
 - create/list/delete commands operate on registry + workspaces
 - dm to each agent resolves to its own long-lived session
 - task trigger creates separate room + session per task
+
+## node onboarding checklist
+
+1. install node runtime on a worker vm:
+   - `GOPHER_GITHUB_TOKEN=... ./scripts/install.sh --role node`
+2. verify node service state:
+   - `gopher logs --unit gopher-node.service --lines 200`
+3. validate nats connectivity:
+   - confirm `node running` startup log with expected `nats_url`
+4. verify capability registration:
+   - on gateway logs, confirm capability/heartbeat updates for the node id
+5. verify remote execution:
+   - set an agent `config.json` capability requirement:
+     - `"execution": { "required_capabilities": ["tool:gpu"] }`
+   - send a message through that agent and confirm execution is routed to the worker node

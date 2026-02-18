@@ -33,3 +33,19 @@ func TestRenderUpdateTimerUnit(t *testing.T) {
 		t.Fatalf("missing OnCalendar in timer unit: %s", unit)
 	}
 }
+
+func TestRenderNodeUnit(t *testing.T) {
+	unit, err := RenderNodeUnit(NodeUnitConfig{
+		ExecStart: "/usr/local/bin/gopher node run --config /etc/gopher/node.toml",
+		EnvFile:   "/etc/gopher/gopher.env",
+	})
+	if err != nil {
+		t.Fatalf("RenderNodeUnit() error: %v", err)
+	}
+	if !strings.Contains(unit, "ExecStart=/usr/local/bin/gopher node run --config /etc/gopher/node.toml") {
+		t.Fatalf("missing execstart in node unit: %s", unit)
+	}
+	if !strings.Contains(unit, "Description=gopher node service") {
+		t.Fatalf("missing node description in unit: %s", unit)
+	}
+}

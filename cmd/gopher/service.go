@@ -27,6 +27,7 @@ type serviceInstallOptions struct {
 	ConfigPath string
 	EnvPath    string
 	BinaryPath string
+	Role       string
 }
 
 type serviceLogsOptions struct {
@@ -52,16 +53,22 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		configPath := flags.String("config", "/etc/gopher/gopher.toml", "gateway config path")
 		envPath := flags.String("env-file", "/etc/gopher/gopher.env", "service env file")
 		binaryPath := flags.String("binary-path", "/usr/local/bin/gopher", "binary path for service")
+		role := flags.String("role", "gateway", "service role (gateway|node)")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if len(flags.Args()) > 0 {
 			return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 		}
+		normalizedRole := strings.ToLower(strings.TrimSpace(*role))
+		if normalizedRole != "gateway" && normalizedRole != "node" {
+			return fmt.Errorf("invalid --role value: %s (expected gateway or node)", strings.TrimSpace(*role))
+		}
 		return runtimeImpl.Install(ctx, serviceInstallOptions{
 			ConfigPath: strings.TrimSpace(*configPath),
 			EnvPath:    strings.TrimSpace(*envPath),
 			BinaryPath: strings.TrimSpace(*binaryPath),
+			Role:       normalizedRole,
 		})
 	case "uninstall":
 		return runtimeImpl.Uninstall(ctx)
@@ -172,7 +179,7 @@ func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stde
 
 func printServiceUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage:")
-	fmt.Fprintln(out, "  gopher service install [flags]")
+	fmt.Fprintln(out, "  gopher service install [--role gateway|node] [flags]")
 	fmt.Fprintln(out, "  gopher service uninstall")
 	fmt.Fprintln(out, "  gopher service status")
 	fmt.Fprintln(out, "  gopher service start")

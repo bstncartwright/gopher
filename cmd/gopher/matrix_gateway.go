@@ -37,14 +37,30 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
 	}
+	return startMatrixDMBridgeWithRuntime(ctx, cfg, workspace, nil, nil, logger)
+}
 
-	agentRuntime, err := loadGatewayAgentRuntime(workspace)
-	if err != nil {
-		return nil, fmt.Errorf("load gateway agents: %w", err)
+func startMatrixDMBridgeWithRuntime(
+	ctx context.Context,
+	cfg config.GatewayConfig,
+	workspace string,
+	agentRuntime *gatewayAgentRuntime,
+	executor sessionrt.AgentExecutor,
+	logger *log.Logger,
+) (*matrixDMBridge, error) {
+	var err error
+	if agentRuntime == nil {
+		agentRuntime, err = loadGatewayAgentRuntime(workspace)
+		if err != nil {
+			return nil, fmt.Errorf("load gateway agents: %w", err)
+		}
 	}
 	identities, err := buildAgentMatrixIdentitySet(agentRuntime, cfg.Matrix.BotUserID)
 	if err != nil {
 		return nil, fmt.Errorf("build matrix identities: %w", err)
+	}
+	if executor == nil {
+		executor = agentRuntime.Executor
 	}
 	storeDir := filepath.Join(workspace, ".gopher", "sessions")
 	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: storeDir})
@@ -54,7 +70,7 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:          store,
-		Executor:       agentRuntime.Executor,
+		Executor:       executor,
 		RecoverOnStart: true,
 	})
 	if err != nil {

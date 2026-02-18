@@ -204,19 +204,18 @@ phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages 
 
 1. prepare runtime workspace(s):
    - preferred layout (isolated per agent):
-     - `<working_dir>/.gopher/agents/<agent_id>/AGENTS.md`
-     - `<working_dir>/.gopher/agents/<agent_id>/soul.md`
-     - `<working_dir>/.gopher/agents/<agent_id>/config.json`
-     - `<working_dir>/.gopher/agents/<agent_id>/policies.json`
-   - legacy fallback (single shared workspace) is still supported:
-     - `<working_dir>/AGENTS.md`
-     - `<working_dir>/soul.md`
-     - `<working_dir>/config.json`
-     - `<working_dir>/policies.json`
+     - `<working_dir>/agents/<agent_id>/AGENTS.md`
+     - `<working_dir>/agents/<agent_id>/soul.md`
+     - `<working_dir>/agents/<agent_id>/config.json`
+     - `<working_dir>/agents/<agent_id>/policies.json`
 2. configure gateway matrix block in `/etc/gopher/gopher.toml`:
    - `enabled = true`
    - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)
    - `appservice_id`, `as_token`, `hs_token`, `listen_addr`, `bot_user_id`
+   - `presence_enabled = true` (default)
+   - `presence_interval = "60s"` (default keepalive)
+   - `presence_status_msg = ""` (optional custom status)
+   - `rich_text_enabled = true` (default; renders markdown replies as sanitized html with plain-text fallback)
 3. configure model provider key in `/etc/gopher/gopher.env` (example: `ZAI_API_KEY=...`) and restart:
    - `sudo systemctl restart gopher-gateway.service`
 4. register appservice in conduit admin room using `/etc/gopher/gopher-appservice-registration.yaml`
@@ -235,6 +234,11 @@ python3 scripts/matrix_dm_smoke.py \
 expected result:
 - `bot_membership=join`
 - `bot_reply_count>=1`
+
+to disable rich matrix formatting for compatibility debugging:
+- toml: set `[gateway.matrix] rich_text_enabled = false`
+- env: `GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED=false`
+- cli: `--matrix-rich-text-enabled=false`
 
 ## releases
 

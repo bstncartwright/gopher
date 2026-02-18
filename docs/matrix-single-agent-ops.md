@@ -12,17 +12,10 @@ this runbook is the repeatable setup path for one matrix-chatable agent on a gat
 
 preferred per-agent files under the service working directory (`/home/exedev/.gopher`):
 
-- `.gopher/agents/<agent_id>/AGENTS.md`
-- `.gopher/agents/<agent_id>/soul.md`
-- `.gopher/agents/<agent_id>/config.json`
-- `.gopher/agents/<agent_id>/policies.json`
-
-legacy fallback is still accepted:
-
-- `AGENTS.md`
-- `soul.md`
-- `config.json`
-- `policies.json`
+- `agents/<agent_id>/AGENTS.md`
+- `agents/<agent_id>/soul.md`
+- `agents/<agent_id>/config.json`
+- `agents/<agent_id>/policies.json`
 
 example model policy:
 
@@ -45,7 +38,17 @@ as_token = "<as_token>"
 hs_token = "<hs_token>"
 listen_addr = "127.0.0.1:29328"
 bot_user_id = "@gopher:gophers.bostonc.dev"
+presence_enabled = true
+presence_interval = "60s"
+presence_status_msg = ""
+rich_text_enabled = true
 ```
+
+rich text defaults to enabled and sends both plain `body` and formatted `formatted_body`.
+disable it for compatibility checks with any of:
+- toml: `rich_text_enabled = false`
+- env: `GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED=false`
+- cli: `--matrix-rich-text-enabled=false`
 
 in `/etc/gopher/gopher.env`:
 

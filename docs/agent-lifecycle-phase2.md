@@ -22,9 +22,19 @@ entry shape:
 
 workspace layout per agent:
 - `~/.gopher/agents/<agent_id>/AGENTS.md`
-- `~/.gopher/agents/<agent_id>/soul.md`
+- `~/.gopher/agents/<agent_id>/SOUL.md`
+- `~/.gopher/agents/<agent_id>/TOOLS.md`
+- `~/.gopher/agents/<agent_id>/IDENTITY.md`
+- `~/.gopher/agents/<agent_id>/USER.md`
+- `~/.gopher/agents/<agent_id>/HEARTBEAT.md`
+- `~/.gopher/agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
+- `~/.gopher/agents/<agent_id>/MEMORY.md` (optional)
 - `~/.gopher/agents/<agent_id>/config.json`
 - `~/.gopher/agents/<agent_id>/policies.json`
+
+compatibility:
+- runtime prefers uppercase canonical bootstrap files
+- runtime falls back to lowercase legacy names when canonical files are missing
 
 ## cli surface
 

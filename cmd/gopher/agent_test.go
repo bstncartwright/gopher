@@ -27,7 +27,9 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 	}
 
 	plannerWorkspace := filepath.Join(workspaceRoot, "planner")
-	for _, name := range []string{"AGENTS.md", "soul.md", "config.json", "policies.json"} {
+	for _, name := range []string{
+		"AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "config.json", "policies.json",
+	} {
 		if _, err := os.Stat(filepath.Join(plannerWorkspace, name)); err != nil {
 			t.Fatalf("expected workspace file %s: %v", name, err)
 		}

@@ -24,12 +24,10 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
 
-	agentsPath := filepath.Join(workspaceAbs, "AGENTS.md")
-	soulPath := filepath.Join(workspaceAbs, "soul.md")
 	configPath := filepath.Join(workspaceAbs, "config.json")
 	policiesPath := filepath.Join(workspaceAbs, "policies.json")
 
-	for _, required := range []string{agentsPath, soulPath, configPath, policiesPath} {
+	for _, required := range []string{configPath, policiesPath} {
 		if err := requireFile(required); err != nil {
 			return nil, err
 		}
@@ -41,6 +39,17 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	}
 	if config.MaxContextMessages <= 0 {
 		config.MaxContextMessages = DefaultContextWindow
+	}
+	if config.BootstrapMaxChars <= 0 {
+		config.BootstrapMaxChars = DefaultBootstrapMaxChars
+	}
+	if config.BootstrapTotalMaxChars <= 0 {
+		config.BootstrapTotalMaxChars = DefaultBootstrapTotalMaxChars
+	}
+	if normalized, ok := normalizeTimeFormat(config.TimeFormat); ok {
+		config.TimeFormat = normalized
+	} else {
+		config.TimeFormat = "auto"
 	}
 
 	policies := AgentPolicies{}
@@ -55,15 +64,6 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	model, ok := ai.GetModel(providerName, modelID)
 	if !ok {
 		return nil, fmt.Errorf("model not found for model_policy %q", config.ModelPolicy)
-	}
-
-	agentsDoc, err := os.ReadFile(agentsPath)
-	if err != nil {
-		return nil, fmt.Errorf("read AGENTS.md: %w", err)
-	}
-	soulDoc, err := os.ReadFile(soulPath)
-	if err != nil {
-		return nil, fmt.Errorf("read soul.md: %w", err)
 	}
 
 	allowedRoots, err := resolveAllowedFSRoots(workspaceAbs, policies.FSRoots)
@@ -89,11 +89,15 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		Logger:         NewJSONLEventLogger(filepath.Join(workspaceAbs, "logs", "events.jsonl")),
 		Provider:       AIStreamProvider{},
 		Processes:      NewProcessManager(),
-		agentsDoc:      string(agentsDoc),
-		soulDoc:        string(soulDoc),
 		model:          model,
 		allowedFSRoots: allowedRoots,
 	}
+
+	skills, err := discoverSkills(workspaceAbs, config.SkillsPaths)
+	if err != nil {
+		return nil, fmt.Errorf("discover skills: %w", err)
+	}
+	agent.skills = skills
 
 	if strings.TrimSpace(agent.ID) == "" {
 		agent.ID = strings.TrimSpace(config.Name)
@@ -206,4 +210,16 @@ func resolveAllowedFSRoots(workspace string, roots []string) ([]string, error) {
 		return nil, fmt.Errorf("policies.fs_roots resolves to empty set")
 	}
 	return out, nil
+}
+
+func normalizeTimeFormat(raw string) (string, bool) {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	switch value {
+	case "", "auto":
+		return "auto", true
+	case "12", "24":
+		return value, true
+	default:
+		return "", false
+	}
 }

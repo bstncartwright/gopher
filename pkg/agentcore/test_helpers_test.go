@@ -36,7 +36,11 @@ func createTestWorkspace(t *testing.T, config AgentConfig, policies AgentPolicie
 
 	dir := t.TempDir()
 	mustWriteFile(t, filepath.Join(dir, "AGENTS.md"), "# Contract\nDo the task.")
-	mustWriteFile(t, filepath.Join(dir, "soul.md"), "# Soul\nBe direct.")
+	mustWriteFile(t, filepath.Join(dir, "SOUL.md"), "# Soul\nBe direct.")
+	mustWriteFile(t, filepath.Join(dir, "TOOLS.md"), "# Tools\nUse local tooling.")
+	mustWriteFile(t, filepath.Join(dir, "IDENTITY.md"), "# Identity\nTest agent.")
+	mustWriteFile(t, filepath.Join(dir, "USER.md"), "# User\nDefault user profile.")
+	mustWriteFile(t, filepath.Join(dir, "HEARTBEAT.md"), "# Heartbeat\nNo pending tasks.")
 
 	configBlob, err := json.Marshal(config)
 	if err != nil {

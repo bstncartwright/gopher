@@ -2,21 +2,66 @@ name: release
 
 on:
   push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "release tag (example: v0.1.0)"
-        required: true
-        type: string
+    branches:
+      - "main"
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    name: prepare-release-tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: determine next tag
+        id: tag
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          latest="$(git tag -l 'v*' --sort=-v:refname | head -n 1)"
+          if [ -z "${latest}" ]; then
+            major=0
+            minor=1
+            patch=0
+          else
+            case "${latest}" in
+              v[0-9]*.[0-9]*.[0-9]*) ;;
+              *)
+                echo "latest release tag must be semver (vX.Y.Z), got: ${latest}"
+                exit 1
+                ;;
+            esac
+            version="${latest#v}"
+            major="${version%%.*}"
+            rest="${version#*.}"
+            minor="${rest%%.*}"
+            patch="${rest##*.}"
+            patch=$((patch + 1))
+          fi
+
+          candidate="v${major}.${minor}.${patch}"
+          while git rev-parse -q --verify "refs/tags/${candidate}" >/dev/null; do
+            patch=$((patch + 1))
+            candidate="v${major}.${minor}.${patch}"
+          done
+
+          echo "tag=${candidate}" >> "$GITHUB_OUTPUT"
+
   build:
     name: build-linux-${{ matrix.goarch }}
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -39,10 +84,11 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
+          VERSION_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           mkdir -p dist
           output="dist/gopher-linux-${{ matrix.goarch }}"
-          go build -trimpath -ldflags="-s -w" -o "${output}" ./cmd/gopher
+          go build -trimpath -ldflags="-s -w -X main.binaryVersion=${VERSION_TAG}" -o "${output}" ./cmd/gopher
           sha256sum "${output}" > "${output}.sha256"
 
       - name: upload artifacts
@@ -54,32 +100,11 @@ jobs:
 
   release:
     name: publish-release
-    needs: build
+    needs:
+      - prepare
+      - build
     runs-on: ubuntu-latest
     steps:
-      - name: determine tag
-        id: tag
-        env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          tag="${INPUT_TAG}"
-          if [ -z "${tag}" ]; then
-            tag="${REF_NAME}"
-          fi
-          if [ -z "${tag}" ]; then
-            echo "release tag is required"
-            exit 1
-          fi
-          case "${tag}" in
-            v*) ;;
-            *)
-              echo "release tag must start with v (got: ${tag})"
-              exit 1
-              ;;
-          esac
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-
       - name: download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -95,8 +120,9 @@ jobs:
       - name: create github release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             release/gopher-linux-amd64
             release/gopher-linux-arm64

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +115,19 @@ func TestRunLogsRoutesToServiceLogs(t *testing.T) {
 	}
 	if !fake.logsFollow {
 		t.Fatalf("expected --follow to be propagated")
+	}
+}
+
+func TestRunVersionPrintsBinaryVersion(t *testing.T) {
+	prev := binaryVersion
+	binaryVersion = "v9.9.9"
+	defer func() { binaryVersion = prev }()
+
+	var out bytes.Buffer
+	if err := run([]string{"version"}, &out, io.Discard); err != nil {
+		t.Fatalf("run(version) error: %v", err)
+	}
+	if !strings.Contains(out.String(), "gopher v9.9.9") {
+		t.Fatalf("unexpected version output: %q", out.String())
 	}
 }

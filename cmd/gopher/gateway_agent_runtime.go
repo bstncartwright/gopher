@@ -118,7 +118,7 @@ func discoverGatewayAgentWorkspaces(workspace string) (workspaces []string, err 
 }
 
 func hasAgentWorkspaceFiles(workspace string) (bool, error) {
-	required := []string{"AGENTS.md", "soul.md", "config.json", "policies.json"}
+	required := []string{"config.json", "policies.json"}
 	for _, name := range required {
 		path := filepath.Join(workspace, name)
 		info, err := os.Stat(path)

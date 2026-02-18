@@ -363,11 +363,37 @@ func ensureAgentWorkspace(agentID, workspace string) error {
 		return fmt.Errorf("create workspace %s: %w", workspace, err)
 	}
 
+	brandNew := true
+	for _, name := range []string{
+		"AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md",
+		"agents.md", "soul.md", "tools.md", "identity.md", "user.md", "heartbeat.md", "bootstrap.md",
+	} {
+		path := filepath.Join(workspace, name)
+		info, err := os.Stat(path)
+		if err == nil {
+			if !info.IsDir() {
+				brandNew = false
+				break
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("check workspace file %s: %w", path, err)
+		}
+	}
+
 	files := map[string]string{
 		"AGENTS.md":     fmt.Sprintf("# %s\n\n## mission\n\nDefine this agent's purpose.\n", agentID),
-		"soul.md":       "# personality\n\nDescribe identity, style, and boundaries.\n",
+		"SOUL.md":       "# personality\n\nDescribe identity, style, and boundaries.\n",
+		"TOOLS.md":      "# tools\n\nDescribe local tools and conventions.\n",
+		"IDENTITY.md":   "# identity\n\nDefine name, style, and persona.\n",
+		"USER.md":       "# user\n\nDescribe user preferences and defaults.\n",
+		"HEARTBEAT.md":  "# heartbeat\n\nOptional heartbeat checklist.\n",
 		"config.json":   "{}\n",
 		"policies.json": "{}\n",
+	}
+	if brandNew {
+		files["BOOTSTRAP.md"] = "# bootstrap\n\nOne-time setup checklist for a new workspace.\n"
 	}
 	for name, content := range files {
 		path := filepath.Join(workspace, name)

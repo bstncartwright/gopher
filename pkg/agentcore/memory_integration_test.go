@@ -45,6 +45,42 @@ func TestContextBuilderInjectsRetrievedMemory(t *testing.T) {
 	}
 }
 
+func TestContextBuilderMinimalModeSkipsRetrievedMemory(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if agent.LongTermMemory == nil {
+		t.Fatalf("expected long-term memory manager")
+	}
+
+	err = agent.LongTermMemory.Store(context.Background(), memory.MemoryRecord{
+		Type:       memory.MemorySemantic,
+		Scope:      memory.AgentScope(agent.ID),
+		SessionID:  "s-history",
+		AgentID:    agent.ID,
+		Content:    "Remember to run migration checks first.",
+		Metadata:   map[string]string{"kind": "policy"},
+		Importance: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Store() error: %v", err)
+	}
+
+	session := agent.NewSession()
+	ctx, err := agent.buildProviderContext(context.Background(), session, "help me deploy this service", PromptModeMinimal)
+	if err != nil {
+		t.Fatalf("buildProviderContext() error: %v", err)
+	}
+	if strings.Contains(ctx.SystemPrompt, "### retrieved memory") {
+		t.Fatalf("did not expect retrieved memory section in minimal mode: %s", ctx.SystemPrompt)
+	}
+	if strings.Contains(strings.ToLower(ctx.SystemPrompt), "migration checks") {
+		t.Fatalf("did not expect retrieved memory content in minimal mode")
+	}
+}
+
 func TestRunTurnPersistsLongTermMemory(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	agent, err := LoadAgent(workspace)

@@ -13,9 +13,19 @@ this runbook is the repeatable setup path for one matrix-chatable agent on a gat
 preferred per-agent files under the service working directory (`/home/exedev/.gopher`):
 
 - `agents/<agent_id>/AGENTS.md`
-- `agents/<agent_id>/soul.md`
+- `agents/<agent_id>/SOUL.md`
+- `agents/<agent_id>/TOOLS.md`
+- `agents/<agent_id>/IDENTITY.md`
+- `agents/<agent_id>/USER.md`
+- `agents/<agent_id>/HEARTBEAT.md`
+- `agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
+- `agents/<agent_id>/MEMORY.md` (optional)
 - `agents/<agent_id>/config.json`
 - `agents/<agent_id>/policies.json`
+
+compatibility:
+- runtime prefers canonical uppercase files
+- if missing, runtime falls back to lowercase legacy names (`soul.md`, `tools.md`, `identity.md`, `user.md`, `heartbeat.md`, `bootstrap.md`)
 
 example model policy:
 

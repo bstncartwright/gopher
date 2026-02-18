@@ -8,6 +8,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/yuin/goldmark v1.7.13
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.45.0
 	nhooyr.io/websocket v1.8.17
 )

@@ -16,10 +16,15 @@ type memoryExistence interface {
 	Exists() (bool, error)
 }
 
-func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessage string) (ai.Context, error) {
+func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessage string, modeOverride ...PromptMode) (ai.Context, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	mode := PromptModeFull
+	if len(modeOverride) > 0 {
+		mode = normalizePromptMode(modeOverride[0])
+	}
+
 	working, err := a.Memory.LoadWorking()
 	if err != nil {
 		return ai.Context{}, fmt.Errorf("load working memory: %w", err)
@@ -38,11 +43,32 @@ func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessag
 		includeWorking = exists
 	}
 
-	systemPrompt, err := buildStaticSystemPrompt(a.agentsDoc, a.soulDoc, working, includeWorking)
+	contextFiles, err := loadBootstrapContextFiles(a.Workspace, mode, a.Config.BootstrapMaxChars, a.Config.BootstrapTotalMaxChars)
 	if err != nil {
-		return ai.Context{}, err
+		return ai.Context{}, fmt.Errorf("load bootstrap context files: %w", err)
 	}
 
+	skillsPrompt := ""
+	if mode == PromptModeFull && hasTool(a.Tools, "read") {
+		skillsPrompt = strings.TrimSpace(formatSkillsForPrompt(a.skills))
+	}
+
+	systemPrompt, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:      a.Workspace,
+		PromptMode:     mode,
+		Tools:          a.Tools,
+		SkillsPrompt:   skillsPrompt,
+		ContextFiles:   contextFiles,
+		IncludeWorking: includeWorking,
+		Working:        working,
+		UserTimezone:   a.Config.UserTimezone,
+		Model:          a.model,
+	})
+	if err != nil {
+		return ai.Context{}, fmt.Errorf("build system prompt: %w", err)
+	}
+
+	expandedUserMessage := expandSkillCommand(userMessage, a.skills)
 	messages := boundMessages(s.Messages, a.Config.MaxContextMessages)
 	userTimestamp := int64(0)
 	if len(messages) > 0 {
@@ -50,17 +76,21 @@ func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessag
 	}
 	messages = append(messages, ai.Message{
 		Role:      ai.RoleUser,
-		Content:   userMessage,
+		Content:   expandedUserMessage,
 		Timestamp: userTimestamp,
 	})
 
-	retrieved := a.retrieveLongTermMemory(ctx, s, userMessage)
+	var retrieved []memory.MemoryRecord
+	if mode == PromptModeFull {
+		retrieved = a.retrieveLongTermMemory(ctx, s, userMessage)
+	}
+
 	if a.Assembler != nil {
 		assembled, err := a.Assembler.Build(ctx, ctxbundle.ContextRequest{
 			BaseSystemPrompt: systemPrompt,
 			Messages:         messages,
 			Retrieved:        retrieved,
-			CurrentTask:      userMessage,
+			CurrentTask:      expandedUserMessage,
 			MaxTokens:        a.model.ContextWindow,
 		})
 		if err != nil {
@@ -129,21 +159,12 @@ func renderMemoryFallbackSection(records []memory.MemoryRecord) string {
 	return strings.Join(lines, "\n")
 }
 
-func buildStaticSystemPrompt(agentsDoc, soulDoc string, working map[string]any, includeWorking bool) (string, error) {
-	sections := []string{
-		"### AGENTS.md\n" + strings.TrimSpace(agentsDoc),
-		"### soul.md\n" + strings.TrimSpace(soulDoc),
+func hasTool(registry ToolRegistry, name string) bool {
+	if registry == nil {
+		return false
 	}
-
-	if includeWorking {
-		blob, err := marshalStableJSON(working)
-		if err != nil {
-			return "", fmt.Errorf("encode working memory: %w", err)
-		}
-		sections = append(sections, "### working memory\n```json\n"+string(blob)+"\n```")
-	}
-
-	return strings.Join(sections, "\n\n"), nil
+	_, ok := registry.Get(name)
+	return ok
 }
 
 func marshalStableJSON(v any) ([]byte, error) {

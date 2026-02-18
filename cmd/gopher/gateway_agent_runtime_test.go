@@ -107,7 +107,7 @@ func createGatewayTestAgentWorkspace(t *testing.T, dir, agentID string) {
 	}
 
 	mustWriteFile(t, filepath.Join(dir, "AGENTS.md"), "# AGENTS\nDo the task.")
-	mustWriteFile(t, filepath.Join(dir, "soul.md"), "# soul\nStay concise.")
+	mustWriteFile(t, filepath.Join(dir, "SOUL.md"), "# soul\nStay concise.")
 	mustWriteFile(t, filepath.Join(dir, "config.json"), string(configBlob))
 	mustWriteFile(t, filepath.Join(dir, "policies.json"), string(policiesBlob))
 }

@@ -24,6 +24,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "help", "-h", "--help":
 		printRootUsage(stdout)
 		return nil
+	case "version", "-v", "--version":
+		printBinaryVersion(stdout)
+		return nil
 	case "gateway":
 		return runGatewaySubcommand(args[1:], stdout, stderr)
 	case "status":
@@ -39,6 +42,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runAgentSubcommand(args[1:], stdout, stderr)
 	case "auth":
 		return runAuthSubcommand(args[1:], stdout, stderr)
+	case "update":
+		return runUpdateSubcommand(args[1:], stdout, stderr)
 	default:
 		printRootUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -59,6 +64,8 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  logs                  show gopher service logs")
 	fmt.Fprintln(out, "  agent ...             manage agent registry and workspaces")
 	fmt.Fprintln(out, "  auth ...              manage provider auth env settings")
+	fmt.Fprintln(out, "  update                check and apply binary updates")
+	fmt.Fprintln(out, "  version               print binary version")
 	fmt.Fprintln(out, "  service ...           install and manage linux systemd service")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "try:")

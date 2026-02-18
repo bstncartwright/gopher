@@ -35,7 +35,7 @@ func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResu
 	}()
 
 	emitter := newEventEmitter(a.ID, s.ID, a.Logger)
-	conversation, err := a.buildProviderContext(ctx, s, in.UserMessage)
+	conversation, err := a.buildProviderContext(ctx, s, in.UserMessage, in.PromptMode)
 	if err != nil {
 		turnErr = err
 		return TurnResult{Events: emitter.Events()}, err

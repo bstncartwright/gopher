@@ -43,11 +43,14 @@ func TestContextBuilderOrderingTruncationAndDeterminism(t *testing.T) {
 		t.Fatalf("expected deterministic context output")
 	}
 
-	agentsIndex := strings.Index(ctxA.SystemPrompt, "### AGENTS.md")
-	soulIndex := strings.Index(ctxA.SystemPrompt, "### soul.md")
-	memoryIndex := strings.Index(ctxA.SystemPrompt, "### working memory")
-	if !(agentsIndex >= 0 && soulIndex > agentsIndex && memoryIndex > soulIndex) {
+	workspaceFilesIndex := strings.Index(ctxA.SystemPrompt, "## Workspace Files (injected)")
+	projectContextIndex := strings.Index(ctxA.SystemPrompt, "# Project Context")
+	workingMemoryIndex := strings.Index(ctxA.SystemPrompt, "## Working Memory (gopher extension)")
+	if !(workspaceFilesIndex >= 0 && projectContextIndex > workspaceFilesIndex && workingMemoryIndex > projectContextIndex) {
 		t.Fatalf("system prompt sections out of order: %s", ctxA.SystemPrompt)
+	}
+	if !strings.Contains(ctxA.SystemPrompt, "## AGENTS.md") {
+		t.Fatalf("expected AGENTS.md to be injected in project context")
 	}
 
 	if len(ctxA.Messages) != 3 {
@@ -55,5 +58,39 @@ func TestContextBuilderOrderingTruncationAndDeterminism(t *testing.T) {
 	}
 	if ctxA.Messages[0].Role != ai.RoleAssistant || ctxA.Messages[1].Role != ai.RoleUser || ctxA.Messages[2].Role != ai.RoleUser {
 		t.Fatalf("unexpected role order: %#v", []ai.MessageRole{ctxA.Messages[0].Role, ctxA.Messages[1].Role, ctxA.Messages[2].Role})
+	}
+}
+
+func TestContextBuilderPromptModes(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	session := &Session{ID: "s-modes"}
+
+	minimalCtx, err := agent.buildProviderContext(context.Background(), session, "hello", PromptModeMinimal)
+	if err != nil {
+		t.Fatalf("buildProviderContext(minimal) error: %v", err)
+	}
+	if strings.Contains(minimalCtx.SystemPrompt, "## Heartbeats") {
+		t.Fatalf("did not expect heartbeats section in minimal mode")
+	}
+	if strings.Contains(minimalCtx.SystemPrompt, "## Reply Tags") {
+		t.Fatalf("did not expect reply tags section in minimal mode")
+	}
+	if !strings.Contains(minimalCtx.SystemPrompt, "## AGENTS.md") || !strings.Contains(minimalCtx.SystemPrompt, "## TOOLS.md") {
+		t.Fatalf("expected AGENTS.md and TOOLS.md in minimal project context")
+	}
+	if strings.Contains(minimalCtx.SystemPrompt, "## SOUL.md") {
+		t.Fatalf("did not expect SOUL.md in minimal project context")
+	}
+
+	noneCtx, err := agent.buildProviderContext(context.Background(), session, "hello", PromptModeNone)
+	if err != nil {
+		t.Fatalf("buildProviderContext(none) error: %v", err)
+	}
+	if strings.TrimSpace(noneCtx.SystemPrompt) != "You are a personal assistant running inside gopher." {
+		t.Fatalf("unexpected none-mode system prompt: %s", noneCtx.SystemPrompt)
 	}
 }

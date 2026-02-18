@@ -11,12 +11,17 @@ import (
 type Message = ai.Message
 
 type AgentConfig struct {
-	AgentID            string   `json:"agent_id"`
-	Name               string   `json:"name"`
-	Role               string   `json:"role"`
-	ModelPolicy        string   `json:"model_policy"`
-	EnabledTools       []string `json:"enabled_tools"`
-	MaxContextMessages int      `json:"max_context_messages"`
+	AgentID                string   `json:"agent_id"`
+	Name                   string   `json:"name"`
+	Role                   string   `json:"role"`
+	ModelPolicy            string   `json:"model_policy"`
+	EnabledTools           []string `json:"enabled_tools"`
+	SkillsPaths            []string `json:"skills_paths"`
+	MaxContextMessages     int      `json:"max_context_messages"`
+	BootstrapMaxChars      int      `json:"bootstrap_max_chars"`
+	BootstrapTotalMaxChars int      `json:"bootstrap_total_max_chars"`
+	UserTimezone           string   `json:"user_timezone"`
+	TimeFormat             string   `json:"time_format"`
 }
 
 type NetworkPolicy struct {
@@ -55,10 +60,18 @@ type Agent struct {
 	Processes      *ProcessManager
 	Cron           CronToolService
 
-	agentsDoc      string
-	soulDoc        string
+	skills         []Skill
 	model          ai.Model
 	allowedFSRoots []string
+}
+
+type Skill struct {
+	Name                   string
+	Description            string
+	Location               string
+	BaseDir                string
+	Instruction            string
+	DisableModelInvocation bool
 }
 
 type Session struct {
@@ -77,6 +90,7 @@ type Attachment struct {
 type TurnInput struct {
 	UserMessage string
 	Attachments []Attachment
+	PromptMode  PromptMode
 }
 
 type TurnResult struct {
@@ -97,6 +111,14 @@ const (
 const (
 	DefaultContextWindow = 40
 	MaxToolRounds        = 8
+)
+
+type PromptMode string
+
+const (
+	PromptModeFull    PromptMode = "full"
+	PromptModeMinimal PromptMode = "minimal"
+	PromptModeNone    PromptMode = "none"
 )
 
 type Event struct {

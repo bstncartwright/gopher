@@ -42,7 +42,10 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 	turnCtx, cancel := withTurnTimeout(ctx)
 	defer cancel()
 
-	result, err := a.agent.RunTurn(turnCtx, sessionData, TurnInput{UserMessage: userMsg.Content})
+	result, err := a.agent.RunTurn(turnCtx, sessionData, TurnInput{
+		UserMessage: userMsg.Content,
+		PromptMode:  PromptModeFull,
+	})
 	if err != nil {
 		return sessionrt.AgentOutput{}, err
 	}

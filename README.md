@@ -223,9 +223,51 @@ phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages 
 1. prepare runtime workspace(s):
    - preferred layout (isolated per agent):
      - `<working_dir>/agents/<agent_id>/AGENTS.md`
-     - `<working_dir>/agents/<agent_id>/soul.md`
+     - `<working_dir>/agents/<agent_id>/SOUL.md`
+     - `<working_dir>/agents/<agent_id>/TOOLS.md`
+     - `<working_dir>/agents/<agent_id>/IDENTITY.md`
+     - `<working_dir>/agents/<agent_id>/USER.md`
+     - `<working_dir>/agents/<agent_id>/HEARTBEAT.md`
+     - `<working_dir>/agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
+     - `<working_dir>/agents/<agent_id>/MEMORY.md` (optional)
      - `<working_dir>/agents/<agent_id>/config.json`
      - `<working_dir>/agents/<agent_id>/policies.json`
+   - compatibility:
+     - runtime reads canonical uppercase files first
+     - if missing, runtime falls back to lowercase legacy names (`soul.md`, `tools.md`, etc.)
+   - optional skills layout (agent-skills compatible):
+     - `<working_dir>/agents/<agent_id>/.agents/skills/<skill_name>/SKILL.md`
+     - frontmatter must include:
+       - `name`
+       - `description`
+     - example:
+
+```markdown
+---
+name: fixing-accessibility
+description: Fix accessibility issues in UI code.
+---
+## workflow
+
+Run the accessibility audit and apply fixes.
+```
+
+   - discovery order:
+     - `config.json` `skills_paths` (if set)
+     - `AGENT_SKILLS_PATH` (path-list separated)
+     - defaults: `<workspace>/.agents/skills` and `~/.agents/skills`
+   - runtime behavior:
+     - startup loads skill metadata (`name`, `description`, `location`)
+     - system prompt uses an OpenClaw-style sectioned layout (`full|minimal|none`; default `full`)
+     - `<available_skills>` metadata is injected; full skill instructions are loaded on demand via `read`
+     - explicit skill invocation is supported via `/skill:<name> [args]`
+     - bootstrap files are injected every turn with caps:
+       - `bootstrap_max_chars` (default `20000`) per file
+       - `bootstrap_total_max_chars` (default `150000`) total across injected files
+     - memory model is hybrid:
+       - `MEMORY.md` / `memory.md` can be injected as bootstrap context
+       - JSON working memory remains injected as a gopher extension
+     - long-term memory retrieval is injected only for `full` prompt mode
 2. configure gateway matrix block in `/etc/gopher/gopher.toml`:
    - `enabled = true`
    - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)

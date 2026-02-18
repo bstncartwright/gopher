@@ -10,7 +10,7 @@ import (
 )
 
 func TestLoadAgentMissingRequiredFiles(t *testing.T) {
-	required := []string{"AGENTS.md", "soul.md", "config.json", "policies.json"}
+	required := []string{"config.json", "policies.json"}
 	for _, name := range required {
 		t.Run(name, func(t *testing.T) {
 			workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())

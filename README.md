@@ -188,11 +188,21 @@ gopher auth providers
 # set provider key
 gopher auth set --env-file /etc/gopher/gopher.env --provider zai --api-key "$ZAI_API_KEY"
 
+# run interactive oauth login for openai-codex
+gopher auth login --env-file /etc/gopher/gopher.env --provider openai-codex
+
 # remove provider key
 gopher auth unset --env-file /etc/gopher/gopher.env --provider zai
 ```
 
-for oauth-backed providers, use raw env keys until interactive oauth login is added:
+openai-codex oauth login stores:
+- `OPENAI_CODEX_TOKEN`
+- `OPENAI_CODEX_REFRESH_TOKEN`
+- `OPENAI_CODEX_TOKEN_EXPIRES` (unix ms)
+
+runtime uses these oauth fields to refresh `OPENAI_CODEX_TOKEN` automatically when expired.
+
+manual fallback is still supported:
 
 ```bash
 gopher auth set --env-file /etc/gopher/gopher.env --key OPENAI_CODEX_TOKEN --value "<token>"
@@ -227,7 +237,7 @@ phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages 
      - `<working_dir>/agents/<agent_id>/TOOLS.md`
      - `<working_dir>/agents/<agent_id>/IDENTITY.md`
      - `<working_dir>/agents/<agent_id>/USER.md`
-     - `<working_dir>/agents/<agent_id>/HEARTBEAT.md`
+     - `<working_dir>/agents/<agent_id>/HEARTBEAT.md` (optional)
      - `<working_dir>/agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
      - `<working_dir>/agents/<agent_id>/MEMORY.md` (optional)
      - `<working_dir>/agents/<agent_id>/config.json`
@@ -268,6 +278,12 @@ Run the accessibility audit and apply fixes.
        - `MEMORY.md` / `memory.md` can be injected as bootstrap context
        - JSON working memory remains injected as a gopher extension
      - long-term memory retrieval is injected only for `full` prompt mode
+     - heartbeat polling is opt-in per agent via `config.json`:
+       - `heartbeat.every` (duration; required to enable, examples: `"15m"`, `"1h"`, `"30"` where bare numbers mean minutes)
+       - `heartbeat.prompt` (optional custom poll prompt)
+       - `heartbeat.ack_max_chars` (optional suppression threshold for `HEARTBEAT_OK` replies; default `300`)
+   - cross-agent file access is policy-gated in `policies.json`:
+     - set `allow_cross_agent_fs = true` and include additional paths in `fs_roots` when an agent should read/write another agent workspace
 2. configure gateway matrix block in `/etc/gopher/gopher.toml`:
    - `enabled = true`
    - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)

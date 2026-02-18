@@ -26,7 +26,7 @@ workspace layout per agent:
 - `~/.gopher/agents/<agent_id>/TOOLS.md`
 - `~/.gopher/agents/<agent_id>/IDENTITY.md`
 - `~/.gopher/agents/<agent_id>/USER.md`
-- `~/.gopher/agents/<agent_id>/HEARTBEAT.md`
+- `~/.gopher/agents/<agent_id>/HEARTBEAT.md` (optional; used when heartbeat is configured)
 - `~/.gopher/agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
 - `~/.gopher/agents/<agent_id>/MEMORY.md` (optional)
 - `~/.gopher/agents/<agent_id>/config.json`

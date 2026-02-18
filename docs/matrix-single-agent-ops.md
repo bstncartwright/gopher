@@ -17,7 +17,7 @@ preferred per-agent files under the service working directory (`/home/exedev/.go
 - `agents/<agent_id>/TOOLS.md`
 - `agents/<agent_id>/IDENTITY.md`
 - `agents/<agent_id>/USER.md`
-- `agents/<agent_id>/HEARTBEAT.md`
+- `agents/<agent_id>/HEARTBEAT.md` (optional; heartbeat checklist)
 - `agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
 - `agents/<agent_id>/MEMORY.md` (optional)
 - `agents/<agent_id>/config.json`
@@ -26,6 +26,14 @@ preferred per-agent files under the service working directory (`/home/exedev/.go
 compatibility:
 - runtime prefers canonical uppercase files
 - if missing, runtime falls back to lowercase legacy names (`soul.md`, `tools.md`, `identity.md`, `user.md`, `heartbeat.md`, `bootstrap.md`)
+
+heartbeat behavior:
+- disabled by default.
+- enable per agent in `agents/<agent_id>/config.json` via:
+  - `"heartbeat": { "every": "15m" }`
+- optional heartbeat fields:
+  - `"prompt"` custom poll prompt
+  - `"ack_max_chars"` max chars to suppress when reply includes `HEARTBEAT_OK` (default `300`)
 
 example model policy:
 

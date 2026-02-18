@@ -74,6 +74,20 @@ func TestLoadAgentModelPolicyAllowsColonInModelID(t *testing.T) {
 	}
 }
 
+func TestLoadAgentRejectsFSRootsOutsideWorkspace(t *testing.T) {
+	policies := defaultPolicies()
+	policies.FSRoots = []string{"../outside"}
+	workspace := createTestWorkspace(t, defaultConfig(), policies)
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected fs root escape error")
+	}
+	if !strings.Contains(err.Error(), "escapes workspace") {
+		t.Fatalf("expected escape error, got: %v", err)
+	}
+}
+
 func modelsToMap(models []ai.Model) map[string]ai.Model {
 	out := make(map[string]ai.Model, len(models))
 	for _, model := range models {

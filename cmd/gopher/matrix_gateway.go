@@ -23,25 +23,16 @@ type matrixDMBridge struct {
 	cancel    context.CancelFunc
 }
 
-func loadGatewayRuntimeExecutor(workspace string) (sessionrt.AgentExecutor, error) {
-	agent, err := agentcore.LoadAgent(workspace)
-	if err != nil {
-		return nil, fmt.Errorf("load gateway runtime agent: %w", err)
-	}
-	return agentcore.NewSessionRuntimeAdapter(agent), nil
-}
-
 func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *log.Logger) (*matrixDMBridge, error) {
 	workspace, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
 	}
 
-	agent, err := agentcore.LoadAgent(workspace)
+	agentRuntime, err := loadGatewayAgentRuntime(workspace)
 	if err != nil {
-		return nil, fmt.Errorf("load agent for gateway runtime: %w", err)
+		return nil, fmt.Errorf("load gateway agents: %w", err)
 	}
-	executor := agentcore.NewSessionRuntimeAdapter(agent)
 	storeDir := filepath.Join(workspace, ".gopher", "sessions")
 	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: storeDir})
 	if err != nil {
@@ -50,7 +41,7 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:          store,
-		Executor:       executor,
+		Executor:       agentRuntime.Executor,
 		RecoverOnStart: true,
 	})
 	if err != nil {
@@ -76,7 +67,10 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 		if err != nil {
 			return nil, fmt.Errorf("create cron service: %w", err)
 		}
-		agent.Cron = newGatewayCronToolService(cronService)
+		cronTool := newGatewayCronToolService(cronService)
+		for _, agent := range agentRuntime.Agents {
+			agent.Cron = cronTool
+		}
 		cronRunner, err = gateway.NewCronRunner(gateway.CronRunnerOptions{
 			Service:      cronService,
 			PollInterval: cfg.Cron.PollInterval,
@@ -107,7 +101,7 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
 		Manager:       manager,
 		Transport:     matrixBridge,
-		AgentID:       sessionrt.ActorID(agent.ID),
+		AgentID:       agentRuntime.DefaultActorID,
 		Conversations: gateway.NewConversationSessionMap(),
 		Logger:        logger,
 	})

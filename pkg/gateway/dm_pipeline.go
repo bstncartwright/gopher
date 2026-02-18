@@ -32,13 +32,20 @@ type DMPipeline struct {
 	subscribed   map[sessionrt.SessionID]struct{}
 	fallbackMu   sync.Mutex
 	lastFallback map[string]time.Time
+	processingMu sync.Mutex
+	processing   map[string]int
 }
 
 const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmFallbackMinInterval    = 5 * time.Second
+	dmTypingTimeout          = 3 * time.Second
 )
+
+type typingTransport interface {
+	SendTyping(ctx context.Context, conversationID string, typing bool) error
+}
 
 func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 	if opts.Manager == nil {
@@ -62,6 +69,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		logger:        opts.Logger,
 		subscribed:    map[sessionrt.SessionID]struct{}{},
 		lastFallback:  map[string]time.Time{},
+		processing:    map[string]int{},
 	}
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
 	return pipeline, nil
@@ -77,6 +85,7 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	if err != nil {
 		return err
 	}
+	p.startProcessing(conversationID)
 
 	// Appservice transactions should be acknowledged quickly; dispatch session work async.
 	p.dispatchInboundEvent(sessionrt.Event{
@@ -94,6 +103,7 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID, senderID string) {
 	go func() {
 		if err := p.manager.SendEvent(context.Background(), event); err != nil {
+			p.finishProcessing(conversationID)
 			if p.logger != nil {
 				p.logger.Printf("send dm session event failed conversation_id=%q sender=%q err=%v", conversationID, senderID, err)
 			}
@@ -176,6 +186,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				continue
 			}
 			if event.Type == sessionrt.EventError {
+				p.finishProcessing(conversationID)
 				p.sendErrorFallback(conversationID, errorTextFromPayload(event.Payload))
 				continue
 			}
@@ -196,7 +207,11 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				}
 				msg = sessionrt.Message{Role: sessionrt.Role(roleRaw), Content: textRaw}
 			}
-			if msg.Role != sessionrt.RoleAgent || strings.TrimSpace(msg.Content) == "" {
+			if msg.Role != sessionrt.RoleAgent {
+				continue
+			}
+			p.finishProcessing(conversationID)
+			if strings.TrimSpace(msg.Content) == "" {
 				continue
 			}
 			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
@@ -208,6 +223,63 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 		}
 	}()
 	return nil
+}
+
+func (p *DMPipeline) startProcessing(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+
+	shouldEnable := false
+	p.processingMu.Lock()
+	if p.processing[conversationID] == 0 {
+		shouldEnable = true
+	}
+	p.processing[conversationID]++
+	p.processingMu.Unlock()
+
+	if shouldEnable {
+		p.sendTyping(conversationID, true)
+	}
+}
+
+func (p *DMPipeline) finishProcessing(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+
+	shouldDisable := false
+	p.processingMu.Lock()
+	count := p.processing[conversationID]
+	switch {
+	case count <= 0:
+		p.processingMu.Unlock()
+		return
+	case count == 1:
+		delete(p.processing, conversationID)
+		shouldDisable = true
+	default:
+		p.processing[conversationID] = count - 1
+	}
+	p.processingMu.Unlock()
+
+	if shouldDisable {
+		p.sendTyping(conversationID, false)
+	}
+}
+
+func (p *DMPipeline) sendTyping(conversationID string, typing bool) {
+	typingAPI, ok := p.transport.(typingTransport)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dmTypingTimeout)
+	defer cancel()
+	if err := typingAPI.SendTyping(ctx, conversationID, typing); err != nil && p.logger != nil {
+		p.logger.Printf("send dm typing failed conversation_id=%q typing=%t err=%v", conversationID, typing, err)
+	}
 }
 
 func (p *DMPipeline) isCurrentConversationSession(conversationID string, sessionID sessionrt.SessionID) bool {

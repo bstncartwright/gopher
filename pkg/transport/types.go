@@ -21,4 +21,5 @@ type Transport interface {
 	Stop() error
 	SetInboundHandler(handler InboundHandler)
 	SendMessage(ctx context.Context, message OutboundMessage) error
+	SendTyping(ctx context.Context, conversationID string, typing bool) error
 }

@@ -161,6 +161,68 @@ func TestSendMessageCallsHomeserverAPI(t *testing.T) {
 	}
 }
 
+func TestSendTypingCallsHomeserverAPI(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestCount++
+		if request.URL.Path == "/_matrix/client/v3/register" {
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"user_id":"@gopher:local"}`))
+			return
+		}
+		if request.Method != http.MethodPut {
+			t.Fatalf("method = %s, want PUT", request.Method)
+		}
+		if request.URL.Query().Get("access_token") != "as-token" {
+			t.Fatalf("access token mismatch: %q", request.URL.Query().Get("access_token"))
+		}
+		if request.URL.Query().Get("user_id") != "@gopher:local" {
+			t.Fatalf("user_id mismatch: %q", request.URL.Query().Get("user_id"))
+		}
+		if !strings.Contains(request.URL.Path, "/typing/") {
+			t.Fatalf("path = %q, expected typing endpoint", request.URL.Path)
+		}
+		body, _ := io.ReadAll(request.Body)
+		if !bytes.Contains(body, []byte(`"typing":true`)) {
+			t.Fatalf("unexpected body: %s", string(body))
+		}
+		if !bytes.Contains(body, []byte(`"timeout":30000`)) {
+			t.Fatalf("missing timeout in body: %s", string(body))
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+		ListenAddr:    "127.0.0.1:0",
+		BotUserID:     "@gopher:local",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = instance.Start(ctx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if err := instance.SendTyping(context.Background(), "!dm:local", true); err != nil {
+		t.Fatalf("SendTyping() error: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for requestCount < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if requestCount < 2 {
+		t.Fatalf("homeserver request count = %d, want >= 2", requestCount)
+	}
+}
+
 func TestHandleTransactionJoinsRoomOnBotInvite(t *testing.T) {
 	joined := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

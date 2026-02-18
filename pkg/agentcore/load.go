@@ -164,6 +164,12 @@ func decodeJSONFile(path string, out any) error {
 }
 
 func resolveAllowedFSRoots(workspace string, roots []string) ([]string, error) {
+	workspaceAbs, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace root %q: %w", workspace, err)
+	}
+	workspaceRoot := evalSymlinksOrAncestor(filepath.Clean(workspaceAbs))
+
 	if len(roots) == 0 {
 		roots = []string{"./"}
 	}
@@ -187,6 +193,9 @@ func resolveAllowedFSRoots(workspace string, roots []string) ([]string, error) {
 		// Use the same ancestor-walking strategy so non-existent roots with
 		// symlinked ancestors resolve identically on both sides.
 		clean = evalSymlinksOrAncestor(clean)
+		if !isWithinRoot(clean, workspaceRoot) {
+			return nil, fmt.Errorf("fs root %q escapes workspace %q", root, workspace)
+		}
 		if _, exists := seen[clean]; exists {
 			continue
 		}

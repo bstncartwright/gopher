@@ -54,6 +54,12 @@ type fakeTransport struct {
 	mu      sync.Mutex
 	handler transport.InboundHandler
 	sent    []transport.OutboundMessage
+	typing  []typingSignal
+}
+
+type typingSignal struct {
+	ConversationID string
+	Typing         bool
 }
 
 func (f *fakeTransport) Start(context.Context) error { return nil }
@@ -69,6 +75,15 @@ func (f *fakeTransport) SendMessage(_ context.Context, message transport.Outboun
 	f.sent = append(f.sent, message)
 	return nil
 }
+func (f *fakeTransport) SendTyping(_ context.Context, conversationID string, typing bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.typing = append(f.typing, typingSignal{
+		ConversationID: conversationID,
+		Typing:         typing,
+	})
+	return nil
+}
 func (f *fakeTransport) sentCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -81,6 +96,13 @@ func (f *fakeTransport) lastSent() transport.OutboundMessage {
 		return transport.OutboundMessage{}
 	}
 	return f.sent[len(f.sent)-1]
+}
+func (f *fakeTransport) typingSignals() []typingSignal {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]typingSignal, len(f.typing))
+	copy(out, f.typing)
+	return out
 }
 
 type dmStaticExecutor struct {
@@ -192,6 +214,13 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("HandleInbound(second) error: %v", err)
 	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 2
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		signals := fake.typingSignals()
+		return len(signals) >= 2 && !signals[len(signals)-1].Typing
+	})
 
 	sessions, err := store.ListSessions(ctx)
 	if err != nil {
@@ -199,6 +228,19 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}
 	if len(sessions) != 1 {
 		t.Fatalf("session count = %d, want 1", len(sessions))
+	}
+
+	signals := fake.typingSignals()
+	if len(signals) < 2 {
+		t.Fatalf("typing signal count = %d, want >= 2", len(signals))
+	}
+	first := signals[0]
+	if first.ConversationID != "!dm:one" || !first.Typing {
+		t.Fatalf("first typing signal = %#v, want typing=true for !dm:one", first)
+	}
+	last := signals[len(signals)-1]
+	if last.ConversationID != "!dm:one" || last.Typing {
+		t.Fatalf("last typing signal = %#v, want typing=false for !dm:one", last)
 	}
 }
 
@@ -286,6 +328,10 @@ func TestDMPipelineRecoversAfterInitialSubscribeFailure(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		return fake.sentCount() > 0
 	})
+	waitFor(t, 2*time.Second, func() bool {
+		signals := fake.typingSignals()
+		return len(signals) >= 2 && !signals[len(signals)-1].Typing
+	})
 }
 
 func TestDMPipelineHandleInboundReturnsBeforeSlowSendCompletes(t *testing.T) {
@@ -328,6 +374,10 @@ func TestDMPipelineHandleInboundReturnsBeforeSlowSendCompletes(t *testing.T) {
 	close(manager.block)
 	waitFor(t, 2*time.Second, func() bool {
 		return fake.sentCount() > 0
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		signals := fake.typingSignals()
+		return len(signals) >= 2 && !signals[len(signals)-1].Typing
 	})
 }
 
@@ -437,6 +487,13 @@ func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
 	if got.Text != dmRateLimitFallbackReply {
 		t.Fatalf("fallback reply = %q, want %q", got.Text, dmRateLimitFallbackReply)
 	}
+	signals := fake.typingSignals()
+	if len(signals) < 2 {
+		t.Fatalf("typing signal count = %d, want >= 2", len(signals))
+	}
+	if !signals[0].Typing || signals[len(signals)-1].Typing {
+		t.Fatalf("typing lifecycle = %#v, want starts true and ends false", signals)
+	}
 }
 
 func TestDMPipelineSendsFallbackWhenSendEventFails(t *testing.T) {
@@ -481,6 +538,13 @@ func TestDMPipelineSendsFallbackWhenSendEventFails(t *testing.T) {
 	}
 	if got.Text != dmErrorFallbackReply {
 		t.Fatalf("fallback reply = %q, want %q", got.Text, dmErrorFallbackReply)
+	}
+	signals := fake.typingSignals()
+	if len(signals) < 2 {
+		t.Fatalf("typing signal count = %d, want >= 2", len(signals))
+	}
+	if !signals[0].Typing || signals[len(signals)-1].Typing {
+		t.Fatalf("typing lifecycle = %#v, want starts true and ends false", signals)
 	}
 }
 

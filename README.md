@@ -202,11 +202,17 @@ gopher auth set --env-file /etc/gopher/gopher.env --key OPENAI_CODEX_TOKEN --val
 
 phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages and routes them through one runtime agent workspace.
 
-1. prepare runtime workspace:
-   - `/home/exedev/.gopher/AGENTS.md`
-   - `/home/exedev/.gopher/soul.md`
-   - `/home/exedev/.gopher/config.json`
-   - `/home/exedev/.gopher/policies.json`
+1. prepare runtime workspace(s):
+   - preferred layout (isolated per agent):
+     - `<working_dir>/.gopher/agents/<agent_id>/AGENTS.md`
+     - `<working_dir>/.gopher/agents/<agent_id>/soul.md`
+     - `<working_dir>/.gopher/agents/<agent_id>/config.json`
+     - `<working_dir>/.gopher/agents/<agent_id>/policies.json`
+   - legacy fallback (single shared workspace) is still supported:
+     - `<working_dir>/AGENTS.md`
+     - `<working_dir>/soul.md`
+     - `<working_dir>/config.json`
+     - `<working_dir>/policies.json`
 2. configure gateway matrix block in `/etc/gopher/gopher.toml`:
    - `enabled = true`
    - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)

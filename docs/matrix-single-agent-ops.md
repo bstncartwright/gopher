@@ -10,7 +10,14 @@ this runbook is the repeatable setup path for one matrix-chatable agent on a gat
 
 ## 1) runtime workspace validation
 
-required files under the service working directory (`/home/exedev/.gopher`):
+preferred per-agent files under the service working directory (`/home/exedev/.gopher`):
+
+- `.gopher/agents/<agent_id>/AGENTS.md`
+- `.gopher/agents/<agent_id>/soul.md`
+- `.gopher/agents/<agent_id>/config.json`
+- `.gopher/agents/<agent_id>/policies.json`
+
+legacy fallback is still accepted:
 
 - `AGENTS.md`
 - `soul.md`

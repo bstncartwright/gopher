@@ -58,10 +58,21 @@ type Transport struct {
 }
 
 type queuedOutbound struct {
-	message transport.OutboundMessage
-	eventID string
-	attempt int
+	kind                 outboundKind
+	message              transport.OutboundMessage
+	typingConversationID string
+	typingUserID         string
+	typing               bool
+	eventID              string
+	attempt              int
 }
+
+type outboundKind int
+
+const (
+	outboundKindMessage outboundKind = iota
+	outboundKindTyping
+)
 
 type deliveryStatus string
 
@@ -259,10 +270,45 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 	}
 
 	item := queuedOutbound{
+		kind: outboundKindMessage,
 		message: transport.OutboundMessage{
 			ConversationID: roomID,
 			Text:           bodyText,
 		},
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case queue <- item:
+		t.recordQueueDepth(len(queue))
+		return nil
+	default:
+		t.incrementDropped()
+		return fmt.Errorf("matrix outbound queue is full")
+	}
+}
+
+func (t *Transport) SendTyping(ctx context.Context, conversationID string, typing bool) error {
+	roomID := strings.TrimSpace(conversationID)
+	if roomID == "" {
+		return fmt.Errorf("matrix typing conversation id is required")
+	}
+	userID := strings.TrimSpace(t.botUserID)
+	if userID == "" {
+		return nil
+	}
+	t.mu.RLock()
+	started := t.started
+	queue := t.outboundQueue
+	t.mu.RUnlock()
+	if !started || queue == nil {
+		return fmt.Errorf("matrix transport is not running")
+	}
+	item := queuedOutbound{
+		kind:                 outboundKindTyping,
+		typingConversationID: roomID,
+		typingUserID:         userID,
+		typing:               typing,
 	}
 	select {
 	case <-ctx.Done():
@@ -312,6 +358,41 @@ func (t *Transport) sendMessageNow(ctx context.Context, message transport.Outbou
 	return nil
 }
 
+func (t *Transport) sendTypingNow(ctx context.Context, roomID, userID string, typing bool) error {
+	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/typing/%s?access_token=%s",
+		t.homeserverURL,
+		url.PathEscape(roomID),
+		url.PathEscape(userID),
+		url.QueryEscape(t.asToken),
+	)
+	endpoint += "&user_id=" + url.QueryEscape(userID)
+	payload := map[string]any{
+		"typing": typing,
+	}
+	if typing {
+		payload["timeout"] = 30000
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal matrix typing payload: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, strings.NewReader(string(blob)))
+	if err != nil {
+		return fmt.Errorf("build matrix typing request: %w", err)
+	}
+	request.Header.Set("content-type", "application/json")
+	response, err := t.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("send matrix typing request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(response.Body)
+		return fmt.Errorf("matrix typing status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 func (t *Transport) runOutboundWorker(workerCtx context.Context, outboundQueue <-chan queuedOutbound, done chan<- struct{}) {
 	defer close(done)
 	for {
@@ -327,7 +408,15 @@ func (t *Transport) runOutboundWorker(workerCtx context.Context, outboundQueue <
 
 func (t *Transport) processOutbound(item queuedOutbound) {
 	for {
-		err := t.sendMessageNow(t.workerCtx, item.message)
+		var err error
+		switch item.kind {
+		case outboundKindMessage:
+			err = t.sendMessageNow(t.workerCtx, item.message)
+		case outboundKindTyping:
+			err = t.sendTypingNow(t.workerCtx, item.typingConversationID, item.typingUserID, item.typing)
+		default:
+			return
+		}
 		if err == nil {
 			t.recordOutboundSuccess()
 			if strings.TrimSpace(item.eventID) != "" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -58,5 +59,46 @@ func TestFSPolicyBlocksTraversalAndAllowsInRoot(t *testing.T) {
 	}
 	if string(blob) != "hello" {
 		t.Fatalf("unexpected file content: %q", string(blob))
+	}
+}
+
+func TestFSPolicyAllowsCrossAgentAccessWhenEnabled(t *testing.T) {
+	otherWorkspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+
+	policies := defaultPolicies()
+	policies.FSRoots = []string{"./", otherWorkspace}
+	policies.AllowCrossAgentFS = true
+
+	workspace := createTestWorkspace(t, defaultConfig(), policies)
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	runner := NewToolRunner(agent)
+	session := agent.NewSession()
+
+	targetPath := filepath.Join(otherWorkspace, "IDENTITY.md")
+	output, runErr := runner.Run(context.Background(), session, ai.ContentBlock{
+		Type: ai.ContentTypeToolCall,
+		Name: "edit",
+		Arguments: map[string]any{
+			"path":     targetPath,
+			"old_text": "Test agent.",
+			"new_text": "Cross-agent updated identity.",
+		},
+	})
+	if runErr != nil {
+		t.Fatalf("expected cross-agent edit success, got %v", runErr)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("expected ok status, got %q", output.Status)
+	}
+
+	blob, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read target file: %v", err)
+	}
+	if string(blob) == "" || !strings.Contains(string(blob), "Cross-agent updated identity.") {
+		t.Fatalf("expected updated target content, got: %q", string(blob))
 	}
 }

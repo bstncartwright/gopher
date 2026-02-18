@@ -63,6 +63,7 @@ func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessag
 		Working:        working,
 		UserTimezone:   a.Config.UserTimezone,
 		Model:          a.model,
+		Heartbeat:      a.Heartbeat,
 	})
 	if err != nil {
 		return ai.Context{}, fmt.Errorf("build system prompt: %w", err)

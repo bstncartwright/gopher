@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
 	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
@@ -11,17 +12,31 @@ import (
 type Message = ai.Message
 
 type AgentConfig struct {
-	AgentID                string   `json:"agent_id"`
-	Name                   string   `json:"name"`
-	Role                   string   `json:"role"`
-	ModelPolicy            string   `json:"model_policy"`
-	EnabledTools           []string `json:"enabled_tools"`
-	SkillsPaths            []string `json:"skills_paths"`
-	MaxContextMessages     int      `json:"max_context_messages"`
-	BootstrapMaxChars      int      `json:"bootstrap_max_chars"`
-	BootstrapTotalMaxChars int      `json:"bootstrap_total_max_chars"`
-	UserTimezone           string   `json:"user_timezone"`
-	TimeFormat             string   `json:"time_format"`
+	AgentID                string          `json:"agent_id"`
+	Name                   string          `json:"name"`
+	Role                   string          `json:"role"`
+	ModelPolicy            string          `json:"model_policy"`
+	EnabledTools           []string        `json:"enabled_tools"`
+	SkillsPaths            []string        `json:"skills_paths"`
+	MaxContextMessages     int             `json:"max_context_messages"`
+	BootstrapMaxChars      int             `json:"bootstrap_max_chars"`
+	BootstrapTotalMaxChars int             `json:"bootstrap_total_max_chars"`
+	UserTimezone           string          `json:"user_timezone"`
+	TimeFormat             string          `json:"time_format"`
+	Heartbeat              HeartbeatConfig `json:"heartbeat"`
+}
+
+type HeartbeatConfig struct {
+	Every       string `json:"every"`
+	Prompt      string `json:"prompt"`
+	AckMaxChars int    `json:"ack_max_chars"`
+}
+
+type AgentHeartbeat struct {
+	Enabled     bool
+	Every       time.Duration
+	Prompt      string
+	AckMaxChars int
 }
 
 type NetworkPolicy struct {
@@ -35,6 +50,7 @@ type BudgetPolicy struct {
 
 type AgentPolicies struct {
 	FSRoots           []string            `json:"fs_roots"`
+	AllowCrossAgentFS bool                `json:"allow_cross_agent_fs"`
 	CanShell          bool                `json:"can_shell"`
 	ShellAllowlist    []string            `json:"shell_allowlist"`
 	Network           NetworkPolicy       `json:"network"`
@@ -59,6 +75,7 @@ type Agent struct {
 	Provider       AIProvider
 	Processes      *ProcessManager
 	Cron           CronToolService
+	Heartbeat      AgentHeartbeat
 
 	skills         []Skill
 	model          ai.Model

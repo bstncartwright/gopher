@@ -6,12 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
 	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
 	"github.com/bstncartwright/gopher/pkg/memory"
 	"github.com/bstncartwright/gopher/pkg/memory/retrieval"
 	memsqlite "github.com/bstncartwright/gopher/pkg/memory/store/sqlite"
+)
+
+const (
+	defaultHeartbeatPrompt      = "Run heartbeat checks using HEARTBEAT.md when available. If no user-facing action is required, reply exactly HEARTBEAT_OK."
+	defaultHeartbeatAckMaxChars = 300
 )
 
 func LoadAgent(workspacePath string) (*Agent, error) {
@@ -51,6 +57,10 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	} else {
 		config.TimeFormat = "auto"
 	}
+	heartbeat, err := normalizeHeartbeatConfig(config.Heartbeat)
+	if err != nil {
+		return nil, err
+	}
 
 	policies := AgentPolicies{}
 	if err := decodeJSONFile(policiesPath, &policies); err != nil {
@@ -66,7 +76,7 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		return nil, fmt.Errorf("model not found for model_policy %q", config.ModelPolicy)
 	}
 
-	allowedRoots, err := resolveAllowedFSRoots(workspaceAbs, policies.FSRoots)
+	allowedRoots, err := resolveAllowedFSRoots(workspaceAbs, policies.FSRoots, policies.AllowCrossAgentFS)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +99,7 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		Logger:         NewJSONLEventLogger(filepath.Join(workspaceAbs, "logs", "events.jsonl")),
 		Provider:       AIStreamProvider{},
 		Processes:      NewProcessManager(),
+		Heartbeat:      heartbeat,
 		model:          model,
 		allowedFSRoots: allowedRoots,
 	}
@@ -167,7 +178,7 @@ func decodeJSONFile(path string, out any) error {
 	return nil
 }
 
-func resolveAllowedFSRoots(workspace string, roots []string) ([]string, error) {
+func resolveAllowedFSRoots(workspace string, roots []string, allowCrossAgentFS bool) ([]string, error) {
 	workspaceAbs, err := filepath.Abs(workspace)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace root %q: %w", workspace, err)
@@ -197,7 +208,7 @@ func resolveAllowedFSRoots(workspace string, roots []string) ([]string, error) {
 		// Use the same ancestor-walking strategy so non-existent roots with
 		// symlinked ancestors resolve identically on both sides.
 		clean = evalSymlinksOrAncestor(clean)
-		if !isWithinRoot(clean, workspaceRoot) {
+		if !allowCrossAgentFS && !isWithinRoot(clean, workspaceRoot) {
 			return nil, fmt.Errorf("fs root %q escapes workspace %q", root, workspace)
 		}
 		if _, exists := seen[clean]; exists {
@@ -222,4 +233,62 @@ func normalizeTimeFormat(raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func normalizeHeartbeatConfig(input HeartbeatConfig) (AgentHeartbeat, error) {
+	everyRaw := strings.TrimSpace(input.Every)
+	if everyRaw == "" {
+		return AgentHeartbeat{}, nil
+	}
+
+	every, err := parseHeartbeatEvery(everyRaw)
+	if err != nil {
+		return AgentHeartbeat{}, fmt.Errorf("invalid config.heartbeat.every: %w", err)
+	}
+	if every == 0 {
+		return AgentHeartbeat{}, nil
+	}
+	if every < 0 {
+		return AgentHeartbeat{}, fmt.Errorf("invalid config.heartbeat.every: duration must be >= 0")
+	}
+
+	prompt := strings.TrimSpace(input.Prompt)
+	if prompt == "" {
+		prompt = defaultHeartbeatPrompt
+	}
+
+	ackMaxChars := input.AckMaxChars
+	if ackMaxChars <= 0 {
+		ackMaxChars = defaultHeartbeatAckMaxChars
+	}
+
+	return AgentHeartbeat{
+		Enabled:     true,
+		Every:       every,
+		Prompt:      prompt,
+		AckMaxChars: ackMaxChars,
+	}, nil
+}
+
+func parseHeartbeatEvery(raw string) (time.Duration, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, nil
+	}
+	if isDigits(value) {
+		value += "m"
+	}
+	return time.ParseDuration(value)
+}
+
+func isDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }

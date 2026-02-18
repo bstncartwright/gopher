@@ -383,17 +383,17 @@ func ensureAgentWorkspace(agentID, workspace string) error {
 	}
 
 	files := map[string]string{
-		"AGENTS.md":     fmt.Sprintf("# %s\n\n## mission\n\nDefine this agent's purpose.\n", agentID),
-		"SOUL.md":       "# personality\n\nDescribe identity, style, and boundaries.\n",
-		"TOOLS.md":      "# tools\n\nDescribe local tools and conventions.\n",
-		"IDENTITY.md":   "# identity\n\nDefine name, style, and persona.\n",
-		"USER.md":       "# user\n\nDescribe user preferences and defaults.\n",
-		"HEARTBEAT.md":  "# heartbeat\n\nOptional heartbeat checklist.\n",
-		"config.json":   "{}\n",
-		"policies.json": "{}\n",
+		"AGENTS.md":     defaultAgentsTemplate(agentID),
+		"SOUL.md":       defaultSoulTemplate(),
+		"TOOLS.md":      defaultToolsTemplate(),
+		"IDENTITY.md":   defaultIdentityTemplate(),
+		"USER.md":       defaultUserTemplate(),
+		"HEARTBEAT.md":  defaultHeartbeatTemplate(),
+		"config.json":   defaultConfigTemplate(agentID),
+		"policies.json": defaultPoliciesTemplate(),
 	}
 	if brandNew {
-		files["BOOTSTRAP.md"] = "# bootstrap\n\nOne-time setup checklist for a new workspace.\n"
+		files["BOOTSTRAP.md"] = defaultBootstrapTemplate()
 	}
 	for name, content := range files {
 		path := filepath.Join(workspace, name)

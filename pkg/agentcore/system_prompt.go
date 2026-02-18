@@ -22,6 +22,7 @@ type systemPromptInput struct {
 	UserTimezone   string
 	Model          ai.Model
 	ExtraContext   string
+	Heartbeat      AgentHeartbeat
 }
 
 func normalizePromptMode(mode PromptMode) PromptMode {
@@ -109,7 +110,7 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		)
 	}
 
-	if mode == PromptModeFull {
+	if mode == PromptModeFull && input.Heartbeat.Enabled {
 		sections = append(sections,
 			"## Reply Tags",
 			"Use reply tags only when the active channel supports them.",

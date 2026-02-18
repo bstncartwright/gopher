@@ -198,6 +198,24 @@ for oauth-backed providers, use raw env keys until interactive oauth login is ad
 gopher auth set --env-file /etc/gopher/gopher.env --key OPENAI_CODEX_TOKEN --value "<token>"
 ```
 
+## agent registry cli
+
+`gopher agent` manages local agent identities and workspaces:
+
+```bash
+# create agent registry entry + scaffold workspace files
+gopher agent create --id planner --matrix-user @planner:example.com
+
+# list agents and statuses
+gopher agent list
+
+# soft delete (status only)
+gopher agent delete --id planner
+
+# hard delete (status + workspace directory removal)
+gopher agent delete --id planner --hard
+```
+
 ## matrix single-agent dm setup (conduit)
 
 phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages and routes them through one runtime agent workspace.

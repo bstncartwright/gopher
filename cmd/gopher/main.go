@@ -35,6 +35,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runServiceSubcommand(serviceArgs, stdout, stderr)
 	case "service":
 		return runServiceSubcommand(args[1:], stdout, stderr)
+	case "agent":
+		return runAgentSubcommand(args[1:], stdout, stderr)
 	case "auth":
 		return runAuthSubcommand(args[1:], stdout, stderr)
 	default:
@@ -55,9 +57,11 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  status                show gopher service status")
 	fmt.Fprintln(out, "  restart               restart gopher service")
 	fmt.Fprintln(out, "  logs                  show gopher service logs")
+	fmt.Fprintln(out, "  agent ...             manage agent registry and workspaces")
 	fmt.Fprintln(out, "  auth ...              manage provider auth env settings")
 	fmt.Fprintln(out, "  service ...           install and manage linux systemd service")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "try:")
 	fmt.Fprintln(out, "  gopher gateway run --help")
+	fmt.Fprintln(out, "  gopher agent --help")
 }

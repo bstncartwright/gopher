@@ -40,13 +40,17 @@ type GatewayConfig struct {
 }
 
 type MatrixConfig struct {
-	Enabled       bool
-	HomeserverURL string
-	AppserviceID  string
-	ASToken       string
-	HSToken       string
-	ListenAddr    string
-	BotUserID     string
+	Enabled           bool
+	HomeserverURL     string
+	AppserviceID      string
+	ASToken           string
+	HSToken           string
+	ListenAddr        string
+	BotUserID         string
+	RichTextEnabled   bool
+	PresenceEnabled   bool
+	PresenceInterval  time.Duration
+	PresenceStatusMsg string
 }
 
 type CronConfig struct {
@@ -65,28 +69,32 @@ type UpdateConfig struct {
 }
 
 type GatewayOverrides struct {
-	NodeID              *string
-	GatewayNodeID       *string
-	NATSURL             *string
-	HeartbeatInterval   *time.Duration
-	PruneInterval       *time.Duration
-	Capabilities        *[]scheduler.Capability
-	MatrixEnabled       *bool
-	MatrixHomeserver    *string
-	MatrixAppservice    *string
-	MatrixASToken       *string
-	MatrixHSToken       *string
-	MatrixListenAddr    *string
-	MatrixBotUserID     *string
-	CronEnabled         *bool
-	CronPollInterval    *time.Duration
-	CronTimezone        *string
-	UpdateEnabled       *bool
-	UpdateRepoOwner     *string
-	UpdateRepoName      *string
-	UpdateChannel       *string
-	UpdateCheckInterval *time.Duration
-	UpdateAssetPattern  *string
+	NodeID                  *string
+	GatewayNodeID           *string
+	NATSURL                 *string
+	HeartbeatInterval       *time.Duration
+	PruneInterval           *time.Duration
+	Capabilities            *[]scheduler.Capability
+	MatrixEnabled           *bool
+	MatrixHomeserver        *string
+	MatrixAppservice        *string
+	MatrixASToken           *string
+	MatrixHSToken           *string
+	MatrixListenAddr        *string
+	MatrixBotUserID         *string
+	MatrixRichTextEnabled   *bool
+	MatrixPresenceEnabled   *bool
+	MatrixPresenceInterval  *time.Duration
+	MatrixPresenceStatusMsg *string
+	CronEnabled             *bool
+	CronPollInterval        *time.Duration
+	CronTimezone            *string
+	UpdateEnabled           *bool
+	UpdateRepoOwner         *string
+	UpdateRepoName          *string
+	UpdateChannel           *string
+	UpdateCheckInterval     *time.Duration
+	UpdateAssetPattern      *string
 }
 
 type GatewayLoadOptions struct {
@@ -128,13 +136,17 @@ type rawCapabilityItem struct {
 }
 
 type rawMatrixConfig struct {
-	Enabled       *bool   `toml:"enabled"`
-	HomeserverURL *string `toml:"homeserver_url"`
-	AppserviceID  *string `toml:"appservice_id"`
-	ASToken       *string `toml:"as_token"`
-	HSToken       *string `toml:"hs_token"`
-	ListenAddr    *string `toml:"listen_addr"`
-	BotUserID     *string `toml:"bot_user_id"`
+	Enabled           *bool   `toml:"enabled"`
+	HomeserverURL     *string `toml:"homeserver_url"`
+	AppserviceID      *string `toml:"appservice_id"`
+	ASToken           *string `toml:"as_token"`
+	HSToken           *string `toml:"hs_token"`
+	ListenAddr        *string `toml:"listen_addr"`
+	BotUserID         *string `toml:"bot_user_id"`
+	RichTextEnabled   *bool   `toml:"rich_text_enabled"`
+	PresenceEnabled   *bool   `toml:"presence_enabled"`
+	PresenceInterval  *string `toml:"presence_interval"`
+	PresenceStatusMsg *string `toml:"presence_status_msg"`
 }
 
 type rawCronConfig struct {
@@ -249,6 +261,10 @@ as_token = "replace-as-token"
 hs_token = "replace-hs-token"
 listen_addr = "127.0.0.1:29328"
 bot_user_id = "@gopher:localhost"
+rich_text_enabled = true
+presence_enabled = true
+presence_interval = "60s"
+presence_status_msg = ""
 
 [gateway.cron]
 enabled = false
@@ -302,13 +318,17 @@ func defaultGatewayConfig() GatewayConfig {
 			{Kind: scheduler.CapabilityAgent, Name: "agent"},
 		},
 		Matrix: MatrixConfig{
-			Enabled:       false,
-			HomeserverURL: "",
-			AppserviceID:  "gopher",
-			ASToken:       "",
-			HSToken:       "",
-			ListenAddr:    "127.0.0.1:29328",
-			BotUserID:     "",
+			Enabled:           false,
+			HomeserverURL:     "",
+			AppserviceID:      "gopher",
+			ASToken:           "",
+			HSToken:           "",
+			ListenAddr:        "127.0.0.1:29328",
+			BotUserID:         "",
+			RichTextEnabled:   true,
+			PresenceEnabled:   true,
+			PresenceInterval:  60 * time.Second,
+			PresenceStatusMsg: "",
 		},
 		Cron: CronConfig{
 			Enabled:         false,
@@ -448,6 +468,22 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 		if gateway.Matrix.BotUserID != nil {
 			cfg.Matrix.BotUserID = strings.TrimSpace(*gateway.Matrix.BotUserID)
 		}
+		if gateway.Matrix.RichTextEnabled != nil {
+			cfg.Matrix.RichTextEnabled = *gateway.Matrix.RichTextEnabled
+		}
+		if gateway.Matrix.PresenceEnabled != nil {
+			cfg.Matrix.PresenceEnabled = *gateway.Matrix.PresenceEnabled
+		}
+		if gateway.Matrix.PresenceInterval != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.Matrix.PresenceInterval))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.matrix.presence_interval: %w", err)
+			}
+			cfg.Matrix.PresenceInterval = duration
+		}
+		if gateway.Matrix.PresenceStatusMsg != nil {
+			cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(*gateway.Matrix.PresenceStatusMsg)
+		}
 	}
 	if gateway.Cron != nil {
 		if gateway.Cron.Enabled != nil {
@@ -569,6 +605,30 @@ func applyGatewayEnv(cfg *GatewayConfig, env map[string]string) error {
 	if value, ok := env["GOPHER_GATEWAY_MATRIX_BOT_USER_ID"]; ok {
 		cfg.Matrix.BotUserID = strings.TrimSpace(value)
 	}
+	if value, ok := env["GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED"]; ok {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED: %w", err)
+		}
+		cfg.Matrix.RichTextEnabled = enabled
+	}
+	if value, ok := env["GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED"]; ok {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED: %w", err)
+		}
+		cfg.Matrix.PresenceEnabled = enabled
+	}
+	if value, ok := env["GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL"]; ok {
+		duration, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL: %w", err)
+		}
+		cfg.Matrix.PresenceInterval = duration
+	}
+	if value, ok := env["GOPHER_GATEWAY_MATRIX_PRESENCE_STATUS_MSG"]; ok {
+		cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(value)
+	}
 	if value, ok := env["GOPHER_GATEWAY_CRON_ENABLED"]; ok {
 		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
@@ -654,6 +714,18 @@ func applyGatewayOverrides(cfg *GatewayConfig, overrides GatewayOverrides) error
 	}
 	if overrides.MatrixBotUserID != nil {
 		cfg.Matrix.BotUserID = strings.TrimSpace(*overrides.MatrixBotUserID)
+	}
+	if overrides.MatrixRichTextEnabled != nil {
+		cfg.Matrix.RichTextEnabled = *overrides.MatrixRichTextEnabled
+	}
+	if overrides.MatrixPresenceEnabled != nil {
+		cfg.Matrix.PresenceEnabled = *overrides.MatrixPresenceEnabled
+	}
+	if overrides.MatrixPresenceInterval != nil {
+		cfg.Matrix.PresenceInterval = *overrides.MatrixPresenceInterval
+	}
+	if overrides.MatrixPresenceStatusMsg != nil {
+		cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(*overrides.MatrixPresenceStatusMsg)
 	}
 	if overrides.CronEnabled != nil {
 		cfg.Cron.Enabled = *overrides.CronEnabled
@@ -749,6 +821,9 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 		if strings.TrimSpace(cfg.Matrix.ListenAddr) == "" {
 			return fmt.Errorf("gateway.matrix.listen_addr is required when matrix is enabled")
 		}
+		if cfg.Matrix.PresenceEnabled && cfg.Matrix.PresenceInterval <= 0 {
+			return fmt.Errorf("gateway.matrix.presence_interval must be > 0 when matrix presence is enabled")
+		}
 	}
 	if cfg.Update.Enabled {
 		if strings.TrimSpace(cfg.Update.RepoOwner) == "" {
@@ -804,6 +879,10 @@ func hasGatewayOverrides(overrides GatewayOverrides) bool {
 		overrides.MatrixHSToken != nil ||
 		overrides.MatrixListenAddr != nil ||
 		overrides.MatrixBotUserID != nil ||
+		overrides.MatrixRichTextEnabled != nil ||
+		overrides.MatrixPresenceEnabled != nil ||
+		overrides.MatrixPresenceInterval != nil ||
+		overrides.MatrixPresenceStatusMsg != nil ||
 		overrides.CronEnabled != nil ||
 		overrides.CronPollInterval != nil ||
 		overrides.CronTimezone != nil ||

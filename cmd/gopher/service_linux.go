@@ -160,6 +160,11 @@ func (r *linuxServiceRuntime) Status(ctx context.Context) error {
 type matrixRuntimeMetrics struct {
 	LastInboundTxnAt       string `json:"last_inbound_txn_at"`
 	LastOutboundSuccessAt  string `json:"last_outbound_success_at"`
+	PresenceEnabled        bool   `json:"presence_enabled"`
+	PresenceState          string `json:"presence_state"`
+	PresenceLastSuccessAt  string `json:"presence_last_success_at"`
+	PresenceFailures       uint64 `json:"presence_failures"`
+	PresenceLastError      string `json:"presence_last_error"`
 	QueueDepth             int    `json:"queue_depth"`
 	OutboundRetries        uint64 `json:"outbound_retries"`
 	OutboundDropped        uint64 `json:"outbound_dropped"`
@@ -199,11 +204,12 @@ func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
 		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: unable to decode metrics (%v)", err)
 	}
 	line = fmt.Sprintf(
-		"matrix bridge:   healthy (queue=%d retries=%d dropped=%d inbound_failures=%d)",
+		"matrix bridge:   healthy (queue=%d retries=%d dropped=%d inbound_failures=%d presence=%s)",
 		metrics.QueueDepth,
 		metrics.OutboundRetries,
 		metrics.OutboundDropped,
 		metrics.InboundFailures,
+		matrixPresenceSummary(metrics),
 	)
 	if strings.TrimSpace(metrics.LastInboundTxnAt) != "" || strings.TrimSpace(metrics.LastOutboundSuccessAt) != "" {
 		warning = fmt.Sprintf(
@@ -213,6 +219,20 @@ func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
 		)
 	}
 	return line, warning
+}
+
+func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
+	if !metrics.PresenceEnabled {
+		return "disabled"
+	}
+	state := strings.TrimSpace(metrics.PresenceState)
+	if state == "" {
+		state = "unknown"
+	}
+	if strings.TrimSpace(metrics.PresenceLastError) != "" {
+		return fmt.Sprintf("%s (failures=%d)", state, metrics.PresenceFailures)
+	}
+	return state
 }
 
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {

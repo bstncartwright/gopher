@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,26 +19,35 @@ import (
 )
 
 type Options struct {
-	HomeserverURL string
-	AppserviceID  string
-	ASToken       string
-	HSToken       string
-	ListenAddr    string
-	BotUserID     string
-	HTTPClient    *http.Client
-	QueueCapacity int
-	MaxAttempts   int
-	DedupeTTL     time.Duration
+	HomeserverURL     string
+	AppserviceID      string
+	ASToken           string
+	HSToken           string
+	ListenAddr        string
+	BotUserID         string
+	RichTextEnabled   bool
+	PresenceEnabled   bool
+	PresenceInterval  time.Duration
+	PresenceStatusMsg string
+	HTTPClient        *http.Client
+	QueueCapacity     int
+	MaxAttempts       int
+	DedupeTTL         time.Duration
 }
 
 type Transport struct {
-	homeserverURL string
-	appserviceID  string
-	asToken       string
-	hsToken       string
-	listenAddr    string
-	botUserID     string
-	httpClient    *http.Client
+	homeserverURL     string
+	appserviceID      string
+	asToken           string
+	hsToken           string
+	listenAddr        string
+	botUserID         string
+	richTextEnabled   bool
+	presenceEnabled   bool
+	presenceInterval  time.Duration
+	presenceStatusMsg string
+	httpClient        *http.Client
+	formatter         richTextFormatter
 
 	mu      sync.RWMutex
 	handler transport.InboundHandler
@@ -50,6 +60,7 @@ type Transport struct {
 	workerCancel    context.CancelFunc
 	outboundQueue   chan queuedOutbound
 	outboundDone    chan struct{}
+	presenceDone    chan struct{}
 	queueCapacity   int
 	maxAttempts     int
 	dedupeTTL       time.Duration
@@ -90,6 +101,7 @@ type matrixStats struct {
 	mu                     sync.RWMutex
 	LastInboundTxnAt       time.Time `json:"last_inbound_txn_at,omitempty"`
 	LastOutboundSuccessAt  time.Time `json:"last_outbound_success_at,omitempty"`
+	PresenceLastSuccessAt  time.Time `json:"presence_last_success_at,omitempty"`
 	QueueDepth             int       `json:"queue_depth"`
 	OutboundRetries        uint64    `json:"outbound_retries"`
 	OutboundDropped        uint64    `json:"outbound_dropped"`
@@ -98,6 +110,10 @@ type matrixStats struct {
 	DuplicateTxnSeen       uint64    `json:"duplicate_txn_seen"`
 	DuplicateEventsSkipped uint64    `json:"duplicate_events_skipped"`
 	ReplayEventsProcessed  uint64    `json:"replay_events_processed"`
+	PresenceEnabled        bool      `json:"presence_enabled"`
+	PresenceState          string    `json:"presence_state"`
+	PresenceFailures       uint64    `json:"presence_failures"`
+	PresenceLastError      string    `json:"presence_last_error,omitempty"`
 }
 
 type transactionBody struct {
@@ -114,6 +130,21 @@ type matrixEvent struct {
 }
 
 const inboundEventTimeout = 15 * time.Second
+const matrixMessageHTMLFormat = "org.matrix.custom.html"
+const defaultPresenceInterval = 60 * time.Second
+const presenceRequestTimeout = 5 * time.Second
+const (
+	presenceStateOnline  = "online"
+	presenceStateOffline = "offline"
+	presenceStateUnknown = "unknown"
+)
+
+type outboundMessagePayload struct {
+	MsgType       string `json:"msgtype"`
+	Body          string `json:"body"`
+	Format        string `json:"format,omitempty"`
+	FormattedBody string `json:"formatted_body,omitempty"`
+}
 
 var _ transport.Transport = (*Transport)(nil)
 
@@ -151,19 +182,34 @@ func New(opts Options) (*Transport, error) {
 	if dedupeTTL <= 0 {
 		dedupeTTL = 15 * time.Minute
 	}
+	presenceInterval := opts.PresenceInterval
+	if presenceInterval <= 0 {
+		presenceInterval = defaultPresenceInterval
+	}
+	botUserID := strings.TrimSpace(opts.BotUserID)
+	presenceEnabled := opts.PresenceEnabled && botUserID != ""
 	return &Transport{
-		homeserverURL: strings.TrimRight(hs, "/"),
-		appserviceID:  strings.TrimSpace(opts.AppserviceID),
-		asToken:       strings.TrimSpace(opts.ASToken),
-		hsToken:       strings.TrimSpace(opts.HSToken),
-		listenAddr:    addr,
-		botUserID:     strings.TrimSpace(opts.BotUserID),
-		httpClient:    client,
-		seenTxn:       map[string]time.Time{},
-		events:        map[string]eventDeliveryState{},
-		queueCapacity: queueCapacity,
-		maxAttempts:   maxAttempts,
-		dedupeTTL:     dedupeTTL,
+		homeserverURL:     strings.TrimRight(hs, "/"),
+		appserviceID:      strings.TrimSpace(opts.AppserviceID),
+		asToken:           strings.TrimSpace(opts.ASToken),
+		hsToken:           strings.TrimSpace(opts.HSToken),
+		listenAddr:        addr,
+		botUserID:         botUserID,
+		richTextEnabled:   opts.RichTextEnabled,
+		presenceEnabled:   presenceEnabled,
+		presenceInterval:  presenceInterval,
+		presenceStatusMsg: strings.TrimSpace(opts.PresenceStatusMsg),
+		httpClient:        client,
+		formatter:         newMarkdownHTMLFormatter(),
+		seenTxn:           map[string]time.Time{},
+		events:            map[string]eventDeliveryState{},
+		queueCapacity:     queueCapacity,
+		maxAttempts:       maxAttempts,
+		dedupeTTL:         dedupeTTL,
+		stats: matrixStats{
+			PresenceEnabled: presenceEnabled,
+			PresenceState:   presenceStateUnknown,
+		},
 	}, nil
 }
 
@@ -192,6 +238,10 @@ func (t *Transport) Start(ctx context.Context) error {
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	outboundQueue := make(chan queuedOutbound, t.queueCapacity)
 	outboundDone := make(chan struct{})
+	var presenceDone chan struct{}
+	if t.presenceEnabled {
+		presenceDone = make(chan struct{})
+	}
 
 	t.mu.Lock()
 	if !t.started {
@@ -201,11 +251,16 @@ func (t *Transport) Start(ctx context.Context) error {
 	}
 	t.outboundQueue = outboundQueue
 	t.outboundDone = outboundDone
+	t.presenceDone = presenceDone
 	t.workerCtx = workerCtx
 	t.workerCancel = workerCancel
 	t.mu.Unlock()
 
 	go t.runOutboundWorker(workerCtx, outboundQueue, outboundDone)
+	if presenceDone != nil {
+		t.applyPresenceUpdate(ctx, presenceStateOnline, false)
+		go t.runPresenceWorker(workerCtx, presenceDone)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_matrix/app/v1/transactions/", t.handleTransaction)
@@ -237,6 +292,13 @@ func (t *Transport) Start(ctx context.Context) error {
 }
 
 func (t *Transport) Stop() error {
+	t.mu.RLock()
+	started := t.started
+	t.mu.RUnlock()
+	if started && t.presenceEnabled {
+		t.applyPresenceUpdate(context.Background(), presenceStateOffline, true)
+	}
+
 	t.shutdownWorker()
 
 	t.mu.Lock()
@@ -333,15 +395,21 @@ func (t *Transport) sendMessageNow(ctx context.Context, message transport.Outbou
 	if strings.TrimSpace(t.botUserID) != "" {
 		endpoint += "&user_id=" + url.QueryEscape(t.botUserID)
 	}
-	payload := map[string]string{
-		"msgtype": "m.text",
-		"body":    message.Text,
+	payload := outboundMessagePayload{
+		MsgType: "m.text",
+		Body:    message.Text,
+	}
+	if t.richTextEnabled {
+		if formattedBody, ok := t.formatOutboundHTML(message.Text); ok {
+			payload.Format = matrixMessageHTMLFormat
+			payload.FormattedBody = formattedBody
+		}
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal matrix outbound payload: %w", err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, strings.NewReader(string(blob)))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(blob))
 	if err != nil {
 		return fmt.Errorf("build matrix outbound request: %w", err)
 	}
@@ -356,6 +424,13 @@ func (t *Transport) sendMessageNow(ctx context.Context, message transport.Outbou
 		return fmt.Errorf("matrix outbound status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+func (t *Transport) formatOutboundHTML(body string) (string, bool) {
+	if t == nil || t.formatter == nil {
+		return "", false
+	}
+	return t.formatter.Format(body)
 }
 
 func (t *Transport) sendTypingNow(ctx context.Context, roomID, userID string, typing bool) error {
@@ -391,6 +466,87 @@ func (t *Transport) sendTypingNow(ctx context.Context, roomID, userID string, ty
 		return fmt.Errorf("matrix typing status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+func (t *Transport) setPresenceNow(ctx context.Context, state string) error {
+	if !t.presenceEnabled {
+		return nil
+	}
+	botUserID := strings.TrimSpace(t.botUserID)
+	if botUserID == "" {
+		return nil
+	}
+	endpoint := fmt.Sprintf("%s/_matrix/client/v3/presence/%s/status?access_token=%s",
+		t.homeserverURL,
+		url.PathEscape(botUserID),
+		url.QueryEscape(t.asToken),
+	)
+	endpoint += "&user_id=" + url.QueryEscape(botUserID)
+
+	payload := map[string]string{
+		"presence": strings.TrimSpace(state),
+	}
+	if state == presenceStateOnline && strings.TrimSpace(t.presenceStatusMsg) != "" {
+		payload["status_msg"] = t.presenceStatusMsg
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal matrix presence payload: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(blob))
+	if err != nil {
+		return fmt.Errorf("build matrix presence request: %w", err)
+	}
+	request.Header.Set("content-type", "application/json")
+	response, err := t.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("send matrix presence request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(response.Body)
+		return fmt.Errorf("matrix presence status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func (t *Transport) applyPresenceUpdate(parent context.Context, state string, alwaysLogFailure bool) {
+	if !t.presenceEnabled {
+		return
+	}
+	ctx := parent
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, presenceRequestTimeout)
+	defer cancel()
+
+	err := t.setPresenceNow(requestCtx, state)
+	failureTransition, recovered := t.recordPresenceResult(state, err)
+	if err != nil {
+		if alwaysLogFailure || failureTransition {
+			log.Printf("matrix presence update failed state=%s err=%v", state, err)
+		}
+		return
+	}
+	if recovered {
+		log.Printf("matrix presence recovered state=%s", state)
+	}
+}
+
+func (t *Transport) runPresenceWorker(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(t.presenceInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			t.applyPresenceUpdate(ctx, presenceStateOnline, false)
+		}
+	}
 }
 
 func (t *Transport) runOutboundWorker(workerCtx context.Context, outboundQueue <-chan queuedOutbound, done chan<- struct{}) {
@@ -493,10 +649,12 @@ func (t *Transport) shutdownWorker() {
 	t.mu.Lock()
 	cancel := t.workerCancel
 	done := t.outboundDone
+	presenceDone := t.presenceDone
 	t.workerCancel = nil
 	t.workerCtx = nil
 	t.outboundQueue = nil
 	t.outboundDone = nil
+	t.presenceDone = nil
 	t.started = false
 	t.mu.Unlock()
 
@@ -506,6 +664,12 @@ func (t *Transport) shutdownWorker() {
 	if done != nil {
 		select {
 		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if presenceDone != nil {
+		select {
+		case <-presenceDone:
 		case <-time.After(2 * time.Second):
 		}
 	}
@@ -540,6 +704,11 @@ func (t *Transport) handleMetrics(writer http.ResponseWriter, request *http.Requ
 	_ = json.NewEncoder(writer).Encode(map[string]interface{}{
 		"last_inbound_txn_at":       formatTime(stats.LastInboundTxnAt),
 		"last_outbound_success_at":  formatTime(stats.LastOutboundSuccessAt),
+		"presence_enabled":          stats.PresenceEnabled,
+		"presence_state":            stats.PresenceState,
+		"presence_last_success_at":  formatTime(stats.PresenceLastSuccessAt),
+		"presence_failures":         stats.PresenceFailures,
+		"presence_last_error":       stats.PresenceLastError,
 		"queue_depth":               stats.QueueDepth,
 		"outbound_retries":          stats.OutboundRetries,
 		"outbound_dropped":          stats.OutboundDropped,
@@ -850,6 +1019,24 @@ func (t *Transport) recordOutboundSuccess() {
 	t.stats.mu.Lock()
 	defer t.stats.mu.Unlock()
 	t.stats.LastOutboundSuccessAt = time.Now().UTC()
+}
+
+func (t *Transport) recordPresenceResult(state string, err error) (failureTransition bool, recovered bool) {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+
+	t.stats.PresenceEnabled = t.presenceEnabled
+	hadError := strings.TrimSpace(t.stats.PresenceLastError) != ""
+	if err != nil {
+		t.stats.PresenceFailures++
+		t.stats.PresenceLastError = err.Error()
+		t.stats.PresenceState = presenceStateUnknown
+		return !hadError, false
+	}
+	t.stats.PresenceLastSuccessAt = time.Now().UTC()
+	t.stats.PresenceState = state
+	t.stats.PresenceLastError = ""
+	return false, hadError
 }
 
 func (t *Transport) incrementRetries() {

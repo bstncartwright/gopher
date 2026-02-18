@@ -77,6 +77,10 @@ func TestParseGatewayRunFlagsMatrixOverrides(t *testing.T) {
 		"--matrix-hs-token", "hs-token",
 		"--matrix-listen-addr", "127.0.0.1:29328",
 		"--matrix-bot-user-id", "@gopher:local",
+		"--matrix-rich-text-enabled", "false",
+		"--matrix-presence-enabled", "true",
+		"--matrix-presence-interval", "45s",
+		"--matrix-presence-status-msg", "online",
 	})
 	if err != nil {
 		t.Fatalf("parseGatewayRunFlags() error: %v", err)
@@ -92,6 +96,18 @@ func TestParseGatewayRunFlagsMatrixOverrides(t *testing.T) {
 	}
 	if inputs.Overrides.MatrixHSToken == nil || *inputs.Overrides.MatrixHSToken != "hs-token" {
 		t.Fatalf("matrix hs token override missing")
+	}
+	if inputs.Overrides.MatrixRichTextEnabled == nil || *inputs.Overrides.MatrixRichTextEnabled {
+		t.Fatalf("matrix rich text override missing or incorrect")
+	}
+	if inputs.Overrides.MatrixPresenceEnabled == nil || !*inputs.Overrides.MatrixPresenceEnabled {
+		t.Fatalf("matrix presence enabled override missing or incorrect")
+	}
+	if inputs.Overrides.MatrixPresenceInterval == nil || *inputs.Overrides.MatrixPresenceInterval != 45*time.Second {
+		t.Fatalf("matrix presence interval override missing or incorrect")
+	}
+	if inputs.Overrides.MatrixPresenceStatusMsg == nil || *inputs.Overrides.MatrixPresenceStatusMsg != "online" {
+		t.Fatalf("matrix presence status override missing or incorrect")
 	}
 }
 
@@ -162,6 +178,9 @@ func TestRunGatewaySubcommandHelp(t *testing.T) {
 	}
 	if got := out.String(); got == "" || !strings.Contains(got, "gopher gateway run") {
 		t.Fatalf("help output missing expected usage text: %q", got)
+	}
+	if !strings.Contains(out.String(), "--matrix-presence-enabled") {
+		t.Fatalf("help output missing matrix presence flags: %q", out.String())
 	}
 }
 

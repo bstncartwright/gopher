@@ -138,6 +138,10 @@ func printGatewayUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --matrix-hs-token <token>      override matrix homeserver token")
 	fmt.Fprintln(out, "  --matrix-listen-addr <addr>    override matrix appservice listen address")
 	fmt.Fprintln(out, "  --matrix-bot-user-id <mxid>    override matrix bot user id")
+	fmt.Fprintln(out, "  --matrix-rich-text-enabled <bool> override matrix markdown/html formatting")
+	fmt.Fprintln(out, "  --matrix-presence-enabled <bool> override matrix presence updates")
+	fmt.Fprintln(out, "  --matrix-presence-interval <dur> override matrix presence keepalive interval")
+	fmt.Fprintln(out, "  --matrix-presence-status-msg <text> override matrix presence status message")
 	fmt.Fprintln(out, "  --cron-enabled <bool>          override cron subsystem enablement")
 	fmt.Fprintln(out, "  --cron-poll-interval <dur>     override cron polling interval")
 	fmt.Fprintln(out, "  --cron-default-timezone <tz>   override default cron timezone")
@@ -157,6 +161,8 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 
 	var rawCaps capabilityFlag
 	var matrixEnabled boolOverrideFlag
+	var matrixRichTextEnabled boolOverrideFlag
+	var matrixPresenceEnabled boolOverrideFlag
 	var cronEnabled boolOverrideFlag
 	configPath := flags.String("config", "", "config path")
 	nodeID := flags.String("node-id", "", "gateway node id override")
@@ -172,6 +178,10 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	matrixHSToken := flags.String("matrix-hs-token", "", "matrix hs token override")
 	matrixListenAddr := flags.String("matrix-listen-addr", "", "matrix listen addr override")
 	matrixBotUserID := flags.String("matrix-bot-user-id", "", "matrix bot user id override")
+	flags.Var(&matrixRichTextEnabled, "matrix-rich-text-enabled", "matrix rich text enabled override")
+	flags.Var(&matrixPresenceEnabled, "matrix-presence-enabled", "matrix presence enabled override")
+	matrixPresenceInterval := flags.Duration("matrix-presence-interval", 0, "matrix presence interval override")
+	matrixPresenceStatusMsg := flags.String("matrix-presence-status-msg", "", "matrix presence status message override")
 	flags.Var(&cronEnabled, "cron-enabled", "cron enabled override")
 	cronPollInterval := flags.Duration("cron-poll-interval", 0, "cron poll interval override")
 	cronDefaultTimezone := flags.String("cron-default-timezone", "", "cron default timezone override")
@@ -245,6 +255,22 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	if strings.TrimSpace(*matrixBotUserID) != "" {
 		value := strings.TrimSpace(*matrixBotUserID)
 		inputs.Overrides.MatrixBotUserID = &value
+	}
+	if matrixRichTextEnabled.set {
+		value := matrixRichTextEnabled.value
+		inputs.Overrides.MatrixRichTextEnabled = &value
+	}
+	if matrixPresenceEnabled.set {
+		value := matrixPresenceEnabled.value
+		inputs.Overrides.MatrixPresenceEnabled = &value
+	}
+	if *matrixPresenceInterval != 0 {
+		value := *matrixPresenceInterval
+		inputs.Overrides.MatrixPresenceInterval = &value
+	}
+	if strings.TrimSpace(*matrixPresenceStatusMsg) != "" {
+		value := strings.TrimSpace(*matrixPresenceStatusMsg)
+		inputs.Overrides.MatrixPresenceStatusMsg = &value
 	}
 	if cronEnabled.set {
 		value := cronEnabled.value

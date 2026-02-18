@@ -87,12 +87,16 @@ func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *
 	}
 
 	matrixBridge, err := matrixtransport.New(matrixtransport.Options{
-		HomeserverURL: cfg.Matrix.HomeserverURL,
-		AppserviceID:  cfg.Matrix.AppserviceID,
-		ASToken:       cfg.Matrix.ASToken,
-		HSToken:       cfg.Matrix.HSToken,
-		ListenAddr:    cfg.Matrix.ListenAddr,
-		BotUserID:     cfg.Matrix.BotUserID,
+		HomeserverURL:     cfg.Matrix.HomeserverURL,
+		AppserviceID:      cfg.Matrix.AppserviceID,
+		ASToken:           cfg.Matrix.ASToken,
+		HSToken:           cfg.Matrix.HSToken,
+		ListenAddr:        cfg.Matrix.ListenAddr,
+		BotUserID:         cfg.Matrix.BotUserID,
+		RichTextEnabled:   cfg.Matrix.RichTextEnabled,
+		PresenceEnabled:   cfg.Matrix.PresenceEnabled,
+		PresenceInterval:  cfg.Matrix.PresenceInterval,
+		PresenceStatusMsg: cfg.Matrix.PresenceStatusMsg,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create matrix transport: %w", err)

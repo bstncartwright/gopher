@@ -41,6 +41,18 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if cfg.Cron.DefaultTimezone != "UTC" {
 		t.Fatalf("cron timezone = %q, want UTC", cfg.Cron.DefaultTimezone)
 	}
+	if !cfg.Matrix.RichTextEnabled {
+		t.Fatalf("matrix rich text enabled = false, want true")
+	}
+	if !cfg.Matrix.PresenceEnabled {
+		t.Fatalf("matrix presence enabled = false, want true")
+	}
+	if cfg.Matrix.PresenceInterval != 60*time.Second {
+		t.Fatalf("matrix presence interval = %s, want 60s", cfg.Matrix.PresenceInterval)
+	}
+	if cfg.Matrix.PresenceStatusMsg != "" {
+		t.Fatalf("matrix presence status = %q, want empty", cfg.Matrix.PresenceStatusMsg)
+	}
 }
 
 func TestLoadGatewayConfigTOMLAndOverrides(t *testing.T) {
@@ -170,19 +182,37 @@ as_token = "as-file"
 hs_token = "hs-file"
 listen_addr = "127.0.0.1:29328"
 bot_user_id = "@gopher:local"
+rich_text_enabled = false
+presence_enabled = false
+presence_interval = "45s"
+presence_status_msg = "file-status"
 `)
 
 	overrideEnabled := true
 	overrideHS := "http://example.test:8008"
 	overrideAS := "override-as"
 	overrideHSSecret := "override-hs"
+	overrideRichText := true
+	overridePresenceEnabled := true
+	overridePresenceInterval := 30 * time.Second
+	overridePresenceStatus := "override-status"
 	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
+		Env: map[string]string{
+			"GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED":   "false",
+			"GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED":    "false",
+			"GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL":   "20s",
+			"GOPHER_GATEWAY_MATRIX_PRESENCE_STATUS_MSG": "env-status",
+		},
 		Overrides: GatewayOverrides{
-			MatrixEnabled:    &overrideEnabled,
-			MatrixHomeserver: &overrideHS,
-			MatrixASToken:    &overrideAS,
-			MatrixHSToken:    &overrideHSSecret,
+			MatrixEnabled:           &overrideEnabled,
+			MatrixHomeserver:        &overrideHS,
+			MatrixASToken:           &overrideAS,
+			MatrixHSToken:           &overrideHSSecret,
+			MatrixRichTextEnabled:   &overrideRichText,
+			MatrixPresenceEnabled:   &overridePresenceEnabled,
+			MatrixPresenceInterval:  &overridePresenceInterval,
+			MatrixPresenceStatusMsg: &overridePresenceStatus,
 		},
 	})
 	if err != nil {
@@ -196,6 +226,18 @@ bot_user_id = "@gopher:local"
 	}
 	if cfg.Matrix.ASToken != overrideAS || cfg.Matrix.HSToken != overrideHSSecret {
 		t.Fatalf("matrix tokens not overridden as expected")
+	}
+	if !cfg.Matrix.RichTextEnabled {
+		t.Fatalf("matrix rich text enabled = false, want true")
+	}
+	if !cfg.Matrix.PresenceEnabled {
+		t.Fatalf("matrix presence enabled = false, want true")
+	}
+	if cfg.Matrix.PresenceInterval != 30*time.Second {
+		t.Fatalf("matrix presence interval = %s, want 30s", cfg.Matrix.PresenceInterval)
+	}
+	if cfg.Matrix.PresenceStatusMsg != "override-status" {
+		t.Fatalf("matrix presence status = %q, want override-status", cfg.Matrix.PresenceStatusMsg)
 	}
 }
 
@@ -256,6 +298,32 @@ appservice_id = "gopher"
 	})
 	if err == nil {
 		t.Fatalf("expected matrix validation error")
+	}
+}
+
+func TestLoadGatewayConfigRejectsInvalidMatrixPresenceIntervalWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.matrix]
+enabled = true
+homeserver_url = "http://localhost:8008"
+appservice_id = "gopher"
+as_token = "as-token"
+hs_token = "hs-token"
+listen_addr = "127.0.0.1:29328"
+presence_enabled = true
+presence_interval = "0s"
+`)
+
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected matrix presence interval validation error")
 	}
 }
 

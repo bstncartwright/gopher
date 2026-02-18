@@ -161,6 +161,130 @@ func TestSendMessageCallsHomeserverAPI(t *testing.T) {
 	}
 }
 
+func TestSendMessageNowIncludesFormattedBodyWhenRichTextEnabled(t *testing.T) {
+	var payload outboundMessagePayload
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPut {
+			t.Fatalf("method = %s, want PUT", request.Method)
+		}
+		body, _ := io.ReadAll(request.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error: %v", err)
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:   server.URL,
+		AppserviceID:    "gopher",
+		ASToken:         "as-token",
+		HSToken:         "hs-token",
+		RichTextEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	if err := instance.sendMessageNow(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "# hello\n\n**world**",
+	}); err != nil {
+		t.Fatalf("sendMessageNow() error: %v", err)
+	}
+
+	if payload.MsgType != "m.text" {
+		t.Fatalf("msgtype = %q, want m.text", payload.MsgType)
+	}
+	if payload.Body != "# hello\n\n**world**" {
+		t.Fatalf("body = %q", payload.Body)
+	}
+	if payload.Format != matrixMessageHTMLFormat {
+		t.Fatalf("format = %q, want %q", payload.Format, matrixMessageHTMLFormat)
+	}
+	if strings.TrimSpace(payload.FormattedBody) == "" {
+		t.Fatalf("formatted_body is empty")
+	}
+}
+
+func TestSendMessageNowOmitsFormattedBodyWhenRichTextDisabled(t *testing.T) {
+	var payload outboundMessagePayload
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error: %v", err)
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:   server.URL,
+		AppserviceID:    "gopher",
+		ASToken:         "as-token",
+		HSToken:         "hs-token",
+		RichTextEnabled: false,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	if err := instance.sendMessageNow(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "**plain**",
+	}); err != nil {
+		t.Fatalf("sendMessageNow() error: %v", err)
+	}
+
+	if payload.Format != "" {
+		t.Fatalf("format = %q, want empty", payload.Format)
+	}
+	if payload.FormattedBody != "" {
+		t.Fatalf("formatted_body = %q, want empty", payload.FormattedBody)
+	}
+}
+
+func TestSendMessageNowFallsBackWhenFormatterUnavailable(t *testing.T) {
+	var payload outboundMessagePayload
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error: %v", err)
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:   server.URL,
+		AppserviceID:    "gopher",
+		ASToken:         "as-token",
+		HSToken:         "hs-token",
+		RichTextEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	instance.formatter = nil
+
+	if err := instance.sendMessageNow(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "**hello**",
+	}); err != nil {
+		t.Fatalf("sendMessageNow() error: %v", err)
+	}
+
+	if payload.Format != "" {
+		t.Fatalf("format = %q, want empty", payload.Format)
+	}
+	if payload.FormattedBody != "" {
+		t.Fatalf("formatted_body = %q, want empty", payload.FormattedBody)
+	}
+}
+
 func TestSendTypingCallsHomeserverAPI(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -220,6 +344,200 @@ func TestSendTypingCallsHomeserverAPI(t *testing.T) {
 	}
 	if requestCount < 2 {
 		t.Fatalf("homeserver request count = %d, want >= 2", requestCount)
+	}
+}
+
+func TestPresenceStartKeepaliveAndStop(t *testing.T) {
+	onlineCalls := 0
+	offlineCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/_matrix/client/v3/register":
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"user_id":"@gopher:local"}`))
+			return
+		case "/_matrix/client/v3/presence/@gopher:local/status":
+			var payload map[string]string
+			body, _ := io.ReadAll(request.Body)
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v", err)
+			}
+			if request.URL.Query().Get("user_id") != "@gopher:local" {
+				t.Fatalf("user_id mismatch: %q", request.URL.Query().Get("user_id"))
+			}
+			switch payload["presence"] {
+			case presenceStateOnline:
+				onlineCalls++
+				if payload["status_msg"] != "gopher online" {
+					t.Fatalf("status_msg = %q, want gopher online", payload["status_msg"])
+				}
+			case presenceStateOffline:
+				offlineCalls++
+			default:
+				t.Fatalf("unexpected presence payload: %q", payload["presence"])
+			}
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{}`))
+			return
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:     server.URL,
+		AppserviceID:      "gopher",
+		ASToken:           "as-token",
+		HSToken:           "hs-token",
+		ListenAddr:        "127.0.0.1:0",
+		BotUserID:         "@gopher:local",
+		PresenceEnabled:   true,
+		PresenceInterval:  25 * time.Millisecond,
+		PresenceStatusMsg: "gopher online",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = instance.Start(ctx)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for onlineCalls < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if onlineCalls < 2 {
+		t.Fatalf("onlineCalls = %d, want >= 2", onlineCalls)
+	}
+
+	if err := instance.Stop(); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for offlineCalls < 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if offlineCalls < 1 {
+		t.Fatalf("offlineCalls = %d, want >= 1", offlineCalls)
+	}
+}
+
+func TestPresenceFailureDoesNotBlockMessaging(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/_matrix/client/v3/register":
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"user_id":"@gopher:local"}`))
+			return
+		case "/_matrix/client/v3/presence/@gopher:local/status":
+			writer.WriteHeader(http.StatusInternalServerError)
+			_, _ = writer.Write([]byte(`{"errcode":"M_UNKNOWN","error":"presence disabled"}`))
+			return
+		default:
+			if strings.Contains(request.URL.Path, "/send/m.room.message/") {
+				writer.WriteHeader(http.StatusOK)
+				_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+				return
+			}
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:    server.URL,
+		AppserviceID:     "gopher",
+		ASToken:          "as-token",
+		HSToken:          "hs-token",
+		ListenAddr:       "127.0.0.1:0",
+		BotUserID:        "@gopher:local",
+		PresenceEnabled:  true,
+		PresenceInterval: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = instance.Start(ctx)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stats := instance.snapshotMetrics()
+		if stats.PresenceFailures > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("presence failures not observed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := instance.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "still works",
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+
+	if err := instance.Stop(); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+}
+
+func TestPresenceDisabledSkipsPresenceCalls(t *testing.T) {
+	presenceCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/_matrix/client/v3/register":
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"user_id":"@gopher:local"}`))
+			return
+		case "/_matrix/client/v3/presence/@gopher:local/status":
+			presenceCalls++
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{}`))
+			return
+		default:
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{}`))
+			return
+		}
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:   server.URL,
+		AppserviceID:    "gopher",
+		ASToken:         "as-token",
+		HSToken:         "hs-token",
+		ListenAddr:      "127.0.0.1:0",
+		BotUserID:       "@gopher:local",
+		PresenceEnabled: false,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = instance.Start(ctx)
+	}()
+	time.Sleep(60 * time.Millisecond)
+
+	if err := instance.Stop(); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	if presenceCalls != 0 {
+		t.Fatalf("presenceCalls = %d, want 0", presenceCalls)
 	}
 }
 

@@ -26,14 +26,13 @@ func loadGatewayRuntimeExecutor(workspace string) (sessionrt.AgentExecutor, erro
 }
 
 func loadGatewayAgentRuntime(workspace string) (*gatewayAgentRuntime, error) {
-	workspaces, rootWorkspace, err := discoverGatewayAgentWorkspaces(workspace)
+	workspaces, err := discoverGatewayAgentWorkspaces(workspace)
 	if err != nil {
 		return nil, err
 	}
 
 	agents := make(map[sessionrt.ActorID]*agentcore.Agent, len(workspaces))
 	executors := make(map[sessionrt.ActorID]sessionrt.AgentExecutor, len(workspaces))
-	var rootActorID sessionrt.ActorID
 
 	for _, candidate := range workspaces {
 		agent, err := agentcore.LoadAgent(candidate)
@@ -50,20 +49,14 @@ func loadGatewayAgentRuntime(workspace string) (*gatewayAgentRuntime, error) {
 
 		agents[actorID] = agent
 		executors[actorID] = agentcore.NewSessionRuntimeAdapter(agent)
-		if candidate == rootWorkspace {
-			rootActorID = actorID
-		}
 	}
 
-	defaultActorID := rootActorID
-	if defaultActorID == "" {
-		actorIDs := make([]string, 0, len(agents))
-		for actorID := range agents {
-			actorIDs = append(actorIDs, string(actorID))
-		}
-		sort.Strings(actorIDs)
-		defaultActorID = sessionrt.ActorID(actorIDs[0])
+	actorIDs := make([]string, 0, len(agents))
+	for actorID := range agents {
+		actorIDs = append(actorIDs, string(actorID))
 	}
+	sort.Strings(actorIDs)
+	defaultActorID := sessionrt.ActorID(actorIDs[0])
 
 	router, err := agentcore.NewActorExecutorRouter(defaultActorID, executors)
 	if err != nil {
@@ -76,10 +69,10 @@ func loadGatewayAgentRuntime(workspace string) (*gatewayAgentRuntime, error) {
 	}, nil
 }
 
-func discoverGatewayAgentWorkspaces(workspace string) (workspaces []string, rootWorkspace string, err error) {
+func discoverGatewayAgentWorkspaces(workspace string) (workspaces []string, err error) {
 	workspaceAbs, err := filepath.Abs(strings.TrimSpace(workspace))
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve workspace: %w", err)
+		return nil, fmt.Errorf("resolve workspace: %w", err)
 	}
 	workspaceAbs = filepath.Clean(workspaceAbs)
 
@@ -93,19 +86,13 @@ func discoverGatewayAgentWorkspaces(workspace string) (workspaces []string, root
 		out = append(out, path)
 	}
 
-	hasRootWorkspace, err := hasAgentWorkspaceFiles(workspaceAbs)
-	if err != nil {
-		return nil, "", err
-	}
-	if hasRootWorkspace {
-		addCandidate(workspaceAbs)
-		rootWorkspace = workspaceAbs
-	}
-
-	agentsRoot := filepath.Join(workspaceAbs, ".gopher", "agents")
+	agentsRoot := filepath.Join(workspaceAbs, "agents")
 	entries, readErr := os.ReadDir(agentsRoot)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return nil, "", fmt.Errorf("read agent workspace directory %s: %w", agentsRoot, readErr)
+	if readErr != nil {
+		if !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("read agent workspace directory %s: %w", agentsRoot, readErr)
+		}
+		readErr = nil
 	}
 	if readErr == nil {
 		for _, entry := range entries {
@@ -115,7 +102,7 @@ func discoverGatewayAgentWorkspaces(workspace string) (workspaces []string, root
 			candidate := filepath.Clean(filepath.Join(agentsRoot, entry.Name()))
 			ok, err := hasAgentWorkspaceFiles(candidate)
 			if err != nil {
-				return nil, "", err
+				return nil, err
 			}
 			if ok {
 				addCandidate(candidate)
@@ -124,10 +111,10 @@ func discoverGatewayAgentWorkspaces(workspace string) (workspaces []string, root
 	}
 
 	if len(out) == 0 {
-		return nil, "", fmt.Errorf("no agent workspace found: expected %s or %s/<agent_id>", workspaceAbs, agentsRoot)
+		return nil, fmt.Errorf("no agent workspace found: expected %s/<agent_id>", agentsRoot)
 	}
 	sort.Strings(out)
-	return out, rootWorkspace, nil
+	return out, nil
 }
 
 func hasAgentWorkspaceFiles(workspace string) (bool, error) {

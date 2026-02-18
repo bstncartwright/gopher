@@ -13,17 +13,14 @@ import (
 
 func TestDiscoverGatewayAgentWorkspacesFindsPerAgentDirectories(t *testing.T) {
 	workspace := t.TempDir()
-	plannerPath := filepath.Join(workspace, ".gopher", "agents", "planner")
-	writerPath := filepath.Join(workspace, ".gopher", "agents", "writer")
+	plannerPath := filepath.Join(workspace, "agents", "planner")
+	writerPath := filepath.Join(workspace, "agents", "writer")
 	createGatewayTestAgentWorkspace(t, plannerPath, "planner")
 	createGatewayTestAgentWorkspace(t, writerPath, "writer")
 
-	workspaces, rootWorkspace, err := discoverGatewayAgentWorkspaces(workspace)
+	workspaces, err := discoverGatewayAgentWorkspaces(workspace)
 	if err != nil {
 		t.Fatalf("discoverGatewayAgentWorkspaces() error: %v", err)
-	}
-	if rootWorkspace != "" {
-		t.Fatalf("root workspace = %q, want empty", rootWorkspace)
 	}
 	if len(workspaces) != 2 {
 		t.Fatalf("workspaces len = %d, want 2", len(workspaces))
@@ -36,17 +33,17 @@ func TestDiscoverGatewayAgentWorkspacesFindsPerAgentDirectories(t *testing.T) {
 	}
 }
 
-func TestLoadGatewayAgentRuntimeUsesRootAgentAsDefault(t *testing.T) {
+func TestLoadGatewayAgentRuntimeUsesLexicographicDefaultActor(t *testing.T) {
 	workspace := t.TempDir()
-	createGatewayTestAgentWorkspace(t, workspace, "root-agent")
-	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, ".gopher", "agents", "planner"), "planner")
+	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, "agents", "writer"), "writer")
+	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, "agents", "planner"), "planner")
 
 	runtime, err := loadGatewayAgentRuntime(workspace)
 	if err != nil {
 		t.Fatalf("loadGatewayAgentRuntime() error: %v", err)
 	}
-	if runtime.DefaultActorID != sessionrt.ActorID("root-agent") {
-		t.Fatalf("default actor = %q, want root-agent", runtime.DefaultActorID)
+	if runtime.DefaultActorID != sessionrt.ActorID("planner") {
+		t.Fatalf("default actor = %q, want planner", runtime.DefaultActorID)
 	}
 	if len(runtime.Agents) != 2 {
 		t.Fatalf("agents len = %d, want 2", len(runtime.Agents))
@@ -55,8 +52,8 @@ func TestLoadGatewayAgentRuntimeUsesRootAgentAsDefault(t *testing.T) {
 
 func TestLoadGatewayAgentRuntimeRejectsDuplicateAgentIDs(t *testing.T) {
 	workspace := t.TempDir()
-	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, ".gopher", "agents", "first"), "planner")
-	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, ".gopher", "agents", "second"), "planner")
+	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, "agents", "first"), "planner")
+	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, "agents", "second"), "planner")
 
 	_, err := loadGatewayAgentRuntime(workspace)
 	if err == nil {
@@ -64,6 +61,20 @@ func TestLoadGatewayAgentRuntimeRejectsDuplicateAgentIDs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "duplicate agent id") {
 		t.Fatalf("expected duplicate agent id error, got: %v", err)
+	}
+}
+
+func TestDiscoverGatewayAgentWorkspacesRejectsLegacyNestedPath(t *testing.T) {
+	workspace := t.TempDir()
+	legacyPath := filepath.Join(workspace, ".gopher", "agents", "planner")
+	createGatewayTestAgentWorkspace(t, legacyPath, "planner")
+
+	_, err := discoverGatewayAgentWorkspaces(workspace)
+	if err == nil {
+		t.Fatalf("expected error for legacy nested path")
+	}
+	if !strings.Contains(err.Error(), "/agents/<agent_id>") {
+		t.Fatalf("expected agents path guidance, got: %v", err)
 	}
 }
 

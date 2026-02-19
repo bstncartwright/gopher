@@ -68,7 +68,7 @@ func startMatrixDMBridgeWithRuntime(
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:          store,
 		Executor:       executor,
-		AgentSelector:  matrixMentionAgentSelector(identities),
+		AgentSelector:  matrixMentionAgentSelector(identities, newMatrixLLMUntaggedResponderRouter(agentRuntime, logger)),
 		RecoverOnStart: true,
 	})
 	if err != nil {

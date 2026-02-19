@@ -18,7 +18,7 @@ type SessionManager interface {
 	CancelSession(ctx context.Context, id SessionID) error
 }
 
-type AgentSelector func(session *Session, trigger Event) (ActorID, bool)
+type AgentSelector func(session *Session, trigger Event) ([]ActorID, bool)
 
 type ManagerOptions struct {
 	Store          EventStore
@@ -78,9 +78,9 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	return manager, nil
 }
 
-func DefaultAgentSelector(session *Session, _ Event) (ActorID, bool) {
+func DefaultAgentSelector(session *Session, _ Event) ([]ActorID, bool) {
 	if session == nil {
-		return "", false
+		return nil, false
 	}
 
 	agentIDs := make([]string, 0, len(session.Participants))
@@ -90,10 +90,10 @@ func DefaultAgentSelector(session *Session, _ Event) (ActorID, bool) {
 		}
 	}
 	if len(agentIDs) == 0 {
-		return "", false
+		return nil, false
 	}
 	sort.Strings(agentIDs)
-	return ActorID(agentIDs[0]), true
+	return []ActorID{ActorID(agentIDs[0])}, true
 }
 
 func (m *Manager) CreateSession(ctx context.Context, opts CreateSessionOptions) (*Session, error) {

@@ -89,14 +89,13 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 	}
 
 	sessionSnapshot := cloneSession(rt.session)
-	actorID, ok := m.selectFn(sessionSnapshot, e)
+	selectedActorIDs, ok := m.selectFn(sessionSnapshot, e)
 	if !ok {
 		return nil, false
 	}
-
-	history, err := m.store.List(req.ctx, rt.sessionID)
-	if err != nil {
-		return m.failSession(rt, fmt.Errorf("list history: %w", err)), true
+	actorIDs := resolveSelectedAgentActors(sessionSnapshot, selectedActorIDs)
+	if len(actorIDs) == 0 {
+		return nil, false
 	}
 
 	if err := m.setInFlight(req.ctx, rt, true); err != nil {
@@ -106,30 +105,37 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 		_ = m.setInFlight(context.Background(), rt, false)
 	}()
 
-	output, err := m.executor.Step(rt.ctx, AgentInput{
-		SessionID: rt.sessionID,
-		ActorID:   actorID,
-		History:   history,
-	})
-	if err != nil {
-		return m.failSession(rt, fmt.Errorf("agent step: %w", err)), true
-	}
-
-	for _, produced := range output.Events {
-		if produced.SessionID != "" && produced.SessionID != rt.sessionID {
-			return m.failSession(rt, fmt.Errorf("%w: executor returned session %q for runtime %q", ErrInvalidEvent, produced.SessionID, rt.sessionID)), true
-		}
-		if strings.TrimSpace(string(produced.From)) == "" {
-			produced.From = actorID
-		}
-		produced.SessionID = rt.sessionID
-
-		canonical, err := m.canonicalizeEvent(rt, produced)
+	for _, actorID := range actorIDs {
+		history, err := m.store.List(req.ctx, rt.sessionID)
 		if err != nil {
-			return m.failSession(rt, fmt.Errorf("canonicalize agent event: %w", err)), true
+			return m.failSession(rt, fmt.Errorf("list history: %w", err)), true
 		}
-		if err := m.appendPersistedEvent(req.ctx, rt, canonical); err != nil {
-			return m.failSession(rt, fmt.Errorf("append agent event: %w", err)), true
+
+		output, err := m.executor.Step(rt.ctx, AgentInput{
+			SessionID: rt.sessionID,
+			ActorID:   actorID,
+			History:   history,
+		})
+		if err != nil {
+			return m.failSession(rt, fmt.Errorf("agent step: %w", err)), true
+		}
+
+		for _, produced := range output.Events {
+			if produced.SessionID != "" && produced.SessionID != rt.sessionID {
+				return m.failSession(rt, fmt.Errorf("%w: executor returned session %q for runtime %q", ErrInvalidEvent, produced.SessionID, rt.sessionID)), true
+			}
+			if strings.TrimSpace(string(produced.From)) == "" {
+				produced.From = actorID
+			}
+			produced.SessionID = rt.sessionID
+
+			canonical, err := m.canonicalizeEvent(rt, produced)
+			if err != nil {
+				return m.failSession(rt, fmt.Errorf("canonicalize agent event: %w", err)), true
+			}
+			if err := m.appendPersistedEvent(req.ctx, rt, canonical); err != nil {
+				return m.failSession(rt, fmt.Errorf("append agent event: %w", err)), true
+			}
 		}
 	}
 
@@ -209,6 +215,30 @@ func (m *Manager) shouldTriggerAgent(event Event) bool {
 		return false
 	}
 	return msg.Role == RoleUser
+}
+
+func resolveSelectedAgentActors(session *Session, selected []ActorID) []ActorID {
+	if session == nil || len(selected) == 0 {
+		return nil
+	}
+	out := make([]ActorID, 0, len(selected))
+	seen := make(map[ActorID]struct{}, len(selected))
+	for _, actorID := range selected {
+		actorID = ActorID(strings.TrimSpace(string(actorID)))
+		if strings.TrimSpace(string(actorID)) == "" {
+			continue
+		}
+		if _, exists := seen[actorID]; exists {
+			continue
+		}
+		participant, exists := session.Participants[actorID]
+		if !exists || participant.Type != ActorAgent {
+			continue
+		}
+		seen[actorID] = struct{}{}
+		out = append(out, actorID)
+	}
+	return out
 }
 
 func (m *Manager) canonicalizeEvent(rt *sessionRuntime, event Event) (Event, error) {

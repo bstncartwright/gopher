@@ -1,16 +1,27 @@
 package main
 
 import (
+	"context"
 	"sort"
 	"strings"
 
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
-func matrixMentionAgentSelector(identities agentMatrixIdentitySet) sessionrt.AgentSelector {
-	return func(session *sessionrt.Session, trigger sessionrt.Event) (sessionrt.ActorID, bool) {
+type matrixUntaggedResponderSelectionInput struct {
+	Message              string
+	CandidateActors      []sessionrt.ActorID
+	CandidateUserByActor map[sessionrt.ActorID]string
+}
+
+type matrixUntaggedResponderRouter interface {
+	SelectResponders(ctx context.Context, input matrixUntaggedResponderSelectionInput) ([]sessionrt.ActorID, error)
+}
+
+func matrixMentionAgentSelector(identities agentMatrixIdentitySet, fallback matrixUntaggedResponderRouter) sessionrt.AgentSelector {
+	return func(session *sessionrt.Session, trigger sessionrt.Event) ([]sessionrt.ActorID, bool) {
 		if session == nil {
-			return "", false
+			return nil, false
 		}
 		agentParticipants := make([]sessionrt.ActorID, 0, len(session.Participants))
 		participantSet := make(map[sessionrt.ActorID]struct{}, len(session.Participants))
@@ -24,25 +35,43 @@ func matrixMentionAgentSelector(identities agentMatrixIdentitySet) sessionrt.Age
 			agentParticipants = append(agentParticipants, actorID)
 			participantSet[actorID] = struct{}{}
 		}
+		sort.Slice(agentParticipants, func(i, j int) bool {
+			return string(agentParticipants[i]) < string(agentParticipants[j])
+		})
 		if len(agentParticipants) == 0 {
-			return "", false
+			return nil, false
 		}
 		if len(agentParticipants) == 1 {
-			return agentParticipants[0], true
+			return []sessionrt.ActorID{agentParticipants[0]}, true
 		}
 
 		message, ok := sessionMessageFromEvent(trigger)
 		if !ok || message.Role != sessionrt.RoleUser {
-			return "", false
+			return nil, false
 		}
 		if actorID, ok := selectedActorFromMessageTarget(message, participantSet); ok {
-			return actorID, true
+			return []sessionrt.ActorID{actorID}, true
 		}
 		mentions := mentionedParticipantActors(message.Content, identities.ActorByUserID, participantSet)
-		if len(mentions) != 1 {
-			return "", false
+		if len(mentions) > 0 {
+			return mentions, true
 		}
-		return mentions[0], true
+		if fallback == nil {
+			return nil, false
+		}
+		selected, err := fallback.SelectResponders(context.Background(), matrixUntaggedResponderSelectionInput{
+			Message:              message.Content,
+			CandidateActors:      agentParticipants,
+			CandidateUserByActor: identities.UserByActorID,
+		})
+		if err != nil {
+			return nil, false
+		}
+		selected = filterParticipantActors(selected, participantSet)
+		if len(selected) == 0 {
+			return nil, false
+		}
+		return selected, true
 	}
 }
 
@@ -86,6 +115,29 @@ func selectedActorFromMessageTarget(message sessionrt.Message, participantSet ma
 		return "", false
 	}
 	return target, true
+}
+
+func filterParticipantActors(actors []sessionrt.ActorID, participantSet map[sessionrt.ActorID]struct{}) []sessionrt.ActorID {
+	if len(actors) == 0 {
+		return nil
+	}
+	out := make([]sessionrt.ActorID, 0, len(actors))
+	seen := make(map[sessionrt.ActorID]struct{}, len(actors))
+	for _, actor := range actors {
+		actor = sessionrt.ActorID(strings.TrimSpace(string(actor)))
+		if strings.TrimSpace(string(actor)) == "" {
+			continue
+		}
+		if _, ok := participantSet[actor]; !ok {
+			continue
+		}
+		if _, ok := seen[actor]; ok {
+			continue
+		}
+		seen[actor] = struct{}{}
+		out = append(out, actor)
+	}
+	return out
 }
 
 func mentionedParticipantActors(text string, actorByUserID map[string]sessionrt.ActorID, participantSet map[sessionrt.ActorID]struct{}) []sessionrt.ActorID {

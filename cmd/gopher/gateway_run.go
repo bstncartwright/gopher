@@ -339,7 +339,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		return fmt.Errorf("resolve workspace directory: %w", err)
 	}
 	agentRuntime, err := loadGatewayAgentRuntimeWithOptions(workspace, agentRuntimeOptions{
-		CaptureDeltas:   false,
+		CaptureDeltas:   true,
 		CaptureThinking: cfg.Panel.CaptureThinking,
 	})
 	if err != nil {

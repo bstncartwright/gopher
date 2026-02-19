@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,11 +36,15 @@ func (t *readTool) Schema() ToolSchema {
 func (t *readTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	path, err := requiredStringArg(input.Args, "path")
 	if err != nil {
+		slog.Error("read_tool: path arg required")
 		return ToolOutput{Status: ToolStatusError}, err
 	}
 
+	slog.Debug("read_tool: reading file", "path", path, "session_id", input.Session.ID)
+
 	f, err := os.Open(path)
 	if err != nil {
+		slog.Error("read_tool: failed to open file", "path", path, "error", err)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
@@ -63,8 +68,10 @@ func (t *readTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	}
 
 	if hasOffset || hasLimit {
+		slog.Debug("read_tool: reading range", "path", path, "offset", offset, "limit", limit)
 		return readRange(f, path, offset, hasOffset, limit, hasLimit)
 	}
+	slog.Debug("read_tool: reading full file", "path", path)
 	return readFull(f, path)
 }
 
@@ -74,6 +81,7 @@ func readRange(f *os.File, path string, offset int, hasOffset bool, limit int, h
 		startLine = offset
 	}
 
+	slog.Debug("read_tool: scanning file range", "path", path, "start_line", startLine)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -90,12 +98,14 @@ func readRange(f *os.File, path string, offset int, hasOffset bool, limit int, h
 		// keep scanning to EOF so lineNum reflects actual total line count
 	}
 	if err := scanner.Err(); err != nil {
+		slog.Error("read_tool: scanner error", "path", path, "error", err)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
 		}, err
 	}
 
+	slog.Debug("read_tool: range read complete", "path", path, "lines_returned", len(lines), "total_lines", lineNum)
 	return ToolOutput{
 		Status: ToolStatusOK,
 		Result: map[string]any{
@@ -109,8 +119,10 @@ func readRange(f *os.File, path string, offset int, hasOffset bool, limit int, h
 func readFull(f *os.File, path string) (ToolOutput, error) {
 	const maxBytes = 10 << 20 // 10 MiB
 
+	slog.Debug("read_tool: reading full file", "path", path, "max_bytes", maxBytes)
 	blob, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
 	if err != nil {
+		slog.Error("read_tool: failed to read file", "path", path, "error", err)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
@@ -120,6 +132,7 @@ func readFull(f *os.File, path string) (ToolOutput, error) {
 	truncated := len(blob) > maxBytes
 	if truncated {
 		blob = blob[:maxBytes]
+		slog.Warn("read_tool: file truncated", "path", path, "max_bytes", maxBytes)
 	}
 
 	rawLines := strings.Split(string(blob), "\n")
@@ -128,6 +141,7 @@ func readFull(f *os.File, path string) (ToolOutput, error) {
 		numbered[i] = fmt.Sprintf("%6d|%s", i+1, line)
 	}
 
+	slog.Debug("read_tool: full read complete", "path", path, "total_lines", len(rawLines), "truncated", truncated)
 	result := map[string]any{
 		"path":        path,
 		"content":     strings.Join(numbered, "\n"),
@@ -163,20 +177,27 @@ func (t *writeTool) Schema() ToolSchema {
 func (t *writeTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	path, err := requiredStringArg(input.Args, "path")
 	if err != nil {
+		slog.Error("write_tool: path arg required")
 		return ToolOutput{Status: ToolStatusError}, err
 	}
 	content, err := requiredStringArg(input.Args, "content")
 	if err != nil {
+		slog.Error("write_tool: content arg required")
 		return ToolOutput{Status: ToolStatusError}, err
 	}
 
+	slog.Debug("write_tool: writing file", "path", path, "content_length", len(content), "session_id", input.Session.ID)
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		slog.Error("write_tool: failed to create parent dirs", "path", path, "error", err)
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"path": path, "error": err.Error()}}, err
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		slog.Error("write_tool: failed to write file", "path", path, "error", err)
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"path": path, "error": err.Error()}}, err
 	}
 
+	slog.Info("write_tool: file written", "path", path, "bytes_written", len(content))
 	return ToolOutput{
 		Status: ToolStatusOK,
 		Result: map[string]any{

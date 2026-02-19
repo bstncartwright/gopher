@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -32,19 +33,25 @@ func (t *editTool) Schema() ToolSchema {
 func (t *editTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	path, err := requiredStringArg(input.Args, "path")
 	if err != nil {
+		slog.Error("edit_tool: path arg required")
 		return ToolOutput{Status: ToolStatusError}, err
 	}
 	oldText, err := requiredStringArg(input.Args, "old_text")
 	if err != nil {
+		slog.Error("edit_tool: old_text arg required")
 		return ToolOutput{Status: ToolStatusError}, err
 	}
 	newText, err := requiredStringArg(input.Args, "new_text")
 	if err != nil {
+		slog.Error("edit_tool: new_text arg required")
 		return ToolOutput{Status: ToolStatusError}, err
 	}
 
+	slog.Debug("edit_tool: editing file", "path", path, "old_text_length", len(oldText), "new_text_length", len(newText), "session_id", input.Session.ID)
+
 	content, err := os.ReadFile(path)
 	if err != nil {
+		slog.Error("edit_tool: failed to read file", "path", path, "error", err)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
@@ -56,6 +63,7 @@ func (t *editTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 
 	if count == 0 {
 		err := fmt.Errorf("old_text not found in file")
+		slog.Warn("edit_tool: old_text not found", "path", path)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
@@ -63,6 +71,7 @@ func (t *editTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	}
 	if count > 1 {
 		err := fmt.Errorf("old_text is ambiguous: found %d matches, provide more context", count)
+		slog.Warn("edit_tool: ambiguous old_text", "path", path, "match_count", count)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
@@ -72,6 +81,7 @@ func (t *editTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 	updated := strings.Replace(original, oldText, newText, 1)
 
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		slog.Error("edit_tool: failed to write file", "path", path, "error", err)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"path": path, "error": err.Error()},
@@ -80,6 +90,7 @@ func (t *editTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 
 	snippet := extractSnippet(updated, strings.Index(updated, newText), len(newText))
 
+	slog.Info("edit_tool: file edited", "path", path, "old_text_length", len(oldText), "new_text_length", len(newText))
 	return ToolOutput{
 		Status: ToolStatusOK,
 		Result: map[string]any{

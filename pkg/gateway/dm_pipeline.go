@@ -3,7 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +20,6 @@ type DMPipelineOptions struct {
 	RecipientByAgent map[sessionrt.ActorID]string
 	Conversations    *ConversationSessionMap
 	Bindings         ConversationBindingStore
-	Logger           *log.Logger
 }
 
 type conversationRoute struct {
@@ -42,7 +41,6 @@ type DMPipeline struct {
 	recipByAgent  map[sessionrt.ActorID]string
 	conversations *ConversationSessionMap
 	bindings      ConversationBindingStore
-	logger        *log.Logger
 
 	setupMu      sync.Mutex
 	subscribedMu sync.Mutex
@@ -81,12 +79,15 @@ type managedConversationUsersReader interface {
 
 func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 	if opts.Manager == nil {
+		slog.Error("dm_pipeline: session manager is required")
 		return nil, fmt.Errorf("session manager is required")
 	}
 	if opts.Transport == nil {
+		slog.Error("dm_pipeline: transport is required")
 		return nil, fmt.Errorf("transport is required")
 	}
 	if strings.TrimSpace(string(opts.AgentID)) == "" {
+		slog.Error("dm_pipeline: agent id is required")
 		return nil, fmt.Errorf("agent id is required")
 	}
 	conversations := opts.Conversations
@@ -104,6 +105,10 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 			recipByAgent[actorID] = recipientID
 		}
 	}
+	slog.Info("dm_pipeline: creating pipeline",
+		"agent_id", opts.AgentID,
+		"agents_by_recipient_count", len(agentByRecip),
+	)
 	pipeline := &DMPipeline{
 		manager:       opts.Manager,
 		transport:     opts.Transport,
@@ -112,7 +117,6 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		recipByAgent:  recipByAgent,
 		conversations: conversations,
 		bindings:      bindings,
-		logger:        opts.Logger,
 		subscribed:    map[sessionrt.SessionID]struct{}{},
 		lastFallback:  map[string]time.Time{},
 		processing:    map[string]int{},
@@ -124,6 +128,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		pipeline.setConversationRoute(binding.ConversationID, binding.AgentID, binding.RecipientID, binding.Mode)
 	}
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
+	slog.Info("dm_pipeline: pipeline created", "agent_id", opts.AgentID)
 	return pipeline, nil
 }
 
@@ -132,12 +137,25 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	if conversationID == "" {
 		return nil
 	}
+	slog.Debug("dm_pipeline: handling inbound",
+		"conversation_id", conversationID,
+		"sender_id", inbound.SenderID,
+		"recipient_id", inbound.RecipientID,
+		"sender_managed", inbound.SenderManaged,
+	)
 	if inbound.SenderManaged {
 		mode := p.conversationModeFor(conversationID)
 		if mode != ConversationModeDelegation {
+			slog.Debug("dm_pipeline: skipping managed sender - not delegation mode",
+				"conversation_id", conversationID,
+				"mode", mode,
+			)
 			return nil
 		}
 		if existingSessionID, ok := p.conversations.Get(conversationID); !ok || !p.isSessionActive(ctx, existingSessionID) {
+			slog.Debug("dm_pipeline: skipping managed sender - no active session",
+				"conversation_id", conversationID,
+			)
 			return nil
 		}
 	}
@@ -145,6 +163,11 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	agentID, recipientID := p.routeForInbound(inbound.RecipientID)
 	sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.SenderID, agentID, recipientID)
 	if err != nil {
+		slog.Error("dm_pipeline: failed to resolve session",
+			"conversation_id", conversationID,
+			"sender_id", inbound.SenderID,
+			"error", err,
+		)
 		return err
 	}
 	p.startProcessing(conversationID)
@@ -176,9 +199,11 @@ func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID,
 	go func() {
 		if err := p.manager.SendEvent(context.Background(), event); err != nil {
 			p.finishProcessing(conversationID)
-			if p.logger != nil {
-				p.logger.Printf("send dm session event failed conversation_id=%q sender=%q err=%v", conversationID, senderID, err)
-			}
+			slog.Error("dm_pipeline: send dm session event failed",
+				"conversation_id", conversationID,
+				"sender_id", senderID,
+				"error", err,
+			)
 			p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), err.Error())
 		}
 	}()
@@ -190,9 +215,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 	}
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
 		if !p.isSessionActive(ctx, existing) {
-			if p.logger != nil {
-				p.logger.Printf("conversation_id=%q has inactive session=%q; creating replacement session", conversationID, existing)
-			}
+			slog.Debug("dm_pipeline: conversation has inactive session; creating replacement",
+				"conversation_id", conversationID,
+				"session_id", existing,
+			)
 		} else {
 			if err := p.ensureSubscription(conversationID, existing); err != nil {
 				return "", err
@@ -209,9 +235,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
 		if !p.isSessionActive(ctx, existing) {
-			if p.logger != nil {
-				p.logger.Printf("conversation_id=%q has inactive session=%q after lock; creating replacement session", conversationID, existing)
-			}
+			slog.Debug("dm_pipeline: conversation has inactive session after lock; creating replacement",
+				"conversation_id", conversationID,
+				"session_id", existing,
+			)
 		} else {
 			if err := p.ensureSubscription(conversationID, existing); err != nil {
 				return "", err
@@ -223,6 +250,11 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		}
 	}
 
+	slog.Info("dm_pipeline: creating new session",
+		"conversation_id", conversationID,
+		"agent_id", desiredAgentID,
+		"sender_id", senderID,
+	)
 	created, err := p.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: desiredAgentID, Type: sessionrt.ActorAgent},
@@ -230,6 +262,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		},
 	})
 	if err != nil {
+		slog.Error("dm_pipeline: failed to create session",
+			"conversation_id", conversationID,
+			"error", err,
+		)
 		return "", fmt.Errorf("create dm session: %w", err)
 	}
 	if err := p.ensureSubscription(conversationID, created.ID); err != nil {
@@ -240,6 +276,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		_ = p.manager.CancelSession(context.Background(), created.ID)
 		return "", err
 	}
+	slog.Info("dm_pipeline: session created",
+		"conversation_id", conversationID,
+		"session_id", created.ID,
+	)
 	return created.ID, nil
 }
 
@@ -313,12 +353,19 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			if content == "" {
 				continue
 			}
+			slog.Debug("dm_pipeline: sending message",
+				"conversation_id", conversationID,
+				"content_length", len(content),
+			)
 			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 				ConversationID: conversationID,
 				SenderID:       p.senderForConversationEvent(conversationID, event.From),
 				Text:           msg.Content,
-			}); err != nil && p.logger != nil {
-				p.logger.Printf("send dm response failed: %v", err)
+			}); err != nil {
+				slog.Error("dm_pipeline: send dm response failed",
+					"conversation_id", conversationID,
+					"error", err,
+				)
 			}
 		}
 	}()
@@ -377,8 +424,12 @@ func (p *DMPipeline) sendTyping(conversationID string, typing bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dmTypingTimeout)
 	defer cancel()
-	if err := typingAPI.SendTyping(ctx, conversationID, typing); err != nil && p.logger != nil {
-		p.logger.Printf("send dm typing failed conversation_id=%q typing=%t err=%v", conversationID, typing, err)
+	if err := typingAPI.SendTyping(ctx, conversationID, typing); err != nil {
+		slog.Warn("dm_pipeline: send dm typing failed",
+			"conversation_id", conversationID,
+			"typing", typing,
+			"error", err,
+		)
 	}
 }
 
@@ -760,12 +811,19 @@ func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) 
 	p.fallbackMu.Unlock()
 
 	reply := fallbackReplyForError(rawErr)
+	slog.Warn("dm_pipeline: sending error fallback",
+		"conversation_id", conversationID,
+		"error_message", rawErr,
+	)
 	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 		ConversationID: conversationID,
 		SenderID:       strings.TrimSpace(senderID),
 		Text:           reply,
-	}); err != nil && p.logger != nil {
-		p.logger.Printf("send dm error fallback failed: %v", err)
+	}); err != nil {
+		slog.Error("dm_pipeline: send dm error fallback failed",
+			"conversation_id", conversationID,
+			"error", err,
+		)
 	}
 }
 

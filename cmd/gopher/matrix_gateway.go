@@ -143,7 +143,6 @@ func startMatrixDMBridgeWithRuntime(
 		RecipientByAgent: identities.UserByActorID,
 		Conversations:    gateway.NewConversationSessionMap(),
 		Bindings:         bindingStore,
-		Logger:           logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create matrix dm pipeline: %w", err)

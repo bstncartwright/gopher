@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -74,6 +75,14 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 	}
 	ctx := resolveRequestContext(&options.StreamOptions)
 
+	slog.Debug("anthropic: starting stream",
+		"model_id", model.ID,
+		"session_id", options.SessionID,
+		"messages_count", len(conversation.Messages),
+		"tools_count", len(conversation.Tools),
+		"thinking_enabled", options.ThinkingEnabled,
+	)
+
 	go func() {
 		output := NewAssistantMessage(model)
 		defer stream.End(&output)
@@ -83,6 +92,7 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 			apiKey = GetEnvAPIKey(string(model.Provider))
 		}
 		if apiKey == "" {
+			slog.Error("anthropic: no API key", "provider", model.Provider)
 			output.StopReason = StopReasonError
 			output.ErrorMessage = fmt.Sprintf("no API key for provider %s", model.Provider)
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -95,6 +105,7 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 		}
 		body, err := json.Marshal(payload)
 		if err != nil {
+			slog.Error("anthropic: failed to marshal payload", "error", err)
 			output.StopReason = StopReasonError
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -102,8 +113,10 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 		}
 
 		endpoint := resolveAnthropicMessagesURL(model.BaseURL)
+		slog.Debug("anthropic: sending request", "endpoint", endpoint, "model_id", model.ID)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
+			slog.Error("anthropic: failed to create request", "error", err)
 			output.StopReason = StopReasonError
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -129,6 +142,7 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 
 		resp, err := defaultHTTPClient.Do(req)
 		if err != nil {
+			slog.Error("anthropic: request failed", "error", err, "model_id", model.ID)
 			output.StopReason = stopReasonForError(ctx, err)
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
@@ -137,12 +151,18 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 		if resp.StatusCode >= 400 {
 			defer resp.Body.Close()
 			raw, _ := io.ReadAll(resp.Body)
+			slog.Error("anthropic: received error status",
+				"status_code", resp.StatusCode,
+				"response", strings.TrimSpace(string(raw)),
+				"model_id", model.ID,
+			)
 			output.StopReason = StopReasonError
 			output.ErrorMessage = fmt.Sprintf("%d status code (%s)", resp.StatusCode, strings.TrimSpace(string(raw)))
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
 			return
 		}
 
+		slog.Debug("anthropic: stream started", "model_id", model.ID, "session_id", options.SessionID)
 		stream.Push(AssistantMessageEvent{Type: EventStart, Partial: &output})
 		events := make(chan sseEvent, 32)
 		errCh := make(chan error, 1)
@@ -267,12 +287,14 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 		}
 
 		if err := <-errCh; err != nil && ctx.Err() == nil {
+			slog.Error("anthropic: SSE read error", "error", err, "model_id", model.ID)
 			output.StopReason = stopReasonForError(ctx, err)
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 			return
 		}
 		if ctx.Err() != nil {
+			slog.Debug("anthropic: context cancelled", "model_id", model.ID)
 			output.StopReason = StopReasonAborted
 			output.ErrorMessage = "request was aborted"
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonAborted, Error: &output})
@@ -282,6 +304,15 @@ func streamAnthropicMessages(model Model, conversation Context, options *Anthrop
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 			return
 		}
+		slog.Info("anthropic: stream complete",
+			"model_id", model.ID,
+			"session_id", options.SessionID,
+			"stop_reason", output.StopReason,
+			"usage_input", output.Usage.Input,
+			"usage_output", output.Usage.Output,
+			"usage_total", output.Usage.TotalTokens,
+			"usage_cost", output.Usage.Cost,
+		)
 		stream.Push(AssistantMessageEvent{Type: EventDone, Reason: output.StopReason, Message: &output})
 	}()
 

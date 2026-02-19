@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +46,7 @@ type Manager struct {
 
 func NewManager(opts ManagerOptions) (*Manager, error) {
 	if opts.Store == nil {
+		slog.Error("session_manager: event store is required")
 		return nil, fmt.Errorf("%w: event store is required", ErrInvalidSession)
 	}
 
@@ -58,6 +60,7 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		selectFn = DefaultAgentSelector
 	}
 
+	slog.Debug("session_manager: creating new manager", "recover_on_start", opts.RecoverOnStart)
 	manager := &Manager{
 		store:     opts.Store,
 		executor:  opts.Executor,
@@ -71,10 +74,14 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		manager.registry = registry
 	}
 	if opts.RecoverOnStart {
+		slog.Info("session_manager: starting recovery")
 		if err := manager.Recover(context.Background()); err != nil {
+			slog.Error("session_manager: recovery failed", "error", err)
 			return nil, err
 		}
+		slog.Info("session_manager: recovery complete")
 	}
+	slog.Info("session_manager: manager created")
 	return manager, nil
 }
 
@@ -108,6 +115,7 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateSessionOptions) 
 
 	participants, err := normalizeParticipants(opts.Participants)
 	if err != nil {
+		slog.Error("session_manager: failed to normalize participants", "error", err)
 		return nil, err
 	}
 
@@ -119,6 +127,11 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateSessionOptions) 
 		Status:       SessionActive,
 	}
 	rt := newSessionRuntime(session)
+
+	slog.Info("session_manager: creating session",
+		"session_id", id,
+		"participants_count", len(participants),
+	)
 
 	m.mu.Lock()
 	m.sessions[id] = rt
@@ -138,6 +151,10 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateSessionOptions) 
 		},
 	}
 	if err := m.enqueue(ctx, rt, runtimeRequest{kind: runtimeRequestSend, event: createdEvent}); err != nil {
+		slog.Error("session_manager: failed to enqueue created event",
+			"session_id", id,
+			"error", err,
+		)
 		m.mu.Lock()
 		delete(m.sessions, id)
 		m.mu.Unlock()
@@ -146,6 +163,7 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateSessionOptions) 
 		return nil, err
 	}
 
+	slog.Info("session_manager: session created", "session_id", id)
 	return cloneSession(session), nil
 }
 
@@ -159,10 +177,12 @@ func (m *Manager) GetSession(ctx context.Context, id SessionID) (*Session, error
 	default:
 	}
 
+	slog.Debug("session_manager: getting session", "session_id", id)
 	m.mu.RLock()
 	rt, ok := m.sessions[id]
 	if !ok {
 		m.mu.RUnlock()
+		slog.Debug("session_manager: session not found", "session_id", id)
 		return nil, ErrSessionNotFound
 	}
 	out := cloneSession(rt.session)
@@ -182,18 +202,30 @@ func (m *Manager) SendEvent(ctx context.Context, e Event) error {
 
 	sessionID := e.SessionID
 	if strings.TrimSpace(string(sessionID)) == "" {
+		slog.Error("session_manager: event missing session ID")
 		return fmt.Errorf("%w: session ID is required", ErrInvalidEvent)
 	}
+
+	slog.Debug("session_manager: sending event",
+		"session_id", sessionID,
+		"event_type", e.Type,
+		"from", e.From,
+	)
 
 	m.mu.RLock()
 	rt, ok := m.sessions[sessionID]
 	if !ok {
 		m.mu.RUnlock()
+		slog.Warn("session_manager: session not found for event", "session_id", sessionID)
 		return ErrSessionNotFound
 	}
 	status := rt.session.Status
 	m.mu.RUnlock()
 	if status != SessionActive {
+		slog.Warn("session_manager: session not active",
+			"session_id", sessionID,
+			"status", status,
+		)
 		return ErrSessionNotActive
 	}
 
@@ -210,10 +242,12 @@ func (m *Manager) Subscribe(ctx context.Context, sessionID SessionID) (<-chan Ev
 	default:
 	}
 
+	slog.Debug("session_manager: subscribing to session", "session_id", sessionID)
 	m.mu.RLock()
 	_, ok := m.sessions[sessionID]
 	m.mu.RUnlock()
 	if !ok {
+		slog.Warn("session_manager: session not found for subscribe", "session_id", sessionID)
 		return nil, ErrSessionNotFound
 	}
 
@@ -230,15 +264,21 @@ func (m *Manager) CancelSession(ctx context.Context, id SessionID) error {
 	default:
 	}
 
+	slog.Info("session_manager: cancelling session", "session_id", id)
 	m.mu.RLock()
 	rt, ok := m.sessions[id]
 	if !ok {
 		m.mu.RUnlock()
+		slog.Warn("session_manager: session not found for cancel", "session_id", id)
 		return ErrSessionNotFound
 	}
 	status := rt.session.Status
 	m.mu.RUnlock()
 	if status != SessionActive {
+		slog.Warn("session_manager: session not active for cancel",
+			"session_id", id,
+			"status", status,
+		)
 		return ErrSessionNotActive
 	}
 

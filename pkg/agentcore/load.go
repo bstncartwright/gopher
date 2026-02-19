@@ -3,6 +3,7 @@ package agentcore
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,31 +22,47 @@ const (
 )
 
 func LoadAgent(workspacePath string) (*Agent, error) {
+	slog.Info("load_agent: starting agent load", "workspace_path", workspacePath)
 	if strings.TrimSpace(workspacePath) == "" {
+		slog.Error("load_agent: workspace path is required")
 		return nil, fmt.Errorf("workspace path is required")
 	}
 
 	workspaceAbs, err := filepath.Abs(workspacePath)
 	if err != nil {
+		slog.Error("load_agent: failed to resolve workspace path", "workspace_path", workspacePath, "error", err)
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
+	slog.Debug("load_agent: resolved workspace path", "workspace_path", workspacePath, "workspace_abs", workspaceAbs)
 
 	configPath := filepath.Join(workspaceAbs, "config.json")
 	policiesPath := filepath.Join(workspaceAbs, "policies.json")
 
 	for _, required := range []string{configPath, policiesPath} {
 		if err := requireFile(required); err != nil {
+			slog.Error("load_agent: required file missing", "file", required, "error", err)
 			return nil, err
 		}
 	}
+	slog.Debug("load_agent: required files verified", "config_path", configPath, "policies_path", policiesPath)
 
 	config := AgentConfig{}
 	if err := decodeJSONFile(configPath, &config); err != nil {
+		slog.Error("load_agent: failed to read config.json", "config_path", configPath, "error", err)
 		return nil, fmt.Errorf("read config.json: %w", err)
 	}
 	applyDefaultEnabledTools(&config)
+	slog.Info("load_agent: loaded config",
+		"agent_id", config.AgentID,
+		"name", config.Name,
+		"role", config.Role,
+		"model_policy", config.ModelPolicy,
+		"enabled_tools", config.EnabledTools,
+		"max_context_messages", config.MaxContextMessages,
+	)
 	if config.MaxContextMessages <= 0 {
 		config.MaxContextMessages = DefaultContextWindow
+		slog.Debug("load_agent: using default max_context_messages", "value", config.MaxContextMessages)
 	}
 	if config.BootstrapMaxChars <= 0 {
 		config.BootstrapMaxChars = DefaultBootstrapMaxChars
@@ -59,34 +76,57 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		config.TimeFormat = "auto"
 	}
 	if err := validateRequiredCapabilities(config.Execution.RequiredCapabilities); err != nil {
+		slog.Error("load_agent: invalid required_capabilities", "required_capabilities", config.Execution.RequiredCapabilities, "error", err)
 		return nil, err
 	}
 	heartbeat, err := normalizeHeartbeatConfig(config.Heartbeat)
 	if err != nil {
+		slog.Error("load_agent: invalid heartbeat config", "error", err)
 		return nil, err
 	}
+	slog.Debug("load_agent: heartbeat config normalized", "enabled", heartbeat.Enabled, "every", heartbeat.Every)
 
 	policies := AgentPolicies{}
 	if err := decodeJSONFile(policiesPath, &policies); err != nil {
+		slog.Error("load_agent: failed to read policies.json", "policies_path", policiesPath, "error", err)
 		return nil, fmt.Errorf("read policies.json: %w", err)
 	}
+	slog.Info("load_agent: loaded policies",
+		"can_shell", policies.CanShell,
+		"shell_allowlist", policies.ShellAllowlist,
+		"fs_roots", policies.FSRoots,
+		"allow_cross_agent_fs", policies.AllowCrossAgentFS,
+		"apply_patch_enabled", policies.ApplyPatchEnabled,
+	)
 
 	providerName, modelID, err := parseModelPolicy(config.ModelPolicy)
 	if err != nil {
+		slog.Error("load_agent: failed to parse model_policy", "model_policy", config.ModelPolicy, "error", err)
 		return nil, err
 	}
+	slog.Debug("load_agent: parsed model policy", "provider_name", providerName, "model_id", modelID)
 	model, ok := ai.GetModel(providerName, modelID)
 	if !ok {
+		slog.Error("load_agent: model not found", "provider_name", providerName, "model_id", modelID, "model_policy", config.ModelPolicy)
 		return nil, fmt.Errorf("model not found for model_policy %q", config.ModelPolicy)
 	}
+	slog.Info("load_agent: resolved model",
+		"provider", model.Provider,
+		"model_id", model.ID,
+		"context_window", model.ContextWindow,
+		"reasoning", model.Reasoning,
+	)
 
 	allowedRoots, err := resolveAllowedFSRoots(workspaceAbs, policies.FSRoots, policies.AllowCrossAgentFS)
 	if err != nil {
+		slog.Error("load_agent: failed to resolve fs roots", "error", err)
 		return nil, err
 	}
+	slog.Debug("load_agent: resolved allowed fs roots", "roots", allowedRoots)
 	contextWindow := model.ContextWindow
 	if contextWindow <= 0 {
 		contextWindow = 12000
+		slog.Debug("load_agent: using default context window", "context_window", contextWindow)
 	}
 
 	agent := &Agent{
@@ -107,28 +147,42 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		model:          model,
 		allowedFSRoots: allowedRoots,
 	}
+	slog.Debug("load_agent: agent struct created", "agent_id", agent.ID, "tools_count", len(agent.Tools.Schemas()))
 
 	skills, err := discoverSkills(workspaceAbs, config.SkillsPaths)
 	if err != nil {
+		slog.Error("load_agent: failed to discover skills", "skills_paths", config.SkillsPaths, "error", err)
 		return nil, fmt.Errorf("discover skills: %w", err)
 	}
 	agent.skills = skills
+	slog.Debug("load_agent: skills discovered", "skills_count", len(skills))
 
 	if strings.TrimSpace(agent.ID) == "" {
 		agent.ID = strings.TrimSpace(config.Name)
+		slog.Debug("load_agent: using name as agent_id", "agent_id", agent.ID)
 	}
 	if strings.TrimSpace(agent.ID) == "" {
+		slog.Error("load_agent: agent_id is required")
 		return nil, fmt.Errorf("config.agent_id is required")
 	}
 	agent.KnownAgents = []string{strings.TrimSpace(agent.ID)}
 
+	slog.Info("load_agent: agent loaded successfully",
+		"agent_id", agent.ID,
+		"name", agent.Name,
+		"workspace", workspaceAbs,
+		"model", model.ID,
+		"provider", model.Provider,
+	)
 	return agent, nil
 }
 
 func buildLongTermMemoryManager(workspaceAbs string) memory.MemoryManager {
 	path := filepath.Join(workspaceAbs, "memory", "memory.db")
+	slog.Debug("build_long_term_memory_manager: initializing", "path", path)
 	store, err := memsqlite.NewStore(memsqlite.StoreOptions{Path: path})
 	if err != nil {
+		slog.Warn("build_long_term_memory_manager: failed to create store, disabling long-term memory", "path", path, "error", err)
 		return nil
 	}
 
@@ -139,9 +193,11 @@ func buildLongTermMemoryManager(workspaceAbs string) memory.MemoryManager {
 		FailOpen:  true,
 	})
 	if err != nil {
+		slog.Warn("build_long_term_memory_manager: failed to create manager, disabling long-term memory", "path", path, "error", err)
 		_ = store.Close()
 		return nil
 	}
+	slog.Debug("build_long_term_memory_manager: initialized successfully", "path", path)
 	return manager
 }
 

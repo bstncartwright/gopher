@@ -121,12 +121,81 @@ func slotsForMode(mode PromptMode) int {
 }
 
 func resolveBootstrapSlotPath(workspace string, slot bootstrapSlot) (string, error) {
+	if slot.name == "USER.md" {
+		sharedPath, err := resolveSharedUserBootstrapPath(workspace, slot)
+		if err != nil {
+			return "", err
+		}
+		if sharedPath != "" {
+			return sharedPath, nil
+		}
+	}
+
+	return resolveBootstrapSlotPathInDir(workspace, slot)
+}
+
+func resolveSharedUserBootstrapPath(workspace string, slot bootstrapSlot) (string, error) {
+	workspaceDir := filepath.Clean(filepath.Dir(workspace))
+	if workspaceDir == "." || workspaceDir == string(filepath.Separator) {
+		return "", nil
+	}
+
+	collectionRoot, ok := resolveAgentCollectionRoot(workspaceDir)
+	if !ok {
+		return "", nil
+	}
+	return resolveBootstrapSlotPathInDir(collectionRoot, slot)
+}
+
+func resolveAgentCollectionRoot(dir string) (string, bool) {
+	clean := filepath.Clean(dir)
+	if clean == "." || clean == string(filepath.Separator) {
+		return "", false
+	}
+	if strings.EqualFold(filepath.Base(clean), "agents") {
+		return clean, true
+	}
+	if fileExists(filepath.Join(clean, "index.json")) {
+		return clean, true
+	}
+	if hasAgentWorkspaceChild(clean) {
+		return clean, true
+	}
+	return "", false
+}
+
+func hasAgentWorkspaceChild(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(root, entry.Name())
+		if fileExists(filepath.Join(candidate, "config.json")) && fileExists(filepath.Join(candidate, "policies.json")) {
+			return true
+		}
+	}
+	return false
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func resolveBootstrapSlotPathInDir(dir string, slot bootstrapSlot) (string, error) {
 	candidates := make([]string, 0, len(slot.fallbacks)+1)
 	candidates = append(candidates, slot.name)
 	candidates = append(candidates, slot.fallbacks...)
 
 	for _, name := range candidates {
-		path := filepath.Join(workspace, name)
+		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
 		if err != nil {
 			if os.IsNotExist(err) {

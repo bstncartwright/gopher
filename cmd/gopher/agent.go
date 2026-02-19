@@ -138,6 +138,9 @@ func runAgentCreate(args []string, out io.Writer) error {
 	if err := ensureAgentWorkspace(id, workspace); err != nil {
 		return err
 	}
+	if err := ensureSharedUserProfile(workspaceRoot, workspace); err != nil {
+		return err
+	}
 	if err := saveAgentRegistry(registryPath, registry); err != nil {
 		return err
 	}
@@ -407,4 +410,36 @@ func ensureAgentWorkspace(agentID, workspace string) error {
 		}
 	}
 	return nil
+}
+
+func ensureSharedUserProfile(workspaceRoot, workspace string) error {
+	workspaceRoot = filepath.Clean(strings.TrimSpace(workspaceRoot))
+	workspace = filepath.Clean(strings.TrimSpace(workspace))
+	if workspaceRoot == "" || workspace == "" {
+		return nil
+	}
+
+	if !isWithinPath(workspace, workspaceRoot) {
+		return nil
+	}
+
+	sharedPath := filepath.Join(workspaceRoot, "USER.md")
+	if _, err := os.Stat(sharedPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check shared user profile %s: %w", sharedPath, err)
+	}
+
+	if err := os.WriteFile(sharedPath, []byte(defaultSharedUserTemplate()), 0o644); err != nil {
+		return fmt.Errorf("write shared user profile %s: %w", sharedPath, err)
+	}
+	return nil
+}
+
+func isWithinPath(target, root string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }

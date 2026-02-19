@@ -244,11 +244,12 @@ phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages 
 
 1. prepare runtime workspace(s):
    - preferred layout (isolated per agent):
+     - `<working_dir>/agents/USER.md` (shared user profile for all agents)
      - `<working_dir>/agents/<agent_id>/AGENTS.md`
      - `<working_dir>/agents/<agent_id>/SOUL.md`
      - `<working_dir>/agents/<agent_id>/TOOLS.md`
      - `<working_dir>/agents/<agent_id>/IDENTITY.md`
-     - `<working_dir>/agents/<agent_id>/USER.md`
+     - `<working_dir>/agents/<agent_id>/USER.md` (optional local overrides)
      - `<working_dir>/agents/<agent_id>/HEARTBEAT.md` (optional)
      - `<working_dir>/agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
      - `<working_dir>/agents/<agent_id>/MEMORY.md` (optional)

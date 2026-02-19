@@ -164,6 +164,79 @@ func TestLoadBootstrapContextFilesCanonicalPrecedenceAndFallback(t *testing.T) {
 	}
 }
 
+func TestLoadBootstrapContextFilesUserUsesSharedProfileFromCollectionRoot(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "agents", "planner")
+	writeRequiredBootstrapFiles(t, workspace)
+	localUserPath := filepath.Join(workspace, "USER.md")
+	sharedUserPath := filepath.Join(root, "agents", "USER.md")
+	mustWriteFile(t, localUserPath, "local user profile")
+	mustWriteFile(t, sharedUserPath, "shared user profile")
+
+	files, err := loadBootstrapContextFiles(workspace, PromptModeFull, DefaultBootstrapMaxChars, DefaultBootstrapTotalMaxChars)
+	if err != nil {
+		t.Fatalf("loadBootstrapContextFiles() error: %v", err)
+	}
+	user := findBootstrapByName(files, "USER.md")
+	if user == nil || user.Missing {
+		t.Fatalf("expected USER.md entry")
+	}
+	if user.Path != sharedUserPath {
+		t.Fatalf("expected shared USER.md path %q, got %q", sharedUserPath, user.Path)
+	}
+	if !strings.Contains(user.Content, "shared user profile") {
+		t.Fatalf("expected shared USER.md content, got %q", user.Content)
+	}
+}
+
+func TestLoadBootstrapContextFilesUserFallsBackToLocalWhenSharedMissing(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "agents", "planner")
+	writeRequiredBootstrapFiles(t, workspace)
+	localUserPath := filepath.Join(workspace, "USER.md")
+	mustWriteFile(t, localUserPath, "local user profile")
+
+	files, err := loadBootstrapContextFiles(workspace, PromptModeFull, DefaultBootstrapMaxChars, DefaultBootstrapTotalMaxChars)
+	if err != nil {
+		t.Fatalf("loadBootstrapContextFiles() error: %v", err)
+	}
+	user := findBootstrapByName(files, "USER.md")
+	if user == nil || user.Missing {
+		t.Fatalf("expected USER.md entry")
+	}
+	if user.Path != localUserPath {
+		t.Fatalf("expected local USER.md path %q, got %q", localUserPath, user.Path)
+	}
+	if !strings.Contains(user.Content, "local user profile") {
+		t.Fatalf("expected local USER.md content, got %q", user.Content)
+	}
+}
+
+func TestLoadBootstrapContextFilesUserSharedLowercaseFallback(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "agents", "planner")
+	writeRequiredBootstrapFiles(t, workspace)
+	if err := os.Remove(filepath.Join(workspace, "USER.md")); err != nil {
+		t.Fatalf("remove USER.md: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(root, "agents", "user.md"), "shared lowercase user profile")
+
+	files, err := loadBootstrapContextFiles(workspace, PromptModeFull, DefaultBootstrapMaxChars, DefaultBootstrapTotalMaxChars)
+	if err != nil {
+		t.Fatalf("loadBootstrapContextFiles() error: %v", err)
+	}
+	user := findBootstrapByName(files, "USER.md")
+	if user == nil || user.Missing {
+		t.Fatalf("expected USER.md entry")
+	}
+	if filepath.Dir(user.Path) != filepath.Join(root, "agents") {
+		t.Fatalf("expected shared USER.md path under collection root, got %q", user.Path)
+	}
+	if !strings.Contains(user.Content, "shared lowercase user profile") {
+		t.Fatalf("expected shared lowercase user profile, got %q", user.Content)
+	}
+}
+
 func findBootstrapByName(files []BootstrapContextFile, name string) *BootstrapContextFile {
 	for i := range files {
 		if files[i].Name == name {

@@ -21,7 +21,7 @@ type SessionRuntimeAdapterOptions struct {
 	CaptureThinking bool
 }
 
-var sessionRuntimeTurnTimeout = 20 * time.Second
+var sessionRuntimeTurnTimeout = 5 * time.Minute
 
 func NewSessionRuntimeAdapter(agent *Agent) *SessionRuntimeAdapter {
 	return NewSessionRuntimeAdapterWithOptions(agent, SessionRuntimeAdapterOptions{})

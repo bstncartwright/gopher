@@ -109,6 +109,8 @@ func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
 		return runGatewayWithContext(ctx, cfg, sources, stderr)
 	case "config":
 		return runGatewayConfigSubcommand(args[1:], stdout, stderr)
+	case "nodes":
+		return runGatewayNodesSubcommand(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printGatewayUsage(stdout)
 		return nil
@@ -122,6 +124,7 @@ func printGatewayUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage:")
 	fmt.Fprintln(out, "  gopher gateway run [flags]")
 	fmt.Fprintln(out, "  gopher gateway config init [flags]")
+	fmt.Fprintln(out, "  gopher gateway nodes list [flags]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "run flags:")
 	fmt.Fprintln(out, "  --config <path>                path to toml config (default: ./gopher.toml)")
@@ -150,9 +153,15 @@ func printGatewayUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --path <path>                  output path (default: ./gopher.toml)")
 	fmt.Fprintln(out, "  --force                        overwrite if file exists")
 	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "nodes list flags:")
+	fmt.Fprintln(out, "  --config <path>                path to toml config (default: ./gopher.toml)")
+	fmt.Fprintln(out, "  --nats-url <url>               override nats server url")
+	fmt.Fprintln(out, "  --wait <dur>                   observe heartbeats for this duration (default: 3s)")
+	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "example:")
 	fmt.Fprintln(out, "  gopher gateway config init")
 	fmt.Fprintln(out, "  gopher gateway run --config ./gopher.toml --capability tool:gpu")
+	fmt.Fprintln(out, "  gopher gateway nodes list --wait 5s")
 }
 
 func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {

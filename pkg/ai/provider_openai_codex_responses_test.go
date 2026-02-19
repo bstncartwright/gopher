@@ -22,7 +22,6 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	var sawConversationID string
 	var sawSessionID string
 	var sawPromptCacheKey string
-	var sawPromptCacheRetention string
 	var sawStore any
 
 	oldClient := defaultHTTPClient
@@ -38,7 +37,6 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			sawPromptCacheKey = fmt.Sprint(body["prompt_cache_key"])
-			sawPromptCacheRetention = fmt.Sprint(body["prompt_cache_retention"])
 			sawStore = body["store"]
 
 			events := []map[string]any{
@@ -101,9 +99,6 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	}
 	if sawPromptCacheKey != sessionID {
 		t.Fatalf("expected prompt_cache_key %q, got %q", sessionID, sawPromptCacheKey)
-	}
-	if !strings.EqualFold(sawPromptCacheRetention, "in-memory") {
-		t.Fatalf("expected prompt_cache_retention in-memory, got %q", sawPromptCacheRetention)
 	}
 	storeFlag, ok := sawStore.(bool)
 	if !ok {

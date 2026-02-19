@@ -352,6 +352,45 @@ func TestDMPipelinePersistsConversationNameFromInbound(t *testing.T) {
 	}
 }
 
+func TestDMPipelinePersistsLastInboundEventCheckpoint(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	bindings := NewInMemoryConversationBindingStore()
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		Bindings:  bindings,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:event",
+		SenderID:       "@user:hs",
+		EventID:        "$evt-1",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		binding, ok := bindings.GetByConversation("!dm:event")
+		return ok && binding.LastInboundEvent == "$evt-1"
+	})
+}
+
 func TestDMPipelineIgnoresManagedSenderOutsideDelegationRoom(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

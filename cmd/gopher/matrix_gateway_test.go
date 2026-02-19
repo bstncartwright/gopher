@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -87,5 +89,54 @@ func TestCollectHeartbeatSchedulesIncludesOnlyEnabledAgents(t *testing.T) {
 	}
 	if schedules[0].Timezone != "America/New_York" {
 		t.Fatalf("timezone = %q, want America/New_York", schedules[0].Timezone)
+	}
+}
+
+func TestResolveGatewayDataDirUsesWorkspaceWhenAlreadyDotGopher(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, ".gopher")
+	if err := os.MkdirAll(filepath.Join(workspace, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir workspace sessions: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "sessions", "conversation_bindings.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write bindings: %v", err)
+	}
+	got := resolveGatewayDataDir(workspace)
+	if got != workspace {
+		t.Fatalf("resolveGatewayDataDir() = %q, want %q", got, workspace)
+	}
+}
+
+func TestResolveGatewayDataDirFallsBackToLegacyNestedData(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, ".gopher")
+	legacy := filepath.Join(workspace, ".gopher", "sessions")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatalf("mkdir legacy sessions: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "conversation_bindings.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write legacy bindings: %v", err)
+	}
+	got := resolveGatewayDataDir(workspace)
+	want := filepath.Join(workspace, ".gopher")
+	if got != want {
+		t.Fatalf("resolveGatewayDataDir() = %q, want %q", got, want)
+	}
+}
+
+func TestSelectCatchupReplayEventsReturnsOnlyNewerEventsChronologically(t *testing.T) {
+	events := []matrixTimelineEvent{
+		{EventID: "$5"},
+		{EventID: "$4"},
+		{EventID: "$3"},
+		{EventID: "$2"},
+		{EventID: "$1"},
+	}
+	got := selectCatchupReplayEvents(events, "$3")
+	if len(got) != 2 {
+		t.Fatalf("replay len = %d, want 2", len(got))
+	}
+	if got[0].EventID != "$4" || got[1].EventID != "$5" {
+		t.Fatalf("replay order = [%s,%s], want [$4,$5]", got[0].EventID, got[1].EventID)
 	}
 }

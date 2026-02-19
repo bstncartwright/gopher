@@ -26,6 +26,7 @@ type ConversationBinding struct {
 	SessionID        sessionrt.SessionID `json:"session_id"`
 	AgentID          sessionrt.ActorID   `json:"agent_id,omitempty"`
 	RecipientID      string              `json:"recipient_id,omitempty"`
+	LastInboundEvent string              `json:"last_inbound_event,omitempty"`
 	Mode             ConversationMode    `json:"mode"`
 	CreatedAt        time.Time           `json:"created_at"`
 	UpdatedAt        time.Time           `json:"updated_at"`
@@ -272,6 +273,7 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 	}
 	agentID := sessionrt.ActorID(strings.TrimSpace(string(binding.AgentID)))
 	recipientID := strings.TrimSpace(binding.RecipientID)
+	lastInboundEvent := strings.TrimSpace(binding.LastInboundEvent)
 	mode := normalizeConversationMode(binding.Mode)
 
 	now := time.Now().UTC()
@@ -289,6 +291,7 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 		SessionID:        sessionID,
 		AgentID:          agentID,
 		RecipientID:      recipientID,
+		LastInboundEvent: lastInboundEvent,
 		Mode:             mode,
 		CreatedAt:        createdAt,
 		UpdatedAt:        updatedAt,
@@ -311,6 +314,7 @@ func cloneConversationBinding(in ConversationBinding) ConversationBinding {
 	out.SessionID = sessionrt.SessionID(strings.TrimSpace(string(out.SessionID)))
 	out.AgentID = sessionrt.ActorID(strings.TrimSpace(string(out.AgentID)))
 	out.RecipientID = strings.TrimSpace(out.RecipientID)
+	out.LastInboundEvent = strings.TrimSpace(out.LastInboundEvent)
 	out.Mode = normalizeConversationMode(out.Mode)
 	out.CreatedAt = out.CreatedAt.UTC()
 	out.UpdatedAt = out.UpdatedAt.UTC()

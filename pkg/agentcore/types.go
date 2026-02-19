@@ -75,6 +75,7 @@ type Agent struct {
 	Provider       AIProvider
 	Processes      *ProcessManager
 	Cron           CronToolService
+	Delegation     DelegationToolService
 	Heartbeat      AgentHeartbeat
 
 	skills         []Skill

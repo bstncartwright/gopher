@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +160,15 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		}
 		return out, nil
 
+	case "web_search":
+		if !r.agent.Policies.Network.Enabled {
+			return nil, &PolicyError{Message: "web_search denied: policies.network.enabled=false"}
+		}
+		if !domainAllowed("api.z.ai", r.agent.Policies.Network.AllowDomains) {
+			return nil, &PolicyError{Message: `web_search denied: "api.z.ai" is not allowed by policies.network.allow_domains`}
+		}
+		return out, nil
+
 	default:
 		return out, nil
 	}
@@ -280,6 +291,56 @@ func extractCommandBinary(command string) string {
 		return command
 	}
 	return filepath.Base(fields[0])
+}
+
+func domainAllowed(target string, allowDomains []string) bool {
+	target = normalizeDomainHost(target)
+	if target == "" {
+		return false
+	}
+	for _, candidate := range allowDomains {
+		host := normalizeDomainHost(candidate)
+		if host == "" {
+			continue
+		}
+		if host == "*" || host == target {
+			return true
+		}
+		if strings.HasPrefix(host, "*.") {
+			suffix := strings.TrimPrefix(host, "*")
+			if strings.HasSuffix(target, suffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeDomainHost(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return ""
+	}
+	if value == "*" {
+		return value
+	}
+	if strings.Contains(value, "://") {
+		if parsed, err := url.Parse(value); err == nil {
+			value = parsed.Host
+		}
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "/") {
+		value = strings.SplitN(value, "/", 2)[0]
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	value = strings.Trim(value, ".")
+	return value
 }
 
 func (a *Agent) ResolvePath(rawPath string) (string, error) {

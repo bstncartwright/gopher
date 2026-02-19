@@ -12,19 +12,20 @@ import (
 type Message = ai.Message
 
 type AgentConfig struct {
-	AgentID                string          `json:"agent_id"`
-	Name                   string          `json:"name"`
-	Role                   string          `json:"role"`
-	ModelPolicy            string          `json:"model_policy"`
-	Execution              ExecutionConfig `json:"execution"`
-	EnabledTools           []string        `json:"enabled_tools"`
-	SkillsPaths            []string        `json:"skills_paths"`
-	MaxContextMessages     int             `json:"max_context_messages"`
-	BootstrapMaxChars      int             `json:"bootstrap_max_chars"`
-	BootstrapTotalMaxChars int             `json:"bootstrap_total_max_chars"`
-	UserTimezone           string          `json:"user_timezone"`
-	TimeFormat             string          `json:"time_format"`
-	Heartbeat              HeartbeatConfig `json:"heartbeat"`
+	AgentID                 string          `json:"agent_id"`
+	Name                    string          `json:"name"`
+	Role                    string          `json:"role"`
+	ModelPolicy             string          `json:"model_policy"`
+	Execution               ExecutionConfig `json:"execution"`
+	EnabledTools            []string        `json:"enabled_tools"`
+	DisableDefaultSearchMCP bool            `json:"disable_default_search_mcp"`
+	SkillsPaths             []string        `json:"skills_paths"`
+	MaxContextMessages      int             `json:"max_context_messages"`
+	BootstrapMaxChars       int             `json:"bootstrap_max_chars"`
+	BootstrapTotalMaxChars  int             `json:"bootstrap_total_max_chars"`
+	UserTimezone            string          `json:"user_timezone"`
+	TimeFormat              string          `json:"time_format"`
+	Heartbeat               HeartbeatConfig `json:"heartbeat"`
 }
 
 type ExecutionConfig struct {

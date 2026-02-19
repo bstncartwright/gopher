@@ -37,6 +37,13 @@ heartbeat behavior:
 - runtime sends heartbeat polls with explicit `target_actor_id`, so multi-agent sessions do not require `@agent` mention text for routing.
 - when room=session includes multiple agents, heartbeat skips dispatch if the target agent's managed matrix user is not currently joined in that room.
 
+web search MCP behavior:
+- `web_search` is enabled by default for all agents at runtime.
+- backing MCP endpoint: `https://api.z.ai/api/mcp/web_search_prime/mcp`
+- tool aliases supported in `enabled_tools`: `web_search`, `search_mcp`, `search`, `group:web`
+- per-agent opt-out in `agents/<agent_id>/config.json`:
+  - `"disable_default_search_mcp": true`
+
 example model policy:
 
 ```json
@@ -79,6 +86,8 @@ in `/etc/gopher/gopher.env`:
 ```bash
 ZAI_API_KEY=<secret>
 ```
+
+`ZAI_API_KEY` is required for the default `web_search` MCP tool.
 
 restart service:
 

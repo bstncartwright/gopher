@@ -82,6 +82,7 @@ type Agent struct {
 	Cron           CronToolService
 	Delegation     DelegationToolService
 	Heartbeat      AgentHeartbeat
+	KnownAgents    []string
 
 	skills         []Skill
 	model          ai.Model

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -47,6 +48,12 @@ func TestLoadGatewayAgentRuntimeUsesLexicographicDefaultActor(t *testing.T) {
 	}
 	if len(runtime.Agents) != 2 {
 		t.Fatalf("agents len = %d, want 2", len(runtime.Agents))
+	}
+	wantKnown := []string{"planner", "writer"}
+	for actorID, agent := range runtime.Agents {
+		if !reflect.DeepEqual(agent.KnownAgents, wantKnown) {
+			t.Fatalf("agent %q known agents = %#v, want %#v", actorID, agent.KnownAgents, wantKnown)
+		}
 	}
 }
 

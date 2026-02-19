@@ -55,8 +55,11 @@ func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessag
 
 	systemPrompt, err := buildAgentSystemPrompt(systemPromptInput{
 		Workspace:      a.Workspace,
+		AgentID:        a.ID,
+		KnownAgents:    a.KnownAgents,
 		PromptMode:     mode,
 		Tools:          a.Tools,
+		Policies:       a.Policies,
 		SkillsPrompt:   skillsPrompt,
 		ContextFiles:   contextFiles,
 		IncludeWorking: includeWorking,

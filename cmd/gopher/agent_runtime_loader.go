@@ -48,6 +48,18 @@ func loadAgentRuntime(workspace string) (*agentRuntime, error) {
 		actorIDs = append(actorIDs, string(actorID))
 	}
 	sort.Strings(actorIDs)
+
+	knownAgents := append([]string(nil), actorIDs...)
+	for actorID, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		agent.KnownAgents = append([]string(nil), knownAgents...)
+		if strings.TrimSpace(agent.ID) == "" {
+			agent.ID = strings.TrimSpace(string(actorID))
+		}
+	}
+
 	defaultActorID := sessionrt.ActorID(actorIDs[0])
 
 	router, err := agentcore.NewActorExecutorRouter(defaultActorID, executors)

@@ -58,8 +58,6 @@ func Replay(events []Event) (*Session, error) {
 			case ControlActionSessionFailed:
 				session.Status = SessionFailed
 			}
-		case EventError:
-			session.Status = SessionFailed
 		}
 	}
 

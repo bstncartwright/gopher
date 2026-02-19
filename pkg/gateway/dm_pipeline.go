@@ -190,15 +190,18 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 	}
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
 		if !p.isSessionActive(ctx, existing) {
-			return "", fmt.Errorf("conversation %q is bound to inactive session %q", conversationID, existing)
+			if p.logger != nil {
+				p.logger.Printf("conversation_id=%q has inactive session=%q; creating replacement session", conversationID, existing)
+			}
+		} else {
+			if err := p.ensureSubscription(conversationID, existing); err != nil {
+				return "", err
+			}
+			if _, routeExists := p.currentRoute(conversationID); !routeExists {
+				p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
+			}
+			return existing, nil
 		}
-		if err := p.ensureSubscription(conversationID, existing); err != nil {
-			return "", err
-		}
-		if _, routeExists := p.currentRoute(conversationID); !routeExists {
-			p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
-		}
-		return existing, nil
 	}
 
 	p.setupMu.Lock()
@@ -206,15 +209,18 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
 		if !p.isSessionActive(ctx, existing) {
-			return "", fmt.Errorf("conversation %q is bound to inactive session %q", conversationID, existing)
+			if p.logger != nil {
+				p.logger.Printf("conversation_id=%q has inactive session=%q after lock; creating replacement session", conversationID, existing)
+			}
+		} else {
+			if err := p.ensureSubscription(conversationID, existing); err != nil {
+				return "", err
+			}
+			if _, routeExists := p.currentRoute(conversationID); !routeExists {
+				p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
+			}
+			return existing, nil
 		}
-		if err := p.ensureSubscription(conversationID, existing); err != nil {
-			return "", err
-		}
-		if _, routeExists := p.currentRoute(conversationID); !routeExists {
-			p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
-		}
-		return existing, nil
 	}
 
 	created, err := p.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{

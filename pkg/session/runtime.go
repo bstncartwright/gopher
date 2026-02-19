@@ -117,7 +117,7 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 			History:   history,
 		})
 		if err != nil {
-			return m.failSession(rt, fmt.Errorf("agent step: %w", err)), true
+			return m.recordAgentStepError(rt, actorID, err), false
 		}
 
 		for _, produced := range output.Events {
@@ -204,6 +204,22 @@ func (m *Manager) failSession(rt *sessionRuntime, cause error) error {
 	m.setSessionStatus(rt, SessionFailed)
 	rt.cancel()
 	return cause
+}
+
+func (m *Manager) recordAgentStepError(rt *sessionRuntime, actorID ActorID, cause error) error {
+	errWithContext := fmt.Errorf("agent step: %w", cause)
+	errEvent, err := m.canonicalizeEvent(rt, Event{
+		SessionID: rt.sessionID,
+		From:      actorID,
+		Type:      EventError,
+		Payload: ErrorPayload{
+			Message: errWithContext.Error(),
+		},
+	})
+	if err == nil {
+		_ = m.appendPersistedEvent(context.Background(), rt, errEvent)
+	}
+	return errWithContext
 }
 
 func (m *Manager) shouldTriggerAgent(event Event) bool {

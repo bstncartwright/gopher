@@ -610,7 +610,7 @@ func TestDMPipelineHandleInboundReturnsBeforeSlowSendCompletes(t *testing.T) {
 	})
 }
 
-func TestDMPipelineRejectsConversationAfterSessionFailure(t *testing.T) {
+func TestDMPipelineKeepsConversationSessionAfterAgentStepError(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:    store,
@@ -644,24 +644,103 @@ func TestDMPipelineRejectsConversationAfterSessionFailure(t *testing.T) {
 		if listErr != nil || len(sessions) == 0 {
 			return false
 		}
-		return sessions[0].Status == sessionrt.SessionFailed
+		return sessions[0].Status == sessionrt.SessionActive
 	})
 
-	err = pipeline.HandleInbound(ctx, transport.InboundMessage{
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
 		ConversationID: "!dm:recover",
 		SenderID:       "@user:hs",
 		Text:           "second",
-	})
-	if err == nil {
-		t.Fatalf("expected second HandleInbound() to fail for inactive bound session")
+	}); err != nil {
+		t.Fatalf("second HandleInbound() error: %v", err)
 	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		sent := fake.sentCount()
+		if sent == 0 {
+			return false
+		}
+		return fake.lastSent().Text == "ack"
+	})
 
 	sessions, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("ListSessions() error: %v", err)
 	}
 	if len(sessions) != 1 {
-		t.Fatalf("session count = %d, want 1 with strict room/session binding", len(sessions))
+		t.Fatalf("session count = %d, want 1 active room-backed session", len(sessions))
+	}
+	if sessions[0].Status != sessionrt.SessionActive {
+		t.Fatalf("session status = %v, want active", sessions[0].Status)
+	}
+}
+
+func TestDMPipelineRebindsConversationWhenExistingSessionIsInactive(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	stale, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := manager.CancelSession(context.Background(), stale.ID); err != nil {
+		t.Fatalf("CancelSession() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!dm:stale", stale.ID, "agent:a", "@agent:a", ConversationModeDM); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:stale",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	if got := fake.lastSent().Text; got != "ack" {
+		t.Fatalf("outbound text = %q, want ack", got)
+	}
+
+	currentSessionID, ok := pipeline.conversations.Get("!dm:stale")
+	if !ok {
+		t.Fatalf("expected conversation mapping")
+	}
+	if currentSessionID == stale.ID {
+		t.Fatalf("expected stale session to be replaced")
+	}
+
+	sessions, err := store.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions() error: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("session count = %d, want 2 after rebinding", len(sessions))
 	}
 }
 

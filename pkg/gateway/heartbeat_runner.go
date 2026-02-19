@@ -111,7 +111,7 @@ func (r *HeartbeatRunner) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	loopCtx, cancel := context.WithCancel(context.Background())
+	loopCtx, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
 	now := r.now().UTC()
 	for _, schedule := range r.schedules {

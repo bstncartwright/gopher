@@ -66,6 +66,7 @@ type heartbeatState struct {
 const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
+	dmContextClearedReply    = "Context cleared. Started a fresh session for this chat."
 	dmFallbackMinInterval    = 5 * time.Second
 	dmFallbackDetailMaxChars = 120
 	dmTypingTimeout          = 3 * time.Second
@@ -75,6 +76,8 @@ const (
 )
 
 var dmTypingKeepaliveInterval = dmTypingKeepaliveDefault
+
+const dmSummarizeCommandPrompt = "Summarize this conversation so far in 8 bullets max. Include: objective, key decisions, important constraints, open questions, and next steps."
 
 var (
 	fallbackAuthBearerPattern     = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*bearer\s+[^\s,;]+`)
@@ -176,6 +179,10 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	}
 
 	agentID, recipientID := p.routeForInbound(inbound.RecipientID)
+	if handled, err := p.handleInboundCommand(ctx, inbound, agentID, recipientID); handled || err != nil {
+		return err
+	}
+
 	sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID)
 	if err != nil {
 		slog.Error("dm_pipeline: failed to resolve session",
@@ -207,6 +214,87 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 			Content: inbound.Text,
 		},
 	}, conversationID, inbound.SenderID)
+	return nil
+}
+
+func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport.InboundMessage, agentID sessionrt.ActorID, recipientID string) (bool, error) {
+	action, ok := parseDMContextCommand(inbound.Text)
+	if !ok {
+		return false, nil
+	}
+
+	conversationID := strings.TrimSpace(inbound.ConversationID)
+	switch action {
+	case "clear":
+		if err := p.resetConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
+			return true, err
+		}
+		if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+			ConversationID: conversationID,
+			SenderID:       recipientID,
+			Text:           dmContextClearedReply,
+		}); err != nil {
+			slog.Error("dm_pipeline: failed to send context cleared acknowledgement",
+				"conversation_id", conversationID,
+				"error", err,
+			)
+		}
+		return true, nil
+	case "summarize":
+		sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID)
+		if err != nil {
+			return true, err
+		}
+		p.startProcessing(conversationID)
+		p.dispatchInboundEvent(sessionrt.Event{
+			SessionID: sessionID,
+			From:      matrixActorID(inbound.SenderID),
+			Type:      sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleUser,
+				Content: dmSummarizeCommandPrompt,
+			},
+		}, conversationID, inbound.SenderID)
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func parseDMContextCommand(text string) (string, bool) {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
+	if len(fields) == 0 {
+		return "", false
+	}
+	switch fields[0] {
+	case "/clear", "/reset":
+		return "clear", true
+	case "/summarize", "/summary":
+		return "summarize", true
+	case "/context":
+		if len(fields) < 2 {
+			return "", false
+		}
+		switch fields[1] {
+		case "clear", "reset":
+			return "clear", true
+		case "summarize", "summary":
+			return "summarize", true
+		}
+	}
+	return "", false
+}
+
+func (p *DMPipeline) resetConversationSession(ctx context.Context, conversationID, conversationName, senderID string, agentID sessionrt.ActorID, recipientID string) error {
+	if existing, ok := p.lookupConversationSession(conversationID); ok {
+		if err := p.manager.CancelSession(ctx, existing); err != nil && err != sessionrt.ErrSessionNotFound {
+			return fmt.Errorf("cancel previous session: %w", err)
+		}
+	}
+	_, err := p.resolveConversationSession(ctx, conversationID, conversationName, senderID, agentID, recipientID)
+	if err != nil {
+		return fmt.Errorf("create replacement session: %w", err)
+	}
 	return nil
 }
 

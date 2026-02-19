@@ -13,12 +13,19 @@ import (
 )
 
 const defaultHeartbeatPollInterval = time.Second
+const (
+	defaultHeartbeatSleepStartHour = 22
+	defaultHeartbeatSleepEndHour   = 8
+)
 
 type HeartbeatSchedule struct {
 	AgentID     sessionrt.ActorID
 	Every       time.Duration
 	Prompt      string
 	AckMaxChars int
+	Timezone    string
+
+	location *time.Location
 }
 
 type HeartbeatRunnerOptions struct {
@@ -84,6 +91,18 @@ func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
 		}
 		if schedule.AckMaxChars <= 0 {
 			schedule.AckMaxChars = heartbeatAckDefaultChars
+		}
+		schedule.Timezone = strings.TrimSpace(schedule.Timezone)
+		if schedule.Timezone != "" {
+			location, err := time.LoadLocation(schedule.Timezone)
+			if err != nil {
+				if opts.Logger != nil {
+					opts.Logger.Printf("heartbeat schedule timezone ignored agent=%s timezone=%q err=%v", agentID, schedule.Timezone, err)
+				}
+				schedule.Timezone = ""
+			} else {
+				schedule.location = location
+			}
 		}
 		normalized = append(normalized, schedule)
 	}
@@ -159,6 +178,13 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 			next = now
 		}
 		if next.After(now) {
+			continue
+		}
+		if isWithinHeartbeatSleepWindow(now, schedule.location) {
+			if r.logger != nil {
+				r.logger.Printf("heartbeat skip reason=sleep-hours agent=%s timezone=%s local_hour=%d", schedule.AgentID, schedule.Timezone, now.In(schedule.location).Hour())
+			}
+			r.nextRun[schedule.AgentID] = now.Add(schedule.Every)
 			continue
 		}
 
@@ -245,4 +271,18 @@ func heartbeatHasAgentParticipant(session *sessionrt.Session, agentID sessionrt.
 		return false
 	}
 	return participant.Type == sessionrt.ActorAgent
+}
+
+func isWithinHeartbeatSleepWindow(now time.Time, location *time.Location) bool {
+	if location == nil {
+		return false
+	}
+	hour := now.In(location).Hour()
+	if defaultHeartbeatSleepStartHour == defaultHeartbeatSleepEndHour {
+		return true
+	}
+	if defaultHeartbeatSleepStartHour < defaultHeartbeatSleepEndHour {
+		return hour >= defaultHeartbeatSleepStartHour && hour < defaultHeartbeatSleepEndHour
+	}
+	return hour >= defaultHeartbeatSleepStartHour || hour < defaultHeartbeatSleepEndHour
 }

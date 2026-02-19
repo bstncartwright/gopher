@@ -419,6 +419,7 @@ func collectHeartbeatSchedules(runtime *gatewayAgentRuntime) []gateway.Heartbeat
 			Every:       agent.Heartbeat.Every,
 			Prompt:      agent.Heartbeat.Prompt,
 			AckMaxChars: agent.Heartbeat.AckMaxChars,
+			Timezone:    strings.TrimSpace(agent.Config.UserTimezone),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

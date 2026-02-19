@@ -450,3 +450,65 @@ func TestHeartbeatRunnerSkipsWhenScheduledAgentNotInRoomMembership(t *testing.T)
 		t.Fatalf("expected no heartbeat dispatch when scheduled agent is not in room membership")
 	}
 }
+
+func TestHeartbeatRunnerAllowsEmptySchedules(t *testing.T) {
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager:  &recordingSessionManager{sessions: map[sessionrt.SessionID]*sessionrt.Session{}},
+		Pipeline: &DMPipeline{conversations: NewConversationSessionMap(), routes: map[string]conversationRoute{}},
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+	if len(runner.schedulesSnapshot()) != 0 {
+		t.Fatalf("schedule count = %d, want 0", len(runner.schedulesSnapshot()))
+	}
+}
+
+func TestHeartbeatRunnerUpsertAndRemoveSchedule(t *testing.T) {
+	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager: &recordingSessionManager{
+			sessions: map[sessionrt.SessionID]*sessionrt.Session{},
+		},
+		Pipeline: &DMPipeline{
+			conversations: NewConversationSessionMap(),
+			routes:        map[string]conversationRoute{},
+		},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+
+	if err := runner.UpsertSchedule(HeartbeatSchedule{
+		AgentID: "agent:b",
+		Every:   2 * time.Minute,
+		Prompt:  "hb-b",
+	}); err != nil {
+		t.Fatalf("UpsertSchedule() error: %v", err)
+	}
+	if err := runner.UpsertSchedule(HeartbeatSchedule{
+		AgentID: "agent:a",
+		Every:   time.Minute,
+		Prompt:  "hb-a",
+	}); err != nil {
+		t.Fatalf("UpsertSchedule() error: %v", err)
+	}
+
+	schedules := runner.schedulesSnapshot()
+	if len(schedules) != 2 {
+		t.Fatalf("schedule count = %d, want 2", len(schedules))
+	}
+	if schedules[0].AgentID != "agent:a" || schedules[1].AgentID != "agent:b" {
+		t.Fatalf("schedule order = [%s %s], want [agent:a agent:b]", schedules[0].AgentID, schedules[1].AgentID)
+	}
+	if got := runner.nextRunFor("agent:a", time.Time{}); !got.Equal(now.Add(time.Minute)) {
+		t.Fatalf("next run = %s, want %s", got, now.Add(time.Minute))
+	}
+	if removed := runner.RemoveSchedule("agent:a"); !removed {
+		t.Fatalf("expected RemoveSchedule to return true")
+	}
+	if got := runner.nextRunFor("agent:a", time.Time{}); !got.IsZero() {
+		t.Fatalf("next run after remove = %s, want zero", got)
+	}
+}

@@ -309,6 +309,7 @@ Run the accessibility audit and apply fixes.
        - `heartbeat.every` (duration; required to enable, examples: `"15m"`, `"1h"`, `"30"` where bare numbers mean minutes)
        - `heartbeat.prompt` (optional custom poll prompt)
        - `heartbeat.ack_max_chars` (optional suppression threshold for `HEARTBEAT_OK` replies; default `300`)
+       - agents can self-configure these settings at runtime with the `heartbeat` tool (`get`, `set`, `disable`) when collaboration tools are enabled
        - when `user_timezone` is set to a valid IANA timezone, heartbeat dispatch is suppressed during local sleeping hours (`22:00`-`08:00`)
        - heartbeat dispatch targets the scheduled agent explicitly via `target_actor_id` (no `@mention` required)
        - in matrix room=session flows with multiple agents, heartbeat is skipped when the target agent's managed user is not currently joined in that room

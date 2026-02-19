@@ -83,7 +83,7 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		slog.Error("load_agent: invalid required_capabilities", "required_capabilities", config.Execution.RequiredCapabilities, "error", err)
 		return nil, err
 	}
-	heartbeat, err := normalizeHeartbeatConfig(config.Heartbeat)
+	heartbeat, err := NormalizeHeartbeatConfig(config.Heartbeat)
 	if err != nil {
 		slog.Error("load_agent: invalid heartbeat config", "error", err)
 		return nil, err
@@ -440,7 +440,7 @@ func validateRequiredCapabilities(required []string) error {
 	return nil
 }
 
-func normalizeHeartbeatConfig(input HeartbeatConfig) (AgentHeartbeat, error) {
+func NormalizeHeartbeatConfig(input HeartbeatConfig) (AgentHeartbeat, error) {
 	everyRaw := strings.TrimSpace(input.Every)
 	if everyRaw == "" {
 		return AgentHeartbeat{}, nil

@@ -307,6 +307,9 @@ func buildToolUsageHints(registry ToolRegistry) string {
 	if toolRegistryHas(registry, "cron") {
 		lines = append(lines, "- `cron` manages scheduled reminders/checks; omit `session_id` only when the current session should be used.")
 	}
+	if toolRegistryHas(registry, "heartbeat") {
+		lines = append(lines, "- `heartbeat` manages this agent's heartbeat schedule (`get`, `set`, `disable`) without manual config file edits.")
+	}
 	if len(lines) == 0 {
 		return ""
 	}

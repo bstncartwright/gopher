@@ -154,23 +154,24 @@ func startMatrixDMBridgeWithRuntime(
 	}
 
 	heartbeatSchedules := collectHeartbeatSchedules(agentRuntime)
-	var heartbeatRunner *gateway.HeartbeatRunner
-	if len(heartbeatSchedules) > 0 {
-		heartbeatRunner, err = gateway.NewHeartbeatRunner(gateway.HeartbeatRunnerOptions{
-			Manager:   manager,
-			Pipeline:  pipeline,
-			Schedules: heartbeatSchedules,
-			Logger:    logger,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create heartbeat runner: %w", err)
-		}
-		if err := heartbeatRunner.Start(ctx); err != nil {
-			return nil, fmt.Errorf("start heartbeat runner: %w", err)
-		}
-		if logger != nil {
-			logger.Printf("heartbeat runner started agents=%d", len(heartbeatSchedules))
-		}
+	heartbeatRunner, err := gateway.NewHeartbeatRunner(gateway.HeartbeatRunnerOptions{
+		Manager:   manager,
+		Pipeline:  pipeline,
+		Schedules: heartbeatSchedules,
+		Logger:    logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create heartbeat runner: %w", err)
+	}
+	if err := heartbeatRunner.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start heartbeat runner: %w", err)
+	}
+	if logger != nil {
+		logger.Printf("heartbeat runner started agents=%d", len(heartbeatSchedules))
+	}
+	heartbeatTool := newGatewayHeartbeatToolService(agentRuntime.Agents, heartbeatRunner, logger)
+	for _, agent := range agentRuntime.Agents {
+		agent.HeartbeatService = heartbeatTool
 	}
 
 	bridge := &matrixDMBridge{

@@ -165,3 +165,69 @@ func TestRuntimeExecutorErrorMarksSessionFailed(t *testing.T) {
 		t.Fatalf("expected final control action %q", ControlActionSessionFailed)
 	}
 }
+
+func TestRuntimeUserMessageCanTriggerMultipleAgents(t *testing.T) {
+	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
+	exec := &recordingExecutor{
+		output: AgentOutput{
+			Events: []Event{
+				{
+					Type:    EventMessage,
+					Payload: Message{Role: RoleAgent, Content: "response"},
+				},
+			},
+		},
+	}
+	manager, err := NewManager(ManagerOptions{
+		Store:    store,
+		Executor: exec,
+		AgentSelector: func(_ *Session, _ Event) ([]ActorID, bool) {
+			return []ActorID{"agent:a", "agent:z"}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), CreateSessionOptions{
+		Participants: []Participant{
+			{ID: "agent:z", Type: ActorAgent},
+			{ID: "user:me", Type: ActorHuman},
+			{ID: "agent:a", Type: ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	err = manager.SendEvent(context.Background(), Event{
+		SessionID: created.ID,
+		From:      "user:me",
+		Type:      EventMessage,
+		Payload:   Message{Role: RoleUser, Content: "ping"},
+	})
+	if err != nil {
+		t.Fatalf("SendEvent() error: %v", err)
+	}
+
+	if exec.calls != 2 {
+		t.Fatalf("expected exactly two executor calls, got %d", exec.calls)
+	}
+	if len(exec.inputs) != 2 {
+		t.Fatalf("expected two executor inputs, got %d", len(exec.inputs))
+	}
+	if exec.inputs[0].ActorID != "agent:a" || exec.inputs[1].ActorID != "agent:z" {
+		t.Fatalf("actor IDs = [%q %q], want [agent:a agent:z]", exec.inputs[0].ActorID, exec.inputs[1].ActorID)
+	}
+
+	events, err := store.List(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events (created, user message, two agent messages), got %d", len(events))
+	}
+	if events[2].From != "agent:a" || events[3].From != "agent:z" {
+		t.Fatalf("event sources = [%q %q], want [agent:a agent:z]", events[2].From, events[3].From)
+	}
+}

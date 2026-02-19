@@ -19,8 +19,6 @@ func applyStatusTransition(current SessionStatus, event Event) SessionStatus {
 		default:
 			return current
 		}
-	case EventError:
-		return SessionFailed
 	default:
 		return current
 	}

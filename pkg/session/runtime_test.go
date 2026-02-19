@@ -107,7 +107,7 @@ func TestRuntimeUserMessageTriggersDeterministicAgentStep(t *testing.T) {
 	}
 }
 
-func TestRuntimeExecutorErrorMarksSessionFailed(t *testing.T) {
+func TestRuntimeExecutorErrorKeepsSessionActive(t *testing.T) {
 	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
 	exec := &recordingExecutor{err: errors.New("executor boom")}
 	manager, err := NewManager(ManagerOptions{
@@ -142,27 +142,20 @@ func TestRuntimeExecutorErrorMarksSessionFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession() error: %v", err)
 	}
-	if loaded.Status != SessionFailed {
-		t.Fatalf("expected failed status, got %v", loaded.Status)
+	if loaded.Status != SessionActive {
+		t.Fatalf("expected active status, got %v", loaded.Status)
 	}
 
 	events, err := store.List(context.Background(), created.ID)
 	if err != nil {
 		t.Fatalf("List() error: %v", err)
 	}
-	if len(events) < 4 {
-		t.Fatalf("expected created + user message + error + failed control events, got %d", len(events))
-	}
-	if events[len(events)-2].Type != EventError {
-		t.Fatalf("expected second-to-last event to be error, got %q", events[len(events)-2].Type)
+	if len(events) != 3 {
+		t.Fatalf("expected created + user message + error events, got %d", len(events))
 	}
 	last := events[len(events)-1]
-	if last.Type != EventControl {
-		t.Fatalf("expected final event type control, got %q", last.Type)
-	}
-	ctrl, ok := controlFromPayload(last.Payload)
-	if !ok || ctrl.Action != ControlActionSessionFailed {
-		t.Fatalf("expected final control action %q", ControlActionSessionFailed)
+	if last.Type != EventError {
+		t.Fatalf("expected final event type error, got %q", last.Type)
 	}
 }
 

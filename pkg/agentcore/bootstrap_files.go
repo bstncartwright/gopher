@@ -36,7 +36,7 @@ var bootstrapCanonicalSlots = []bootstrapSlot{
 	{name: "TOOLS.md", required: true, fallbacks: []string{"tools.md"}},
 	{name: "IDENTITY.md", required: true, fallbacks: []string{"identity.md"}},
 	{name: "USER.md", required: true, fallbacks: []string{"user.md"}},
-	{name: "HEARTBEAT.md", required: true, fallbacks: []string{"heartbeat.md"}},
+	{name: "HEARTBEAT.md", required: false, fallbacks: []string{"heartbeat.md"}},
 	{name: "BOOTSTRAP.md", required: false, fallbacks: []string{"bootstrap.md"}},
 }
 

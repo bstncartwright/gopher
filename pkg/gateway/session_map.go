@@ -38,3 +38,13 @@ func (m *ConversationSessionMap) Set(conversationID string, sessionID sessionrt.
 	defer m.mu.Unlock()
 	m.items[key] = sessionID
 }
+
+func (m *ConversationSessionMap) Snapshot() map[string]sessionrt.SessionID {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]sessionrt.SessionID, len(m.items))
+	for conversationID, sessionID := range m.items {
+		out[conversationID] = sessionID
+	}
+	return out
+}

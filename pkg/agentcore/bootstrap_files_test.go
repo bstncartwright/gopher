@@ -104,6 +104,23 @@ func TestLoadBootstrapContextFilesMemoryInclusion(t *testing.T) {
 	}
 }
 
+func TestLoadBootstrapContextFilesSkipsMissingHeartbeatFile(t *testing.T) {
+	workspace := t.TempDir()
+	mustWriteFile(t, filepath.Join(workspace, "AGENTS.md"), "agents")
+	mustWriteFile(t, filepath.Join(workspace, "SOUL.md"), "soul")
+	mustWriteFile(t, filepath.Join(workspace, "TOOLS.md"), "tools")
+	mustWriteFile(t, filepath.Join(workspace, "IDENTITY.md"), "identity")
+	mustWriteFile(t, filepath.Join(workspace, "USER.md"), "user")
+
+	files, err := loadBootstrapContextFiles(workspace, PromptModeFull, DefaultBootstrapMaxChars, DefaultBootstrapTotalMaxChars)
+	if err != nil {
+		t.Fatalf("loadBootstrapContextFiles() error: %v", err)
+	}
+	if hb := findBootstrapByName(files, "HEARTBEAT.md"); hb != nil && hb.Missing {
+		t.Fatalf("did not expect missing heartbeat marker when HEARTBEAT.md is absent")
+	}
+}
+
 func TestLoadBootstrapContextFilesCanonicalPrecedenceAndFallback(t *testing.T) {
 	workspace := t.TempDir()
 	if !isCaseSensitiveFilesystem(workspace) {

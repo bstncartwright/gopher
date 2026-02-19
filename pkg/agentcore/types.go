@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
 	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
@@ -23,10 +24,24 @@ type AgentConfig struct {
 	BootstrapTotalMaxChars int             `json:"bootstrap_total_max_chars"`
 	UserTimezone           string          `json:"user_timezone"`
 	TimeFormat             string          `json:"time_format"`
+	Heartbeat              HeartbeatConfig `json:"heartbeat"`
 }
 
 type ExecutionConfig struct {
 	RequiredCapabilities []string `json:"required_capabilities"`
+}
+
+type HeartbeatConfig struct {
+	Every       string `json:"every"`
+	Prompt      string `json:"prompt"`
+	AckMaxChars int    `json:"ack_max_chars"`
+}
+
+type AgentHeartbeat struct {
+	Enabled     bool
+	Every       time.Duration
+	Prompt      string
+	AckMaxChars int
 }
 
 type NetworkPolicy struct {
@@ -40,6 +55,7 @@ type BudgetPolicy struct {
 
 type AgentPolicies struct {
 	FSRoots           []string            `json:"fs_roots"`
+	AllowCrossAgentFS bool                `json:"allow_cross_agent_fs"`
 	CanShell          bool                `json:"can_shell"`
 	ShellAllowlist    []string            `json:"shell_allowlist"`
 	Network           NetworkPolicy       `json:"network"`
@@ -64,6 +80,7 @@ type Agent struct {
 	Provider       AIProvider
 	Processes      *ProcessManager
 	Cron           CronToolService
+	Heartbeat      AgentHeartbeat
 
 	skills         []Skill
 	model          ai.Model

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,5 +131,55 @@ func TestRunRoutesAgentSubcommand(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "no agents found") {
 		t.Fatalf("unexpected output: %s", got)
+	}
+}
+
+func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	registryPath := filepath.Join(dir, "agents", "index.json")
+	workspaceRoot := filepath.Join(dir, "workspaces")
+
+	var out bytes.Buffer
+	if err := runAgentSubcommand([]string{
+		"create",
+		"--registry-path", registryPath,
+		"--workspace-root", workspaceRoot,
+		"--id", "writer",
+		"--matrix-user", "@writer:example.com",
+	}, &out, &out); err != nil {
+		t.Fatalf("create writer failed: %v", err)
+	}
+
+	workspace := filepath.Join(workspaceRoot, "writer")
+	agentsBlob, err := os.ReadFile(filepath.Join(workspace, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	agentsText := string(agentsBlob)
+	if !strings.Contains(agentsText, "## Session Start (required)") {
+		t.Fatalf("expected OpenClaw-style session start section in AGENTS.md")
+	}
+	if !strings.Contains(agentsText, "## Gopher Runtime Notes") {
+		t.Fatalf("expected gopher runtime notes in AGENTS.md")
+	}
+	if !strings.Contains(agentsText, "Agent id: writer") {
+		t.Fatalf("expected agent id in AGENTS.md")
+	}
+
+	configBlob, err := os.ReadFile(filepath.Join(workspace, "config.json"))
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(configBlob, &config); err != nil {
+		t.Fatalf("config.json should be valid JSON: %v", err)
+	}
+	if got, _ := config["agent_id"].(string); got != "writer" {
+		t.Fatalf("config agent_id=%q, want writer", got)
+	}
+	if got, _ := config["model_policy"].(string); got != "zai:glm-5" {
+		t.Fatalf("config model_policy=%q, want zai:glm-5", got)
 	}
 }

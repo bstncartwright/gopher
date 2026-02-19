@@ -35,6 +35,7 @@ type Options struct {
 	QueueCapacity     int
 	MaxAttempts       int
 	DedupeTTL         time.Duration
+	AvatarProvider    ManagedAvatarProvider
 }
 
 type Transport struct {
@@ -71,6 +72,7 @@ type Transport struct {
 	queueCapacity   int
 	maxAttempts     int
 	dedupeTTL       time.Duration
+	avatarProvider  ManagedAvatarProvider
 	stats           matrixStats
 	inboundFailures atomic.Uint64
 }
@@ -217,6 +219,7 @@ func New(opts Options) (*Transport, error) {
 		queueCapacity:     queueCapacity,
 		maxAttempts:       maxAttempts,
 		dedupeTTL:         dedupeTTL,
+		avatarProvider:    opts.AvatarProvider,
 		stats: matrixStats{
 			PresenceEnabled: presenceEnabled,
 			PresenceState:   presenceStateUnknown,
@@ -1020,16 +1023,22 @@ func (t *Transport) ensureManagedUser(ctx context.Context, userID string) error 
 		return fmt.Errorf("send bot user register request: %w", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		return nil
-	}
 	body, _ := io.ReadAll(response.Body)
 	// synapse-like behavior may return M_USER_IN_USE for existing users.
 	if (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusConflict) &&
 		strings.Contains(string(body), "M_USER_IN_USE") {
+		if err := t.ensureManagedUserProfile(ctx, userID); err != nil {
+			log.Printf("matrix managed user profile sync failed user_id=%q err=%v", userID, err)
+		}
 		return nil
 	}
-	return fmt.Errorf("matrix bot register status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("matrix bot register status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+	}
+	if err := t.ensureManagedUserProfile(ctx, userID); err != nil {
+		log.Printf("matrix managed user profile sync failed user_id=%q err=%v", userID, err)
+	}
+	return nil
 }
 
 func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessage, bool) {

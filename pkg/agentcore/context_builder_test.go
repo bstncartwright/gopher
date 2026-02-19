@@ -52,12 +52,34 @@ func TestContextBuilderOrderingTruncationAndDeterminism(t *testing.T) {
 	if !strings.Contains(ctxA.SystemPrompt, "## AGENTS.md") {
 		t.Fatalf("expected AGENTS.md to be injected in project context")
 	}
+	if strings.Contains(ctxA.SystemPrompt, "## Heartbeats") {
+		t.Fatalf("did not expect heartbeat section when heartbeat is disabled")
+	}
 
 	if len(ctxA.Messages) != 3 {
 		t.Fatalf("expected 3 messages (2 bounded + 1 new), got %d", len(ctxA.Messages))
 	}
 	if ctxA.Messages[0].Role != ai.RoleAssistant || ctxA.Messages[1].Role != ai.RoleUser || ctxA.Messages[2].Role != ai.RoleUser {
 		t.Fatalf("unexpected role order: %#v", []ai.MessageRole{ctxA.Messages[0].Role, ctxA.Messages[1].Role, ctxA.Messages[2].Role})
+	}
+}
+
+func TestContextBuilderIncludesHeartbeatSectionWhenConfigured(t *testing.T) {
+	config := defaultConfig()
+	config.Heartbeat = HeartbeatConfig{Every: "5m"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	session := &Session{ID: "s-hb"}
+
+	ctx, err := agent.buildProviderContext(context.Background(), session, "heartbeat")
+	if err != nil {
+		t.Fatalf("buildProviderContext() error: %v", err)
+	}
+	if !strings.Contains(ctx.SystemPrompt, "## Heartbeats") {
+		t.Fatalf("expected heartbeat section in system prompt")
 	}
 }
 

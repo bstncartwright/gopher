@@ -3,6 +3,7 @@ package agentcore
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,48 @@ func TestLoadAgentMissingRequiredFiles(t *testing.T) {
 				t.Fatalf("expected error to mention %s, got: %v", name, err)
 			}
 		})
+	}
+}
+
+func TestLoadAgentDefaultsLegacyMissingNetworkPolicy(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  "can_shell": true,
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "budget": { "max_tokens_per_session": 200000 }
+}`)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if !agent.Policies.Network.Enabled {
+		t.Fatalf("expected network to default enabled for legacy policies without network stanza")
+	}
+	if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"*"}) {
+		t.Fatalf("allow_domains = %#v, want [\"*\"]", agent.Policies.Network.AllowDomains)
+	}
+}
+
+func TestLoadAgentDefaultsNetworkAllowDomainsWhenEnabledOmitted(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  "can_shell": true,
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "network": { "enabled": true },
+  "budget": { "max_tokens_per_session": 200000 }
+}`)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"*"}) {
+		t.Fatalf("allow_domains = %#v, want [\"*\"]", agent.Policies.Network.AllowDomains)
 	}
 }
 

@@ -19,6 +19,7 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 		SessionID:        "sess-1",
 		AgentID:          "agent:a",
 		RecipientID:      "@agent:local",
+		LastInboundEvent: "$evt-99",
 		Mode:             ConversationModeDM,
 	})
 	if err != nil {
@@ -41,6 +42,9 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 	}
 	if got.ConversationName != "Writer Room" {
 		t.Fatalf("conversation name = %q, want Writer Room", got.ConversationName)
+	}
+	if got.LastInboundEvent != "$evt-99" {
+		t.Fatalf("last inbound event = %q, want $evt-99", got.LastInboundEvent)
 	}
 }
 

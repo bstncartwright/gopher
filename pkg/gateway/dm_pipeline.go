@@ -217,7 +217,7 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 			Role:    sessionrt.RoleUser,
 			Content: inbound.Text,
 		},
-	}, conversationID, inbound.SenderID)
+	}, conversationID, inbound.SenderID, inbound.EventID)
 	return nil
 }
 
@@ -258,7 +258,7 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 				Role:    sessionrt.RoleUser,
 				Content: dmSummarizeCommandPrompt,
 			},
-		}, conversationID, inbound.SenderID)
+		}, conversationID, inbound.SenderID, "")
 		return true, nil
 	default:
 		return false, nil
@@ -302,7 +302,7 @@ func (p *DMPipeline) resetConversationSession(ctx context.Context, conversationI
 	return nil
 }
 
-func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID, senderID string) {
+func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID, senderID, inboundEventID string) {
 	go func() {
 		if err := p.manager.SendEvent(context.Background(), event); err != nil {
 			p.finishProcessing(conversationID)
@@ -312,7 +312,9 @@ func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID,
 				"error", err,
 			)
 			p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), err.Error())
+			return
 		}
+		p.markInboundEventProcessed(conversationID, event.SessionID, inboundEventID)
 	}()
 }
 
@@ -694,6 +696,35 @@ func (p *DMPipeline) bindConversation(conversationID string, sessionID sessionrt
 	p.conversations.Set(conversationID, sessionID)
 	p.setConversationRoute(conversationID, agentID, recipientID, mode)
 	return nil
+}
+
+func (p *DMPipeline) markInboundEventProcessed(conversationID string, sessionID sessionrt.SessionID, eventID string) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" || p.bindings == nil {
+		return
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	binding, ok := p.bindings.GetByConversation(conversationID)
+	if !ok {
+		return
+	}
+	if binding.LastInboundEvent == eventID {
+		return
+	}
+	binding.LastInboundEvent = eventID
+	if strings.TrimSpace(string(sessionID)) != "" {
+		binding.SessionID = sessionID
+	}
+	if err := p.bindings.Set(binding); err != nil {
+		slog.Warn("dm_pipeline: failed to persist inbound event checkpoint",
+			"conversation_id", conversationID,
+			"event_id", eventID,
+			"error", err,
+		)
+	}
 }
 
 func (p *DMPipeline) BindConversation(conversationID string, sessionID sessionrt.SessionID, agentID sessionrt.ActorID, recipientID string, mode ConversationMode) error {

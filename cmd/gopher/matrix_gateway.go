@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +19,7 @@ import (
 	"github.com/bstncartwright/gopher/pkg/gateway"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 	storepkg "github.com/bstncartwright/gopher/pkg/store"
+	"github.com/bstncartwright/gopher/pkg/transport"
 	matrixtransport "github.com/bstncartwright/gopher/pkg/transport/matrix"
 )
 
@@ -37,6 +43,8 @@ type agentMatrixIdentitySet struct {
 	ActorByUserID  map[string]sessionrt.ActorID
 }
 
+const matrixStartupCatchupLimit = 64
+
 func startMatrixDMBridgeWithRuntime(
 	ctx context.Context,
 	cfg config.GatewayConfig,
@@ -59,7 +67,8 @@ func startMatrixDMBridgeWithRuntime(
 	if executor == nil {
 		executor = agentRuntime.Executor
 	}
-	storeDir := filepath.Join(workspace, ".gopher", "sessions")
+	dataDir := resolveGatewayDataDir(workspace)
+	storeDir := filepath.Join(dataDir, "sessions")
 	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: storeDir})
 	if err != nil {
 		return nil, fmt.Errorf("create session store: %w", err)
@@ -85,7 +94,7 @@ func startMatrixDMBridgeWithRuntime(
 		if err != nil {
 			return nil, fmt.Errorf("create cron dispatcher: %w", err)
 		}
-		cronFilePath := filepath.Join(workspace, ".gopher", "cron", "jobs.json")
+		cronFilePath := filepath.Join(dataDir, "cron", "jobs.json")
 		cronStore, err := gateway.NewFileCronStore(cronFilePath)
 		if err != nil {
 			return nil, fmt.Errorf("create cron store: %w", err)
@@ -182,6 +191,7 @@ func startMatrixDMBridgeWithRuntime(
 		bindings:  bindingStore,
 		store:     store,
 	}
+	runMatrixStartupCatchup(ctx, cfg, identities, bindingStore, pipeline, logger)
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge.cancel = cancel
 	go bridge.runSupervisor(bridgeCtx, logger)
@@ -189,6 +199,194 @@ func startMatrixDMBridgeWithRuntime(
 		logger.Printf("matrix dm bridge started appservice_id=%s listen_addr=%s", cfg.Matrix.AppserviceID, cfg.Matrix.ListenAddr)
 	}
 	return bridge, nil
+}
+
+func resolveGatewayDataDir(workspace string) string {
+	workspace = filepath.Clean(strings.TrimSpace(workspace))
+	if workspace == "" {
+		return ".gopher"
+	}
+	if filepath.Base(workspace) != ".gopher" {
+		return filepath.Join(workspace, ".gopher")
+	}
+	canonical := workspace
+	legacy := filepath.Join(workspace, ".gopher")
+	if hasGatewayData(canonical) {
+		return canonical
+	}
+	if hasGatewayData(legacy) {
+		return legacy
+	}
+	return canonical
+}
+
+func hasGatewayData(dataDir string) bool {
+	dataDir = filepath.Clean(strings.TrimSpace(dataDir))
+	if dataDir == "" {
+		return false
+	}
+	sessionsPath := filepath.Join(dataDir, "sessions", "conversation_bindings.json")
+	if _, err := os.Stat(sessionsPath); err == nil {
+		return true
+	}
+	cronPath := filepath.Join(dataDir, "cron", "jobs.json")
+	if _, err := os.Stat(cronPath); err == nil {
+		return true
+	}
+	return false
+}
+
+type matrixTimelineResponse struct {
+	Chunk []matrixTimelineEvent `json:"chunk"`
+}
+
+type matrixTimelineEvent struct {
+	EventID string         `json:"event_id"`
+	Type    string         `json:"type"`
+	Sender  string         `json:"sender"`
+	Content map[string]any `json:"content"`
+}
+
+func runMatrixStartupCatchup(
+	ctx context.Context,
+	cfg config.GatewayConfig,
+	identities agentMatrixIdentitySet,
+	bindings gateway.ConversationBindingStore,
+	pipeline *gateway.DMPipeline,
+	logger *log.Logger,
+) {
+	if bindings == nil || pipeline == nil {
+		return
+	}
+	allBindings := bindings.List()
+	if len(allBindings) == 0 {
+		return
+	}
+	totalReplayed := 0
+	for _, binding := range allBindings {
+		replayed, err := replayUnprocessedConversationEvents(ctx, cfg, identities, pipeline, binding)
+		if err != nil {
+			if logger != nil {
+				logger.Printf("matrix startup catchup skipped conversation_id=%s err=%v", binding.ConversationID, err)
+			}
+			continue
+		}
+		totalReplayed += replayed
+	}
+	if logger != nil && totalReplayed > 0 {
+		logger.Printf("matrix startup catchup replayed_messages=%d", totalReplayed)
+	}
+}
+
+func replayUnprocessedConversationEvents(
+	ctx context.Context,
+	cfg config.GatewayConfig,
+	identities agentMatrixIdentitySet,
+	pipeline *gateway.DMPipeline,
+	binding gateway.ConversationBinding,
+) (int, error) {
+	conversationID := strings.TrimSpace(binding.ConversationID)
+	if conversationID == "" {
+		return 0, nil
+	}
+	userID := strings.TrimSpace(binding.RecipientID)
+	if userID == "" && strings.TrimSpace(string(binding.AgentID)) != "" {
+		userID = strings.TrimSpace(identities.UserByActorID[binding.AgentID])
+	}
+	if userID == "" {
+		userID = strings.TrimSpace(identities.DefaultUserID)
+	}
+	events, err := fetchRecentMatrixRoomEvents(ctx, cfg, conversationID, userID, matrixStartupCatchupLimit)
+	if err != nil {
+		return 0, err
+	}
+	replay := selectCatchupReplayEvents(events, binding.LastInboundEvent)
+	if len(replay) == 0 {
+		return 0, nil
+	}
+	count := 0
+	for _, event := range replay {
+		if strings.TrimSpace(event.Type) != "m.room.message" {
+			continue
+		}
+		if strings.TrimSpace(event.Sender) == "" {
+			continue
+		}
+		msgType, _ := event.Content["msgtype"].(string)
+		if strings.TrimSpace(msgType) != "m.text" {
+			continue
+		}
+		text, _ := event.Content["body"].(string)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+			ConversationID:   conversationID,
+			ConversationName: strings.TrimSpace(binding.ConversationName),
+			SenderID:         strings.TrimSpace(event.Sender),
+			RecipientID:      userID,
+			EventID:          strings.TrimSpace(event.EventID),
+			Text:             text,
+		}); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func fetchRecentMatrixRoomEvents(ctx context.Context, cfg config.GatewayConfig, conversationID, userID string, limit int) ([]matrixTimelineEvent, error) {
+	if limit <= 0 {
+		limit = matrixStartupCatchupLimit
+	}
+	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/messages", strings.TrimRight(cfg.Matrix.HomeserverURL, "/"), url.PathEscape(conversationID))
+	query := url.Values{}
+	query.Set("access_token", cfg.Matrix.ASToken)
+	query.Set("dir", "b")
+	query.Set("limit", fmt.Sprintf("%d", limit))
+	if strings.TrimSpace(userID) != "" {
+		query.Set("user_id", strings.TrimSpace(userID))
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+query.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build room catchup request: %w", err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("send room catchup request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(response.Body)
+		return nil, fmt.Errorf("room catchup status=%s body=%s", response.Status, strings.TrimSpace(string(body)))
+	}
+	var payload matrixTimelineResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode room catchup payload: %w", err)
+	}
+	return payload.Chunk, nil
+}
+
+func selectCatchupReplayEvents(events []matrixTimelineEvent, lastInboundEvent string) []matrixTimelineEvent {
+	lastInboundEvent = strings.TrimSpace(lastInboundEvent)
+	if len(events) == 0 {
+		return nil
+	}
+	// `/messages?dir=b` returns newest -> oldest.
+	pending := make([]matrixTimelineEvent, 0, len(events))
+	for _, event := range events {
+		eventID := strings.TrimSpace(event.EventID)
+		if lastInboundEvent != "" && eventID == lastInboundEvent {
+			break
+		}
+		pending = append(pending, event)
+	}
+	for i, j := 0, len(pending)-1; i < j; i, j = i+1, j-1 {
+		pending[i], pending[j] = pending[j], pending[i]
+	}
+	return pending
 }
 
 func (b *matrixDMBridge) runSupervisor(ctx context.Context, logger *log.Logger) {

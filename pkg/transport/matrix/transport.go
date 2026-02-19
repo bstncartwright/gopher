@@ -354,6 +354,7 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 		kind: outboundKindMessage,
 		message: transport.OutboundMessage{
 			ConversationID: roomID,
+			SenderID:       strings.TrimSpace(message.SenderID),
 			Text:           bodyText,
 		},
 	}
@@ -1048,9 +1049,6 @@ func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessag
 	if strings.TrimSpace(event.RoomID) == "" || strings.TrimSpace(event.Sender) == "" {
 		return transport.InboundMessage{}, false
 	}
-	if t.isManagedUser(event.Sender) {
-		return transport.InboundMessage{}, false
-	}
 	msgType, _ := event.Content["msgtype"].(string)
 	if msgType != "m.text" {
 		return transport.InboundMessage{}, false
@@ -1063,6 +1061,7 @@ func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessag
 	return transport.InboundMessage{
 		ConversationID: event.RoomID,
 		SenderID:       event.Sender,
+		SenderManaged:  t.isManagedUser(event.Sender),
 		RecipientID:    t.resolveRoomManagedUser(event.RoomID),
 		EventID:        strings.TrimSpace(event.EventID),
 		Text:           body,

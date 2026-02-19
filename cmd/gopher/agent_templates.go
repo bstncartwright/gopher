@@ -195,7 +195,7 @@ func defaultConfigTemplate(agentID string) string {
   "name": %q,
   "role": "assistant",
   "model_policy": "zai:glm-5",
-  "enabled_tools": ["group:fs", "group:runtime"],
+  "enabled_tools": ["group:fs", "group:runtime", "group:collaboration"],
   "max_context_messages": 40
 }
 `, agentID, agentID)

@@ -83,12 +83,16 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 		case "group:runtime":
 			add(&execTool{})
 			add(&processTool{})
+		case "group:collaboration":
+			add(&delegateTool{})
 		case "shell", "shell.exec", "exec":
 			add(&execTool{})
 		case "process":
 			add(&processTool{})
 		case "cron":
 			add(&cronTool{})
+		case "delegate":
+			add(&delegateTool{})
 		case "git", "git.status", "git.diff":
 			// intentionally ignored in v0
 		}

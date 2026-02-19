@@ -68,10 +68,16 @@ func startMatrixDMBridgeWithRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("create session store: %w", err)
 	}
+	bindingStorePath := filepath.Join(storeDir, "conversation_bindings.json")
+	bindingStore, err := gateway.NewFileConversationBindingStore(bindingStorePath)
+	if err != nil {
+		return nil, fmt.Errorf("create conversation binding store: %w", err)
+	}
 
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:          store,
 		Executor:       executor,
+		AgentSelector:  matrixMentionAgentSelector(identities),
 		RecoverOnStart: true,
 	})
 	if err != nil {
@@ -141,10 +147,15 @@ func startMatrixDMBridgeWithRuntime(
 		AgentByRecipient: identities.ActorByUserID,
 		RecipientByAgent: identities.UserByActorID,
 		Conversations:    gateway.NewConversationSessionMap(),
+		Bindings:         bindingStore,
 		Logger:           logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create matrix dm pipeline: %w", err)
+	}
+	delegationTool := newGatewayDelegationToolService(manager, pipeline, matrixBridge, identities, logger)
+	for _, agent := range agentRuntime.Agents {
+		agent.Delegation = delegationTool
 	}
 
 	heartbeatSchedules := collectHeartbeatSchedules(agentRuntime)

@@ -58,7 +58,7 @@ func TestHeartbeatRunnerProcessDueDispatchesPoll(t *testing.T) {
 		heartbeats:    map[string]heartbeatState{},
 	}
 	pipeline.conversations.Set("!dm:one", "sess-1")
-	pipeline.setConversationRoute("!dm:one", "agent:a", "@agent:a")
+	pipeline.setConversationRoute("!dm:one", "agent:a", "@agent:a", ConversationModeDM)
 
 	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
 		Manager:  manager,
@@ -113,7 +113,7 @@ func TestHeartbeatRunnerProcessDueSkipsBusyConversations(t *testing.T) {
 		heartbeats:    map[string]heartbeatState{},
 	}
 	pipeline.conversations.Set("!dm:one", "sess-1")
-	pipeline.setConversationRoute("!dm:one", "agent:a", "@agent:a")
+	pipeline.setConversationRoute("!dm:one", "agent:a", "@agent:a", ConversationModeDM)
 
 	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
 		Manager:  manager,

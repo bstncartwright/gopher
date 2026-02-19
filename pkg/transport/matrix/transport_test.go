@@ -49,13 +49,6 @@ func TestHandleTransactionParsesInboundDM(t *testing.T) {
 				Sender:  "@user:local",
 				Content: map[string]interface{}{},
 			},
-			{
-				EventID: "$ignored-bot",
-				Type:    "m.room.message",
-				RoomID:  "!dm:local",
-				Sender:  "@gopher:local",
-				Content: map[string]interface{}{"msgtype": "m.text", "body": "bot"},
-			},
 		},
 	}
 	blob, _ := json.Marshal(payload)
@@ -71,6 +64,53 @@ func TestHandleTransactionParsesInboundDM(t *testing.T) {
 	}
 	if received[0].ConversationID != "!dm:local" || received[0].SenderID != "@user:local" || received[0].Text != "hello" {
 		t.Fatalf("received payload = %#v", received[0])
+	}
+}
+
+func TestHandleTransactionIncludesManagedSenderMessages(t *testing.T) {
+	instance, err := New(Options{
+		HomeserverURL:  "http://127.0.0.1:8008",
+		AppserviceID:   "gopher",
+		ASToken:        "as-token",
+		HSToken:        "hs-token",
+		BotUserID:      "@planner:local",
+		ManagedUserIDs: []string{"@writer:local"},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	received := []transport.InboundMessage{}
+	instance.SetInboundHandler(func(_ context.Context, message transport.InboundMessage) error {
+		received = append(received, message)
+		return nil
+	})
+	payload := transactionBody{
+		Events: []matrixEvent{
+			{
+				EventID: "$managed-msg",
+				Type:    "m.room.message",
+				RoomID:  "!room:local",
+				Sender:  "@writer:local",
+				Content: map[string]interface{}{"msgtype": "m.text", "body": "handoff"},
+			},
+		},
+	}
+	blob, _ := json.Marshal(payload)
+	request := httptest.NewRequest(http.MethodPut, "/_matrix/app/v1/transactions/txn-managed?access_token=hs-token", bytes.NewReader(blob))
+	writer := httptest.NewRecorder()
+
+	instance.handleTransaction(writer, request)
+	if writer.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", writer.Code)
+	}
+	if len(received) != 1 {
+		t.Fatalf("received count = %d, want 1", len(received))
+	}
+	if !received[0].SenderManaged {
+		t.Fatalf("expected sender managed flag")
+	}
+	if received[0].SenderID != "@writer:local" {
+		t.Fatalf("sender id = %q, want @writer:local", received[0].SenderID)
 	}
 }
 
@@ -243,6 +283,89 @@ func TestSendMessageNowUsesProvidedSenderID(t *testing.T) {
 	}
 	if seenUserID != "@writer:local" {
 		t.Fatalf("user_id = %q, want @writer:local", seenUserID)
+	}
+}
+
+func TestCreatePublicRoomCallsHomeserverAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", request.Method)
+		}
+		if request.URL.Path != "/_matrix/client/v3/createRoom" {
+			t.Fatalf("path = %q, want createRoom", request.URL.Path)
+		}
+		if request.URL.Query().Get("user_id") != "@planner:local" {
+			t.Fatalf("user_id = %q, want @planner:local", request.URL.Query().Get("user_id"))
+		}
+		body, _ := io.ReadAll(request.Body)
+		if !bytes.Contains(body, []byte(`"visibility":"public"`)) {
+			t.Fatalf("expected public visibility payload: %s", string(body))
+		}
+		if !bytes.Contains(body, []byte(`"invite":["@target:local","@user:local"]`)) {
+			t.Fatalf("expected invite list payload: %s", string(body))
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"room_id":"!new:local"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	roomID, err := instance.CreatePublicRoom(context.Background(), CreatePublicRoomOptions{
+		Name:          "Delegation",
+		Topic:         "session",
+		CreatorUserID: "@planner:local",
+		InviteUserIDs: []string{"@user:local", "@target:local", "@planner:local"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePublicRoom() error: %v", err)
+	}
+	if roomID != "!new:local" {
+		t.Fatalf("room_id = %q, want !new:local", roomID)
+	}
+}
+
+func TestInviteToRoomCallsHomeserverAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", request.Method)
+		}
+		if request.URL.Path != "/_matrix/client/v3/rooms/!new:local/invite" {
+			t.Fatalf("path = %q, want invite path", request.URL.Path)
+		}
+		if request.URL.Query().Get("user_id") != "@planner:local" {
+			t.Fatalf("user_id = %q, want @planner:local", request.URL.Query().Get("user_id"))
+		}
+		body, _ := io.ReadAll(request.Body)
+		if !bytes.Contains(body, []byte(`"user_id":"@writer:local"`)) {
+			t.Fatalf("invite payload mismatch: %s", string(body))
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:  server.URL,
+		AppserviceID:   "gopher",
+		ASToken:        "as-token",
+		HSToken:        "hs-token",
+		ManagedUserIDs: []string{"@writer:local"},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	if err := instance.InviteToRoom(context.Background(), "!new:local", "@writer:local", "@planner:local"); err != nil {
+		t.Fatalf("InviteToRoom() error: %v", err)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -31,14 +30,6 @@ type agentMatrixIdentitySet struct {
 	ManagedUserIDs []string
 	UserByActorID  map[sessionrt.ActorID]string
 	ActorByUserID  map[string]sessionrt.ActorID
-}
-
-func startMatrixDMBridge(ctx context.Context, cfg config.GatewayConfig, logger *log.Logger) (*matrixDMBridge, error) {
-	workspace, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("resolve workspace: %w", err)
-	}
-	return startMatrixDMBridgeWithRuntime(ctx, cfg, workspace, nil, nil, logger)
 }
 
 func startMatrixDMBridgeWithRuntime(

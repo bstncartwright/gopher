@@ -125,6 +125,24 @@ type matrixStats struct {
 	PresenceLastError      string    `json:"presence_last_error,omitempty"`
 }
 
+type matrixStatsSnapshot struct {
+	LastInboundTxnAt       time.Time
+	LastOutboundSuccessAt  time.Time
+	PresenceLastSuccessAt  time.Time
+	QueueDepth             int
+	OutboundRetries        uint64
+	OutboundDropped        uint64
+	OutboundTransientErrs  uint64
+	OutboundPermanentErrs  uint64
+	DuplicateTxnSeen       uint64
+	DuplicateEventsSkipped uint64
+	ReplayEventsProcessed  uint64
+	PresenceEnabled        bool
+	PresenceState          string
+	PresenceFailures       uint64
+	PresenceLastError      string
+}
+
 type transactionBody struct {
 	Events []matrixEvent `json:"events"`
 }
@@ -1339,10 +1357,26 @@ func (t *Transport) incrementReplayEvents() {
 	t.stats.ReplayEventsProcessed++
 }
 
-func (t *Transport) snapshotMetrics() matrixStats {
+func (t *Transport) snapshotMetrics() matrixStatsSnapshot {
 	t.stats.mu.RLock()
 	defer t.stats.mu.RUnlock()
-	return t.stats
+	return matrixStatsSnapshot{
+		LastInboundTxnAt:       t.stats.LastInboundTxnAt,
+		LastOutboundSuccessAt:  t.stats.LastOutboundSuccessAt,
+		PresenceLastSuccessAt:  t.stats.PresenceLastSuccessAt,
+		QueueDepth:             t.stats.QueueDepth,
+		OutboundRetries:        t.stats.OutboundRetries,
+		OutboundDropped:        t.stats.OutboundDropped,
+		OutboundTransientErrs:  t.stats.OutboundTransientErrs,
+		OutboundPermanentErrs:  t.stats.OutboundPermanentErrs,
+		DuplicateTxnSeen:       t.stats.DuplicateTxnSeen,
+		DuplicateEventsSkipped: t.stats.DuplicateEventsSkipped,
+		ReplayEventsProcessed:  t.stats.ReplayEventsProcessed,
+		PresenceEnabled:        t.stats.PresenceEnabled,
+		PresenceState:          t.stats.PresenceState,
+		PresenceFailures:       t.stats.PresenceFailures,
+		PresenceLastError:      t.stats.PresenceLastError,
+	}
 }
 
 func (t *Transport) getHandler() transport.InboundHandler {

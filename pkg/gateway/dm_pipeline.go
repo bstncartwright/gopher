@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -64,9 +65,17 @@ const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmFallbackMinInterval    = 5 * time.Second
+	dmFallbackDetailMaxChars = 120
 	dmTypingTimeout          = 3 * time.Second
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	heartbeatAckDefaultChars = 300
+)
+
+var (
+	fallbackAuthBearerPattern     = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*bearer\s+[^\s,;]+`)
+	fallbackBearerPattern         = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;]+`)
+	fallbackSensitiveValuePattern = regexp.MustCompile(`(?i)\b(authorization|bearer|api[-_ ]?key|token|secret|password)\b\s*[:=]?\s*([^\s,;]+)`)
+	fallbackLongTokenPattern      = regexp.MustCompile(`\b[A-Za-z0-9_-]{24,}\b`)
 )
 
 type typingTransport interface {
@@ -787,11 +796,69 @@ func errorTextFromPayload(payload any) string {
 }
 
 func fallbackReplyForError(message string) string {
+	detail := fallbackErrorDetail(message)
 	text := strings.ToLower(strings.TrimSpace(message))
 	if strings.Contains(text, "rate limit") || strings.Contains(text, "429") {
-		return dmRateLimitFallbackReply
+		if detail == "" {
+			detail = "rate limit (429)"
+		}
+		return appendFallbackDetail(dmRateLimitFallbackReply, detail)
 	}
-	return dmErrorFallbackReply
+	return appendFallbackDetail(dmErrorFallbackReply, detail)
+}
+
+func fallbackErrorDetail(message string) string {
+	sanitized := sanitizeFallbackErrorDetail(message)
+	if sanitized == "" {
+		return ""
+	}
+	text := strings.ToLower(sanitized)
+	switch {
+	case strings.Contains(text, "rate limit"), strings.Contains(text, "429"), strings.Contains(text, "too many requests"):
+		return "rate limit (429)"
+	case strings.Contains(text, "deadline exceeded"), strings.Contains(text, "timed out"), strings.Contains(text, "timeout"):
+		return "request timed out"
+	case strings.Contains(text, "connection refused"), strings.Contains(text, "upstream connect"), strings.Contains(text, "connection reset"), strings.Contains(text, "dial tcp"), strings.Contains(text, "no such host"):
+		return "connection to provider failed"
+	case strings.Contains(text, "unauthorized"), strings.Contains(text, "invalid api key"), strings.Contains(text, "401"):
+		return "provider authentication failed (401)"
+	case strings.Contains(text, "forbidden"), strings.Contains(text, "403"):
+		return "provider rejected the request (403)"
+	case strings.Contains(text, "model not found"), strings.Contains(text, "404"):
+		return "model not found (404)"
+	case strings.Contains(text, "service unavailable"), strings.Contains(text, "overloaded"), strings.Contains(text, "502"), strings.Contains(text, "503"), strings.Contains(text, "500"), strings.Contains(text, "bad gateway"):
+		return "provider service unavailable"
+	}
+	return sanitized
+}
+
+func sanitizeFallbackErrorDetail(message string) string {
+	detail := strings.TrimSpace(message)
+	if detail == "" {
+		return ""
+	}
+	detail = strings.Join(strings.Fields(detail), " ")
+	detail = fallbackAuthBearerPattern.ReplaceAllString(detail, "authorization=[redacted]")
+	detail = fallbackBearerPattern.ReplaceAllString(detail, "bearer [redacted]")
+	detail = fallbackSensitiveValuePattern.ReplaceAllString(detail, "$1=[redacted]")
+	detail = fallbackLongTokenPattern.ReplaceAllString(detail, "[redacted]")
+	if len([]rune(detail)) > dmFallbackDetailMaxChars {
+		runes := []rune(detail)
+		detail = strings.TrimSpace(string(runes[:dmFallbackDetailMaxChars])) + "..."
+	}
+	return strings.TrimSpace(detail)
+}
+
+func appendFallbackDetail(base, detail string) string {
+	base = strings.TrimSpace(base)
+	detail = strings.TrimSpace(strings.TrimRight(detail, "."))
+	if base == "" || detail == "" {
+		return base
+	}
+	if strings.HasSuffix(base, ".") {
+		base = strings.TrimSuffix(base, ".")
+	}
+	return base + " Details: " + detail + "."
 }
 
 func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) {

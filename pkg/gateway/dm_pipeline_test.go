@@ -780,8 +780,11 @@ func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
 	if got.ConversationID != "!dm:error" {
 		t.Fatalf("conversation id = %q, want !dm:error", got.ConversationID)
 	}
-	if got.Text != dmRateLimitFallbackReply {
-		t.Fatalf("fallback reply = %q, want %q", got.Text, dmRateLimitFallbackReply)
+	if !strings.HasPrefix(got.Text, strings.TrimSuffix(dmRateLimitFallbackReply, ".")) {
+		t.Fatalf("fallback reply = %q, want prefix %q", got.Text, dmRateLimitFallbackReply)
+	}
+	if !strings.Contains(got.Text, "Details: rate limit (429).") {
+		t.Fatalf("fallback details = %q, want rate-limit details", got.Text)
 	}
 	signals := fake.typingSignals()
 	if len(signals) < 2 {
@@ -832,8 +835,11 @@ func TestDMPipelineSendsFallbackWhenSendEventFails(t *testing.T) {
 	if got.ConversationID != "!dm:timeout" {
 		t.Fatalf("conversation id = %q, want !dm:timeout", got.ConversationID)
 	}
-	if got.Text != dmErrorFallbackReply {
-		t.Fatalf("fallback reply = %q, want %q", got.Text, dmErrorFallbackReply)
+	if !strings.HasPrefix(got.Text, strings.TrimSuffix(dmErrorFallbackReply, ".")) {
+		t.Fatalf("fallback reply = %q, want prefix %q", got.Text, dmErrorFallbackReply)
+	}
+	if !strings.Contains(got.Text, "Details: request timed out.") {
+		t.Fatalf("fallback details = %q, want timeout details", got.Text)
 	}
 	signals := fake.typingSignals()
 	if len(signals) < 2 {
@@ -1071,6 +1077,19 @@ func TestDMPipelineCanDispatchHeartbeatUsesManagedMembership(t *testing.T) {
 	}
 	if pipeline.CanDispatchHeartbeat("!room:two", "agent:writer") {
 		t.Fatalf("did not expect dispatch for room without membership")
+	}
+}
+
+func TestFallbackReplyForErrorSanitizesSensitiveDetails(t *testing.T) {
+	reply := fallbackReplyForError("upstream failure token=supersecrettokenvalue0123456789 Authorization: Bearer sk-test-123")
+	if !strings.Contains(reply, "Details:") {
+		t.Fatalf("fallback reply missing details: %q", reply)
+	}
+	if strings.Contains(strings.ToLower(reply), "supersecrettokenvalue0123456789") {
+		t.Fatalf("expected token to be redacted, got %q", reply)
+	}
+	if strings.Contains(strings.ToLower(reply), "sk-test-123") {
+		t.Fatalf("expected bearer secret to be redacted, got %q", reply)
 	}
 }
 

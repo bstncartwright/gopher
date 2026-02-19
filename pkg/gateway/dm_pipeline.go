@@ -50,6 +50,8 @@ type DMPipeline struct {
 	lastFallback map[string]time.Time
 	processingMu sync.Mutex
 	processing   map[string]int
+	typingMu     sync.Mutex
+	typingCancel map[string]context.CancelFunc
 	routeMu      sync.RWMutex
 	routes       map[string]conversationRoute
 	heartbeatMu  sync.Mutex
@@ -67,9 +69,12 @@ const (
 	dmFallbackMinInterval    = 5 * time.Second
 	dmFallbackDetailMaxChars = 120
 	dmTypingTimeout          = 3 * time.Second
+	dmTypingKeepaliveDefault = 5 * time.Second
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	heartbeatAckDefaultChars = 300
 )
+
+var dmTypingKeepaliveInterval = dmTypingKeepaliveDefault
 
 var (
 	fallbackAuthBearerPattern     = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*bearer\s+[^\s,;]+`)
@@ -129,6 +134,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		subscribed:    map[sessionrt.SessionID]struct{}{},
 		lastFallback:  map[string]time.Time{},
 		processing:    map[string]int{},
+		typingCancel:  map[string]context.CancelFunc{},
 		routes:        map[string]conversationRoute{},
 		heartbeats:    map[string]heartbeatState{},
 	}
@@ -428,6 +434,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 
 	if shouldEnable {
 		p.sendTyping(conversationID, true)
+		p.startTypingKeepalive(conversationID)
 	}
 }
 
@@ -453,7 +460,63 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldDisable {
+		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
+	}
+}
+
+func (p *DMPipeline) startTypingKeepalive(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+
+	p.typingMu.Lock()
+	if _, exists := p.typingCancel[conversationID]; exists {
+		p.typingMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.typingCancel[conversationID] = cancel
+	p.typingMu.Unlock()
+
+	interval := dmTypingKeepaliveInterval
+	if interval <= 0 {
+		interval = dmTypingKeepaliveDefault
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !p.IsConversationProcessing(conversationID) {
+					return
+				}
+				p.sendTyping(conversationID, true)
+			}
+		}
+	}()
+}
+
+func (p *DMPipeline) stopTypingKeepalive(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+
+	p.typingMu.Lock()
+	cancel, exists := p.typingCancel[conversationID]
+	if exists {
+		delete(p.typingCancel, conversationID)
+	}
+	p.typingMu.Unlock()
+
+	if exists {
+		cancel()
 	}
 }
 

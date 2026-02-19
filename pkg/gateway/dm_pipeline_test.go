@@ -652,6 +652,66 @@ func TestDMPipelineHandleInboundReturnsBeforeSlowSendCompletes(t *testing.T) {
 	})
 }
 
+func TestDMPipelineTypingKeepaliveDuringLongProcessing(t *testing.T) {
+	prevInterval := dmTypingKeepaliveInterval
+	dmTypingKeepaliveInterval = 20 * time.Millisecond
+	t.Cleanup(func() {
+		dmTypingKeepaliveInterval = prevInterval
+	})
+
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	baseManager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	manager := &delayedSendManager{
+		SessionManager: baseManager,
+		block:          make(chan struct{}),
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:keepalive",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 500*time.Millisecond, func() bool {
+		signals := fake.typingSignals()
+		typingTrue := 0
+		for _, signal := range signals {
+			if signal.ConversationID == "!dm:keepalive" && signal.Typing {
+				typingTrue++
+			}
+		}
+		return typingTrue >= 2
+	})
+
+	close(manager.block)
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		signals := fake.typingSignals()
+		return len(signals) >= 2 && !signals[len(signals)-1].Typing
+	})
+}
+
 func TestDMPipelineKeepsConversationSessionAfterAgentStepError(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

@@ -1182,6 +1182,117 @@ func TestDMPipelineCanDispatchHeartbeatUsesManagedMembership(t *testing.T) {
 	}
 }
 
+func TestDMPipelineClearCommandResetsSessionAndAcknowledges(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:clear",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound(initial) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+
+	initialSessionID, ok := pipeline.conversations.Get("!dm:clear")
+	if !ok {
+		t.Fatalf("expected initial conversation mapping")
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:clear",
+		SenderID:       "@user:hs",
+		Text:           "/clear",
+	}); err != nil {
+		t.Fatalf("HandleInbound(clear) error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 2
+	})
+	if got := fake.lastSent().Text; got != dmContextClearedReply {
+		t.Fatalf("clear acknowledgement = %q, want %q", got, dmContextClearedReply)
+	}
+
+	reboundSessionID, ok := pipeline.conversations.Get("!dm:clear")
+	if !ok {
+		t.Fatalf("expected rebound conversation mapping")
+	}
+	if reboundSessionID == initialSessionID {
+		t.Fatalf("expected clear command to replace session")
+	}
+
+	loaded, err := manager.GetSession(ctx, initialSessionID)
+	if err != nil {
+		t.Fatalf("GetSession(initial) error: %v", err)
+	}
+	if loaded.Status != sessionrt.SessionPaused {
+		t.Fatalf("initial session status = %v, want paused", loaded.Status)
+	}
+}
+
+func TestDMPipelineSummarizeCommandDispatchesSummaryPrompt(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmPromptExecutor{
+			defaultText: "ack",
+			responses: map[string]string{
+				dmSummarizeCommandPrompt: "summary reply",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:summary",
+		SenderID:       "@user:hs",
+		Text:           "/context summarize",
+	}); err != nil {
+		t.Fatalf("HandleInbound(summarize) error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	if got := fake.lastSent().Text; got != "summary reply" {
+		t.Fatalf("summary reply = %q, want summary reply", got)
+	}
+}
+
 func TestFallbackReplyForErrorSanitizesSensitiveDetails(t *testing.T) {
 	reply := fallbackReplyForError("upstream failure token=supersecrettokenvalue0123456789 Authorization: Bearer sk-test-123")
 	if !strings.Contains(reply, "Details:") {

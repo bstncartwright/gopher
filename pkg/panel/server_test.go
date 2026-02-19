@@ -162,7 +162,19 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 		{SessionID: "sess-1", Seq: 1, Type: sessionrt.EventMessage, From: "user:1", Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "hi"}, Timestamp: now},
 		{SessionID: "sess-1", Seq: 2, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read"}, Timestamp: now.Add(time.Second)},
 	})
-	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	srv, err := NewServer(ServerOptions{
+		ListenAddr: "127.0.0.1:29329",
+		Store:      store,
+		SessionMetadata: func(sessionID sessionrt.SessionID) (SessionMetadata, bool) {
+			if sessionID != "sess-1" {
+				return SessionMetadata{}, false
+			}
+			return SessionMetadata{
+				ConversationID:   "!room:1",
+				ConversationName: "Writer Room",
+			}, true
+		},
+	})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}
@@ -174,8 +186,11 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	if sessionsRec.Code != http.StatusOK {
 		t.Fatalf("sessions status = %d, want 200", sessionsRec.Code)
 	}
-	if !strings.Contains(sessionsRec.Body.String(), "sess-1") {
-		t.Fatalf("expected session id in sessions fragment, got: %s", sessionsRec.Body.String())
+	if !strings.Contains(sessionsRec.Body.String(), "Writer Room") {
+		t.Fatalf("expected room name in sessions fragment, got: %s", sessionsRec.Body.String())
+	}
+	if !strings.Contains(sessionsRec.Body.String(), "!room:1") {
+		t.Fatalf("expected room id fallback metadata in sessions fragment, got: %s", sessionsRec.Body.String())
 	}
 
 	detailRec := httptest.NewRecorder()
@@ -186,6 +201,9 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 	if !strings.Contains(detailRec.Body.String(), "tool_call") {
 		t.Fatalf("expected timeline events, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "Writer Room") {
+		t.Fatalf("expected room name in detail fragment, got: %s", detailRec.Body.String())
 	}
 }
 

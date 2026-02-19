@@ -22,6 +22,7 @@ type matrixDMBridge struct {
 	pipeline  *gateway.DMPipeline
 	cron      *gateway.CronRunner
 	heartbeat *gateway.HeartbeatRunner
+	bindings  gateway.ConversationBindingStore
 	store     interface {
 		sessionrt.EventStore
 		sessionrt.SessionRegistryStore
@@ -178,6 +179,7 @@ func startMatrixDMBridgeWithRuntime(
 		pipeline:  pipeline,
 		cron:      cronRunner,
 		heartbeat: heartbeatRunner,
+		bindings:  bindingStore,
 		store:     store,
 	}
 	bridgeCtx, cancel := context.WithCancel(ctx)

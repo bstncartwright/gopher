@@ -67,6 +67,59 @@ func TestHandleTransactionParsesInboundDM(t *testing.T) {
 	}
 }
 
+func TestHandleTransactionIncludesConversationNameFromRoomState(t *testing.T) {
+	instance, err := New(Options{
+		HomeserverURL: "http://127.0.0.1:8008",
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+		ListenAddr:    "127.0.0.1:29328",
+		BotUserID:     "@gopher:local",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	received := []transport.InboundMessage{}
+	instance.SetInboundHandler(func(_ context.Context, message transport.InboundMessage) error {
+		received = append(received, message)
+		return nil
+	})
+
+	payload := transactionBody{
+		Events: []matrixEvent{
+			{
+				EventID: "$name",
+				Type:    "m.room.name",
+				RoomID:  "!dm:local",
+				Sender:  "@user:local",
+				Content: map[string]interface{}{"name": "Writer Room"},
+			},
+			{
+				EventID: "$one",
+				Type:    "m.room.message",
+				RoomID:  "!dm:local",
+				Sender:  "@user:local",
+				Content: map[string]interface{}{"msgtype": "m.text", "body": "hello"},
+			},
+		},
+	}
+	blob, _ := json.Marshal(payload)
+	request := httptest.NewRequest(http.MethodPut, "/_matrix/app/v1/transactions/txn-name?access_token=hs-token", bytes.NewReader(blob))
+	writer := httptest.NewRecorder()
+
+	instance.handleTransaction(writer, request)
+	if writer.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", writer.Code)
+	}
+	if len(received) != 1 {
+		t.Fatalf("received count = %d, want 1", len(received))
+	}
+	if received[0].ConversationName != "Writer Room" {
+		t.Fatalf("conversation name = %q, want Writer Room", received[0].ConversationName)
+	}
+}
+
 func TestHandleTransactionIncludesManagedSenderMessages(t *testing.T) {
 	instance, err := New(Options{
 		HomeserverURL:  "http://127.0.0.1:8008",

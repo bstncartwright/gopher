@@ -283,7 +283,7 @@ presence_status_msg = ""
 
 [gateway.panel]
 listen_addr = "127.0.0.1:29329"
-capture_thinking = false
+capture_thinking = true
 
 [gateway.cron]
 enabled = false
@@ -351,7 +351,7 @@ func defaultGatewayConfig() GatewayConfig {
 		},
 		Panel: PanelConfig{
 			ListenAddr:      "127.0.0.1:29329",
-			CaptureThinking: false,
+			CaptureThinking: true,
 		},
 		Cron: CronConfig{
 			Enabled:         false,

@@ -166,6 +166,15 @@ h1 {
   word-break: break-all;
 }
 
+.session-room-id {
+  display: block;
+  margin-top: 4px;
+  font-family: "IBM Plex Mono", Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  word-break: break-all;
+}
+
 .session-meta {
   margin-top: 7px;
   color: var(--ink-muted);

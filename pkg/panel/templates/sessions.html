@@ -15,7 +15,10 @@
     hx-target="#session-detail"
     hx-swap="innerHTML"
   >
-    <span class="session-title">{{.SessionID}}</span>
+    <span class="session-title">{{.Title}}</span>
+    {{if and .ConversationID (ne .ConversationID .Title)}}
+    <span class="session-room-id">{{.ConversationID}}</span>
+    {{end}}
     <span class="session-meta">
       <span class="session-status">{{.Status}}</span>
       <span class="session-seq">seq {{.LastSeq}}</span>

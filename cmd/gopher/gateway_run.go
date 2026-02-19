@@ -339,7 +339,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		return fmt.Errorf("resolve workspace directory: %w", err)
 	}
 	agentRuntime, err := loadGatewayAgentRuntimeWithOptions(workspace, agentRuntimeOptions{
-		CaptureDeltas:   true,
+		CaptureDeltas:   false,
 		CaptureThinking: cfg.Panel.CaptureThinking,
 	})
 	if err != nil {
@@ -366,10 +366,24 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	}
 
 	var panelStore panel.SessionStore
+	var panelSessionMetadata panel.SessionMetadataResolver
 	if matrixBridge != nil && matrixBridge.store != nil {
 		panelStore = matrixBridge.store
 	}
-	if err := startGatewayPanel(ctx, cfg, process, panelStore, logger); err != nil {
+	if matrixBridge != nil && matrixBridge.bindings != nil {
+		bindings := matrixBridge.bindings
+		panelSessionMetadata = func(sessionID sessionrt.SessionID) (panel.SessionMetadata, bool) {
+			binding, ok := bindings.GetBySession(sessionID)
+			if !ok {
+				return panel.SessionMetadata{}, false
+			}
+			return panel.SessionMetadata{
+				ConversationID:   binding.ConversationID,
+				ConversationName: binding.ConversationName,
+			}, true
+		}
+	}
+	if err := startGatewayPanel(ctx, cfg, process, panelStore, panelSessionMetadata, logger); err != nil {
 		return err
 	}
 
@@ -517,15 +531,17 @@ func startGatewayPanel(
 	cfg config.GatewayConfig,
 	process *gatewayProcess,
 	store panel.SessionStore,
+	sessionMetadata panel.SessionMetadataResolver,
 	logger *log.Logger,
 ) error {
 	if process == nil || process.registry == nil {
 		return fmt.Errorf("create observability panel server: gateway process is not initialized")
 	}
 	panelServer, err := newGatewayPanel(panel.ServerOptions{
-		ListenAddr: cfg.Panel.ListenAddr,
-		Logger:     logger,
-		Store:      store,
+		ListenAddr:      cfg.Panel.ListenAddr,
+		Logger:          logger,
+		Store:           store,
+		SessionMetadata: sessionMetadata,
 		NodeSnapshot: func() []scheduler.NodeInfo {
 			return process.registry.Snapshot()
 		},

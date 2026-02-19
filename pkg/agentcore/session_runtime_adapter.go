@@ -10,16 +10,27 @@ import (
 
 type SessionRuntimeAdapter struct {
 	agent *Agent
+	opts  SessionRuntimeAdapterOptions
 
 	mu       sync.Mutex
 	sessions map[sessionrt.SessionID]*Session
 }
 
+type SessionRuntimeAdapterOptions struct {
+	CaptureDeltas   bool
+	CaptureThinking bool
+}
+
 var sessionRuntimeTurnTimeout = 20 * time.Second
 
 func NewSessionRuntimeAdapter(agent *Agent) *SessionRuntimeAdapter {
+	return NewSessionRuntimeAdapterWithOptions(agent, SessionRuntimeAdapterOptions{})
+}
+
+func NewSessionRuntimeAdapterWithOptions(agent *Agent, opts SessionRuntimeAdapterOptions) *SessionRuntimeAdapter {
 	return &SessionRuntimeAdapter{
 		agent:    agent,
+		opts:     opts,
 		sessions: make(map[sessionrt.SessionID]*Session),
 	}
 }
@@ -53,6 +64,24 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 	out := make([]sessionrt.Event, 0, len(result.Events))
 	for _, event := range result.Events {
 		switch event.Type {
+		case EventTypeAgentDelta:
+			if !a.opts.CaptureDeltas {
+				continue
+			}
+			delta, _ := stringPayloadField(event.Payload, "delta")
+			out = append(out, sessionrt.Event{
+				Type:    sessionrt.EventAgentDelta,
+				Payload: map[string]any{"delta": delta},
+			})
+		case EventTypeAgentThinkingDelta:
+			if !a.opts.CaptureThinking {
+				continue
+			}
+			delta, _ := stringPayloadField(event.Payload, "delta")
+			out = append(out, sessionrt.Event{
+				Type:    sessionrt.EventAgentThinkingDelta,
+				Payload: map[string]any{"delta": delta},
+			})
 		case EventTypeAgentMsg:
 			text, _ := stringPayloadField(event.Payload, "text")
 			out = append(out, sessionrt.Event{

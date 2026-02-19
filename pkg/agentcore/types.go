@@ -73,17 +73,18 @@ type Agent struct {
 	Config    AgentConfig
 	Policies  AgentPolicies
 
-	Tools          ToolRegistry
-	Memory         MemoryStore
-	LongTermMemory memory.MemoryManager
-	Assembler      ctxbundle.Assembler
-	Logger         EventLogger
-	Provider       AIProvider
-	Processes      *ProcessManager
-	Cron           CronToolService
-	Delegation     DelegationToolService
-	Heartbeat      AgentHeartbeat
-	KnownAgents    []string
+	Tools                 ToolRegistry
+	Memory                MemoryStore
+	LongTermMemory        memory.MemoryManager
+	Assembler             ctxbundle.Assembler
+	Logger                EventLogger
+	Provider              AIProvider
+	Processes             *ProcessManager
+	Cron                  CronToolService
+	Delegation            DelegationToolService
+	Heartbeat             AgentHeartbeat
+	KnownAgents           []string
+	CaptureThinkingDeltas bool
 
 	skills         []Skill
 	model          ai.Model
@@ -126,11 +127,12 @@ type TurnResult struct {
 type EventType string
 
 const (
-	EventTypeAgentDelta EventType = "agent.delta"
-	EventTypeAgentMsg   EventType = "agent.message"
-	EventTypeToolCall   EventType = "tool.call"
-	EventTypeToolResult EventType = "tool.result"
-	EventTypeError      EventType = "error"
+	EventTypeAgentDelta         EventType = "agent.delta"
+	EventTypeAgentThinkingDelta EventType = "agent.thinking_delta"
+	EventTypeAgentMsg           EventType = "agent.message"
+	EventTypeToolCall           EventType = "tool.call"
+	EventTypeToolResult         EventType = "tool.result"
+	EventTypeError              EventType = "error"
 )
 
 const (

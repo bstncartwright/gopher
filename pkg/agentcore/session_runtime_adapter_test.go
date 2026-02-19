@@ -123,3 +123,90 @@ func TestWithTurnTimeoutPreservesExistingDeadline(t *testing.T) {
 		t.Fatalf("deadline changed: got %s want %s", deadline, baseDeadline)
 	}
 }
+
+func TestSessionRuntimeAdapterDeltaCaptureOptions(t *testing.T) {
+	config := defaultConfig()
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	agent.CaptureThinkingDeltas = true
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonStop
+	assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "final"}}
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{
+				assistant: assistant,
+				events: []ai.AssistantMessageEvent{
+					{Type: ai.EventTextDelta, Delta: "fi"},
+					{Type: ai.EventThinkingDelta, Delta: "private"},
+					{Type: ai.EventTextDelta, Delta: "nal"},
+				},
+			},
+		},
+	}
+
+	input := sessionrt.AgentInput{
+		SessionID: "sess-1",
+		ActorID:   "agent:test",
+		History: []sessionrt.Event{
+			{
+				Type:    sessionrt.EventMessage,
+				Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "run"},
+			},
+		},
+	}
+
+	defaultAdapter := NewSessionRuntimeAdapter(agent)
+	defaultOut, err := defaultAdapter.Step(context.Background(), input)
+	if err != nil {
+		t.Fatalf("default adapter Step() error: %v", err)
+	}
+	if hasEventType(defaultOut.Events, sessionrt.EventAgentDelta) {
+		t.Fatalf("default adapter should not emit agent deltas")
+	}
+	if hasEventType(defaultOut.Events, sessionrt.EventAgentThinkingDelta) {
+		t.Fatalf("default adapter should not emit thinking deltas")
+	}
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{
+				assistant: assistant,
+				events: []ai.AssistantMessageEvent{
+					{Type: ai.EventTextDelta, Delta: "fi"},
+					{Type: ai.EventThinkingDelta, Delta: "private"},
+					{Type: ai.EventTextDelta, Delta: "nal"},
+				},
+			},
+		},
+	}
+
+	optAdapter := NewSessionRuntimeAdapterWithOptions(agent, SessionRuntimeAdapterOptions{
+		CaptureDeltas:   true,
+		CaptureThinking: true,
+	})
+	optOut, err := optAdapter.Step(context.Background(), input)
+	if err != nil {
+		t.Fatalf("options adapter Step() error: %v", err)
+	}
+	if !hasEventType(optOut.Events, sessionrt.EventAgentDelta) {
+		t.Fatalf("expected options adapter to emit agent delta events")
+	}
+	if !hasEventType(optOut.Events, sessionrt.EventAgentThinkingDelta) {
+		t.Fatalf("expected options adapter to emit thinking delta events")
+	}
+}
+
+func hasEventType(events []sessionrt.Event, target sessionrt.EventType) bool {
+	for _, event := range events {
+		if event.Type == target {
+			return true
+		}
+	}
+	return false
+}

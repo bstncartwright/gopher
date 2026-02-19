@@ -75,6 +75,14 @@ func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResu
 					turnErr = err
 					return TurnResult{Events: emitter.Events()}, err
 				}
+			case ai.EventThinkingDelta:
+				if !a.CaptureThinkingDeltas || event.Delta == "" {
+					continue
+				}
+				if err := emitter.Emit(EventTypeAgentThinkingDelta, map[string]any{"delta": event.Delta}); err != nil {
+					turnErr = err
+					return TurnResult{Events: emitter.Events()}, err
+				}
 			case ai.EventToolCallEnd:
 				if event.ToolCall != nil {
 					toolCalls = append(toolCalls, event.ToolCall.Clone())

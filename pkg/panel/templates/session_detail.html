@@ -1,0 +1,32 @@
+{{if .Error}}
+<div class="empty-state">{{.Error}}</div>
+{{else if not .Events}}
+<div class="empty-state" data-session-id="{{.SessionID}}" data-last-seq="{{.LastSeq}}">No events for this session yet.</div>
+{{else}}
+<section class="timeline" data-session-id="{{.SessionID}}" data-last-seq="{{.LastSeq}}">
+  <header class="timeline-head">
+    <h3>{{.SessionID}}</h3>
+    <p>Last sequence: {{.LastSeq}}</p>
+  </header>
+
+  {{range .Events}}
+  <article class="event-row">
+    <div class="event-topline">
+      <span class="seq">#{{.Seq}}</span>
+      <span class="badge {{.BadgeClass}}">{{.Type}}</span>
+      <span class="event-from">{{if .From}}{{.From}}{{else}}system{{end}}</span>
+      <span class="event-time">{{.Timestamp}}</span>
+    </div>
+
+    {{if .Collapsed}}
+    <details class="payload payload-collapsed">
+      <summary>View payload</summary>
+      <pre>{{.Payload}}</pre>
+    </details>
+    {{else}}
+    <pre class="payload">{{.Payload}}</pre>
+    {{end}}
+  </article>
+  {{end}}
+</section>
+{{end}}

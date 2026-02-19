@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gopher Control Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/_gopher/panel/assets/panel.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+  <div class="bg-orbit bg-orbit-a"></div>
+  <div class="bg-orbit bg-orbit-b"></div>
+
+  <main class="layout">
+    <header class="hero">
+      <p class="eyebrow">Runtime Observability</p>
+      <h1>Gopher Control Panel</h1>
+      <p class="hero-sub">Inspect user turns, agent outputs, tool traces, errors, and live deltas from a single timeline.</p>
+    </header>
+
+    <section id="panel-overview" class="card overview" hx-get="/_gopher/panel/fragments/overview" hx-trigger="load, every 8s">
+      <div class="loading">Loading overview...</div>
+    </section>
+
+    <section class="workspace-grid">
+      <article class="card sessions">
+        <header class="section-header">
+          <h2>Sessions</h2>
+          <p>{{if .HasSessionStore}}Live matrix-backed session runtime{{else}}Limited mode (session runtime unavailable){{end}}</p>
+        </header>
+        <div id="sessions-list" hx-get="/_gopher/panel/fragments/sessions" hx-trigger="load, every 5s">
+          <div class="loading">Loading sessions...</div>
+        </div>
+      </article>
+
+      <article class="card detail">
+        <header class="section-header">
+          <h2>Timeline</h2>
+          <p>Step-level events with expandable deltas.</p>
+        </header>
+        <div id="session-detail">
+          <div class="empty-state">Choose a session to inspect its event stream.</div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      var state = {
+        sessionID: "",
+        lastSeq: 0,
+        source: null
+      };
+
+      function closeSource() {
+        if (state.source) {
+          state.source.close();
+          state.source = null;
+        }
+      }
+
+      function refreshSessionDetail() {
+        if (!state.sessionID) {
+          return;
+        }
+        htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(state.sessionID), {
+          target: "#session-detail",
+          swap: "innerHTML"
+        });
+      }
+
+      function refreshSessions() {
+        htmx.ajax("GET", "/_gopher/panel/fragments/sessions", {
+          target: "#sessions-list",
+          swap: "innerHTML"
+        });
+      }
+
+      function selectSession(sessionID, lastSeq) {
+        if (!sessionID) {
+          return;
+        }
+        state.sessionID = sessionID;
+        state.lastSeq = Number(lastSeq) || 0;
+        highlightSelected();
+        openSource();
+      }
+
+      function openSource() {
+        closeSource();
+        if (!state.sessionID) {
+          return;
+        }
+        var streamURL = "/_gopher/panel/stream/session/" + encodeURIComponent(state.sessionID) + "?after_seq=" + state.lastSeq;
+        var source = new EventSource(streamURL);
+        source.addEventListener("session-event", function (event) {
+          try {
+            var payload = JSON.parse(event.data || "{}");
+            var seq = Number(payload.seq) || 0;
+            if (seq > state.lastSeq) {
+              state.lastSeq = seq;
+            }
+          } catch (err) {
+            console.error("parse stream payload", err);
+          }
+          refreshSessionDetail();
+          refreshSessions();
+        });
+        source.onerror = function () {
+          // EventSource auto-reconnects.
+        };
+        state.source = source;
+      }
+
+      function syncStateFromDetail() {
+        var node = document.querySelector("#session-detail [data-session-id]");
+        if (!node) {
+          return;
+        }
+        var detailSession = node.getAttribute("data-session-id") || "";
+        var detailSeq = Number(node.getAttribute("data-last-seq") || "0") || 0;
+        if (!detailSession) {
+          return;
+        }
+        if (detailSession !== state.sessionID) {
+          state.sessionID = detailSession;
+          state.lastSeq = detailSeq;
+          openSource();
+        } else if (detailSeq > state.lastSeq) {
+          state.lastSeq = detailSeq;
+        }
+        highlightSelected();
+      }
+
+      function highlightSelected() {
+        var nodes = document.querySelectorAll("[data-session-card]");
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          var id = node.getAttribute("data-session-id") || "";
+          if (id && id === state.sessionID) {
+            node.classList.add("session-selected");
+          } else {
+            node.classList.remove("session-selected");
+          }
+        }
+      }
+
+      document.body.addEventListener("click", function (event) {
+        var node = event.target.closest("[data-session-card]");
+        if (!node) {
+          return;
+        }
+        selectSession(node.getAttribute("data-session-id") || "", node.getAttribute("data-last-seq") || "0");
+      });
+
+      document.body.addEventListener("htmx:afterSwap", function (event) {
+        if (!event.detail || !event.detail.target) {
+          return;
+        }
+        if (event.detail.target.id === "session-detail") {
+          syncStateFromDetail();
+        }
+        if (event.detail.target.id === "sessions-list") {
+          highlightSelected();
+        }
+      });
+
+      window.addEventListener("beforeunload", closeSource);
+    })();
+  </script>
+</body>
+</html>

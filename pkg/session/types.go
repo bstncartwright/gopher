@@ -61,14 +61,16 @@ type Event struct {
 type EventType string
 
 const (
-	EventMessage    EventType = "message"
-	EventAgentStart EventType = "agent_start"
-	EventAgentStop  EventType = "agent_stop"
-	EventToolCall   EventType = "tool_call"
-	EventToolResult EventType = "tool_result"
-	EventStatePatch EventType = "state_patch"
-	EventControl    EventType = "control"
-	EventError      EventType = "error"
+	EventMessage            EventType = "message"
+	EventAgentStart         EventType = "agent_start"
+	EventAgentStop          EventType = "agent_stop"
+	EventAgentDelta         EventType = "agent_delta"
+	EventAgentThinkingDelta EventType = "agent_thinking_delta"
+	EventToolCall           EventType = "tool_call"
+	EventToolResult         EventType = "tool_result"
+	EventStatePatch         EventType = "state_patch"
+	EventControl            EventType = "control"
+	EventError              EventType = "error"
 )
 
 type Message struct {

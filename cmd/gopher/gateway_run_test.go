@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/bstncartwright/gopher/pkg/config"
 	fabricts "github.com/bstncartwright/gopher/pkg/fabric/nats"
 	"github.com/bstncartwright/gopher/pkg/node"
+	"github.com/bstncartwright/gopher/pkg/panel"
 	"github.com/bstncartwright/gopher/pkg/scheduler"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
@@ -113,6 +115,22 @@ func TestParseGatewayRunFlagsMatrixOverrides(t *testing.T) {
 	}
 }
 
+func TestParseGatewayRunFlagsPanelOverrides(t *testing.T) {
+	inputs, err := parseGatewayRunFlags([]string{
+		"--panel-listen-addr", "127.0.0.1:4010",
+		"--panel-capture-thinking", "true",
+	})
+	if err != nil {
+		t.Fatalf("parseGatewayRunFlags() error: %v", err)
+	}
+	if inputs.Overrides.PanelListenAddr == nil || *inputs.Overrides.PanelListenAddr != "127.0.0.1:4010" {
+		t.Fatalf("panel listen addr override = %#v", inputs.Overrides.PanelListenAddr)
+	}
+	if inputs.Overrides.PanelCaptureThinking == nil || !*inputs.Overrides.PanelCaptureThinking {
+		t.Fatalf("panel capture thinking override = %#v", inputs.Overrides.PanelCaptureThinking)
+	}
+}
+
 func TestParseGatewayRunFlagsRejectsBadCapability(t *testing.T) {
 	if _, err := parseGatewayRunFlags([]string{"--capability", "badformat"}); err == nil {
 		t.Fatalf("expected parse error for invalid capability")
@@ -183,6 +201,9 @@ func TestRunGatewaySubcommandHelp(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "--matrix-presence-enabled") {
 		t.Fatalf("help output missing matrix presence flags: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "--panel-listen-addr") {
+		t.Fatalf("help output missing panel flags: %q", out.String())
 	}
 }
 
@@ -263,5 +284,51 @@ func waitForRegistryNode(ctx context.Context, registry *scheduler.Registry, node
 			return ctx.Err()
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+type fakePanelRuntime struct {
+	calls atomic.Int64
+}
+
+func (f *fakePanelRuntime) RunWithRetry(ctx context.Context) error {
+	f.calls.Add(1)
+	<-ctx.Done()
+	return nil
+}
+
+func TestStartGatewayPanelInvokedInLimitedMode(t *testing.T) {
+	prev := newGatewayPanel
+	defer func() { newGatewayPanel = prev }()
+
+	fakeRuntime := &fakePanelRuntime{}
+	var gotStore panel.SessionStore
+	newGatewayPanel = func(opts panel.ServerOptions) (panelRuntime, error) {
+		gotStore = opts.Store
+		return fakeRuntime, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	process := &gatewayProcess{registry: scheduler.NewRegistry(0)}
+	cfg := config.GatewayConfig{
+		Panel: config.PanelConfig{ListenAddr: "127.0.0.1:29329"},
+	}
+
+	if err := startGatewayPanel(ctx, cfg, process, nil, log.New(io.Discard, "", 0)); err != nil {
+		t.Fatalf("startGatewayPanel() error: %v", err)
+	}
+
+	deadline := time.After(500 * time.Millisecond)
+	for fakeRuntime.calls.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("expected panel runtime RunWithRetry to be called")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if gotStore != nil {
+		t.Fatalf("expected nil session store in limited mode")
 	}
 }

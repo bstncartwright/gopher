@@ -53,6 +53,12 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if cfg.Matrix.PresenceStatusMsg != "" {
 		t.Fatalf("matrix presence status = %q, want empty", cfg.Matrix.PresenceStatusMsg)
 	}
+	if cfg.Panel.ListenAddr != "127.0.0.1:29329" {
+		t.Fatalf("panel listen addr = %q, want 127.0.0.1:29329", cfg.Panel.ListenAddr)
+	}
+	if cfg.Panel.CaptureThinking {
+		t.Fatalf("panel capture thinking = true, want false")
+	}
 }
 
 func TestLoadGatewayConfigTOMLAndOverrides(t *testing.T) {
@@ -277,6 +283,59 @@ default_timezone = "America/New_York"
 	}
 	if cfg.Cron.DefaultTimezone != "UTC" {
 		t.Fatalf("cron timezone = %q, want UTC", cfg.Cron.DefaultTimezone)
+	}
+}
+
+func TestLoadGatewayConfigPanelFileEnvAndOverrides(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.panel]
+listen_addr = "127.0.0.1:4001"
+capture_thinking = true
+`)
+
+	overrideListen := "127.0.0.1:4003"
+	overrideThinking := true
+	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env: map[string]string{
+			"GOPHER_GATEWAY_PANEL_LISTEN_ADDR":      "127.0.0.1:4002",
+			"GOPHER_GATEWAY_PANEL_CAPTURE_THINKING": "false",
+		},
+		Overrides: GatewayOverrides{
+			PanelListenAddr:      &overrideListen,
+			PanelCaptureThinking: &overrideThinking,
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadGatewayConfig() error: %v", err)
+	}
+	if cfg.Panel.ListenAddr != "127.0.0.1:4003" {
+		t.Fatalf("panel listen addr = %q, want 127.0.0.1:4003", cfg.Panel.ListenAddr)
+	}
+	if !cfg.Panel.CaptureThinking {
+		t.Fatalf("panel capture thinking = false, want true")
+	}
+}
+
+func TestLoadGatewayConfigRejectsNonLoopbackPanelListenAddr(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.panel]
+listen_addr = "0.0.0.0:29329"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected panel listen addr validation error")
 	}
 }
 

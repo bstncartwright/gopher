@@ -1,0 +1,27 @@
+{{if .Error}}
+<div class="empty-state">{{.Error}}</div>
+{{else if not .Sessions}}
+<div class="empty-state">No sessions yet. Start a DM to create one.</div>
+{{else}}
+<div class="session-list">
+  {{range .Sessions}}
+  <button
+    type="button"
+    class="session-card"
+    data-session-card
+    data-session-id="{{.SessionID}}"
+    data-last-seq="{{.LastSeq}}"
+    hx-get="/_gopher/panel/fragments/session/{{.SessionID}}"
+    hx-target="#session-detail"
+    hx-swap="innerHTML"
+  >
+    <span class="session-title">{{.SessionID}}</span>
+    <span class="session-meta">
+      <span class="session-status">{{.Status}}</span>
+      <span class="session-seq">seq {{.LastSeq}}</span>
+      <span class="session-time">{{.UpdatedAt}}</span>
+    </span>
+  </button>
+  {{end}}
+</div>
+{{end}}

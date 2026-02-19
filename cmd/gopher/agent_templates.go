@@ -24,7 +24,7 @@ gopher uses this workspace directory as the agent's working context.
 Before responding:
 
 - Read SOUL.md for identity, tone, and boundaries.
-- Read USER.md for user preferences.
+- Read shared user profile from ../USER.md when present; otherwise read USER.md.
 - Read memory/YYYY-MM-DD.md for today and yesterday if present.
 - In direct/private sessions, also read MEMORY.md if present.
 
@@ -131,7 +131,9 @@ This defines your default self-presentation in user-facing responses.
 func defaultUserTemplate() string {
 	return `# USER.md - About the User
 
-Learn this over time and keep it updated:
+Agent-local user notes (optional). Shared profile should live one level up at ../USER.md when using a multi-agent workspace.
+
+Learn this over time and keep it updated when local overrides are needed:
 
 - Name:
 - Preferred name:
@@ -142,6 +144,24 @@ Learn this over time and keep it updated:
 ## Context
 
 Track goals, active projects, communication preferences, and constraints that help you collaborate effectively.
+`
+}
+
+func defaultSharedUserTemplate() string {
+	return `# USER.md - Shared User Profile
+
+This file is shared by all agents in this workspace collection.
+Keep stable identity/preferences here so every agent starts with the same user context.
+
+- Name:
+- Preferred name:
+- Pronouns (optional):
+- Timezone:
+- Preferences:
+
+## Context
+
+Track goals, active projects, communication preferences, and constraints that should apply to every agent.
 `
 }
 
@@ -179,7 +199,7 @@ Fresh workspace detected. There may be no memory files yet.
 
 1. Introduce yourself naturally.
 2. Ask for preferred name, working style, and constraints.
-3. Fill IDENTITY.md and USER.md.
+3. Fill IDENTITY.md and the shared user profile at ../USER.md (or USER.md if running single-agent).
 4. Update SOUL.md with boundaries and tone.
 5. Create initial memory notes (memory/YYYY-MM-DD.md and optional MEMORY.md).
 

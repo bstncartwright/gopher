@@ -21,11 +21,12 @@ entry shape:
 - `created_at`, `updated_at`
 
 workspace layout per agent:
+- `~/.gopher/agents/USER.md` (shared user profile applied across agents)
 - `~/.gopher/agents/<agent_id>/AGENTS.md`
 - `~/.gopher/agents/<agent_id>/SOUL.md`
 - `~/.gopher/agents/<agent_id>/TOOLS.md`
 - `~/.gopher/agents/<agent_id>/IDENTITY.md`
-- `~/.gopher/agents/<agent_id>/USER.md`
+- `~/.gopher/agents/<agent_id>/USER.md` (optional agent-local overrides)
 - `~/.gopher/agents/<agent_id>/HEARTBEAT.md` (optional; used when heartbeat is configured)
 - `~/.gopher/agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
 - `~/.gopher/agents/<agent_id>/MEMORY.md` (optional)

@@ -35,6 +35,9 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 			t.Fatalf("expected workspace file %s: %v", name, err)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "USER.md")); err != nil {
+		t.Fatalf("expected shared USER.md in workspace root: %v", err)
+	}
 
 	var listOut bytes.Buffer
 	if err := runAgentSubcommand([]string{
@@ -181,5 +184,13 @@ func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
 	}
 	if got, _ := config["model_policy"].(string); got != "zai:glm-5" {
 		t.Fatalf("config model_policy=%q, want zai:glm-5", got)
+	}
+
+	sharedUserBlob, err := os.ReadFile(filepath.Join(workspaceRoot, "USER.md"))
+	if err != nil {
+		t.Fatalf("read shared USER.md: %v", err)
+	}
+	if !strings.Contains(string(sharedUserBlob), "Shared User Profile") {
+		t.Fatalf("expected shared user template in workspace root USER.md")
 	}
 }

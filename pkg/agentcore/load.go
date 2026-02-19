@@ -22,7 +22,7 @@ const (
 )
 
 func defaultShellAllowlistValues() []string {
-	return []string{"echo", "git", "go", "bun", "node", "bash"}
+	return []string{"echo", "git", "go", "bun", "node", "bash", "gopher"}
 }
 
 func LoadAgent(workspacePath string) (*Agent, error) {

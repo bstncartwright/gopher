@@ -22,7 +22,7 @@ func defaultPolicies() AgentPolicies {
 	return AgentPolicies{
 		FSRoots:        []string{"./"},
 		CanShell:       true,
-		ShellAllowlist: []string{"echo", "git", "go", "bun", "node", "bash"},
+		ShellAllowlist: []string{"echo", "git", "go", "bun", "node", "bash", "gopher"},
 		Network: NetworkPolicy{
 			Enabled:      true,
 			AllowDomains: []string{"*"},

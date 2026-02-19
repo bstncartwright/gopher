@@ -37,7 +37,7 @@ func TestLoadAgentDefaultsLegacyMissingNetworkPolicy(t *testing.T) {
   "fs_roots": ["./"],
   "allow_cross_agent_fs": false,
   "can_shell": true,
-  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"],
   "budget": { "max_tokens_per_session": 200000 }
 }`)
 
@@ -69,7 +69,7 @@ func TestLoadAgentDefaultsLegacyMissingShellPolicy(t *testing.T) {
 	if !agent.Policies.CanShell {
 		t.Fatalf("expected shell to default enabled when can_shell is omitted")
 	}
-	if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash"}) {
+	if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash", "gopher"}) {
 		t.Fatalf("shell_allowlist = %#v, want default allowlist", agent.Policies.ShellAllowlist)
 	}
 }
@@ -80,7 +80,7 @@ func TestLoadAgentDefaultsNetworkAllowDomainsWhenEnabledOmitted(t *testing.T) {
   "fs_roots": ["./"],
   "allow_cross_agent_fs": false,
   "can_shell": true,
-  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"],
   "network": { "enabled": true },
   "budget": { "max_tokens_per_session": 200000 }
 }`)
@@ -116,7 +116,7 @@ func TestLoadAgentDefaultsLegacyDisabledNetworkWithoutDomainRestrictions(t *test
   "fs_roots": ["./"],
   "allow_cross_agent_fs": false,
   "can_shell": true,
-  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"],
   `+tc.networkPolicy+`,
   "budget": { "max_tokens_per_session": 200000 }
 }`)
@@ -141,7 +141,7 @@ func TestLoadAgentKeepsExplicitDisabledNetworkWithRestrictedDomains(t *testing.T
   "fs_roots": ["./"],
   "allow_cross_agent_fs": false,
   "can_shell": true,
-  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"],
   "network": { "enabled": false, "allow_domains": ["example.com"] },
   "budget": { "max_tokens_per_session": 200000 }
 }`)
@@ -169,7 +169,7 @@ func TestLoadAgentDefaultsLegacyDisabledShellWithoutRestrictions(t *testing.T) {
 		},
 		{
 			name:        "can_shell false with default shell_allowlist",
-			shellPolicy: `"can_shell": false, "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"]`,
+			shellPolicy: `"can_shell": false, "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"]`,
 		},
 	}
 
@@ -191,7 +191,7 @@ func TestLoadAgentDefaultsLegacyDisabledShellWithoutRestrictions(t *testing.T) {
 			if !agent.Policies.CanShell {
 				t.Fatalf("expected legacy unrestricted shell policy to default enabled")
 			}
-			if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash"}) {
+			if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash", "gopher"}) {
 				t.Fatalf("shell_allowlist = %#v, want default allowlist", agent.Policies.ShellAllowlist)
 			}
 		})

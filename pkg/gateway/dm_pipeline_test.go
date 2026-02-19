@@ -292,6 +292,113 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}
 }
 
+func TestDMPipelineIgnoresManagedSenderOutsideDelegationRoom(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "writer",
+		AgentByRecipient: map[string]sessionrt.ActorID{
+			"@writer:hs": "writer",
+		},
+		RecipientByAgent: map[sessionrt.ActorID]string{
+			"writer": "@writer:hs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "writer", Type: sessionrt.ActorAgent},
+			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!dm:one", created.ID, "writer", "@writer:hs", ConversationModeDM); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "!dm:one",
+		SenderID:       "@writer:hs",
+		SenderManaged:  true,
+		RecipientID:    "@writer:hs",
+		Text:           "@writer:hs should be ignored in dm mode",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := fake.sentCount(); got != 0 {
+		t.Fatalf("outbound count = %d, want 0", got)
+	}
+}
+
+func TestDMPipelineAcceptsManagedSenderInDelegationRoom(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "delegation-ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "writer",
+		AgentByRecipient: map[string]sessionrt.ActorID{
+			"@writer:hs": "writer",
+		},
+		RecipientByAgent: map[sessionrt.ActorID]string{
+			"writer": "@writer:hs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "writer", Type: sessionrt.ActorAgent},
+			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!room:delegate", created.ID, "writer", "@writer:hs", ConversationModeDelegation); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "!room:delegate",
+		SenderID:       "@writer:hs",
+		SenderManaged:  true,
+		RecipientID:    "@writer:hs",
+		Text:           "@writer:hs please continue",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	got := fake.lastSent()
+	if got.Text != "delegation-ack" {
+		t.Fatalf("last outbound text = %q, want delegation-ack", got.Text)
+	}
+}
+
 func TestDMPipelineRoutesByRecipientToMatchingAgentWorkspace(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
@@ -490,7 +597,7 @@ func TestDMPipelineHandleInboundReturnsBeforeSlowSendCompletes(t *testing.T) {
 	})
 }
 
-func TestDMPipelineRebindsConversationAfterSessionFailure(t *testing.T) {
+func TestDMPipelineRejectsConversationAfterSessionFailure(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:    store,
@@ -527,33 +634,21 @@ func TestDMPipelineRebindsConversationAfterSessionFailure(t *testing.T) {
 		return sessions[0].Status == sessionrt.SessionFailed
 	})
 
-	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+	err = pipeline.HandleInbound(ctx, transport.InboundMessage{
 		ConversationID: "!dm:recover",
 		SenderID:       "@user:hs",
 		Text:           "second",
-	}); err != nil {
-		t.Fatalf("second HandleInbound() error: %v", err)
-	}
-
-	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() > 0
 	})
+	if err == nil {
+		t.Fatalf("expected second HandleInbound() to fail for inactive bound session")
+	}
 
 	sessions, err := store.ListSessions(context.Background())
 	if err != nil {
 		t.Fatalf("ListSessions() error: %v", err)
 	}
-	if len(sessions) < 2 {
-		t.Fatalf("session count = %d, want >= 2 after rebinding", len(sessions))
-	}
-	active := 0
-	for _, session := range sessions {
-		if session.Status == sessionrt.SessionActive {
-			active++
-		}
-	}
-	if active == 0 {
-		t.Fatalf("expected at least one active session after rebinding")
+	if len(sessions) != 1 {
+		t.Fatalf("session count = %d, want 1 with strict room/session binding", len(sessions))
 	}
 }
 

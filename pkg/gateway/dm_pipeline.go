@@ -19,12 +19,14 @@ type DMPipelineOptions struct {
 	AgentByRecipient map[string]sessionrt.ActorID
 	RecipientByAgent map[sessionrt.ActorID]string
 	Conversations    *ConversationSessionMap
+	Bindings         ConversationBindingStore
 	Logger           *log.Logger
 }
 
 type conversationRoute struct {
 	AgentID     sessionrt.ActorID
 	RecipientID string
+	Mode        ConversationMode
 }
 
 type HeartbeatTarget struct {
@@ -40,6 +42,7 @@ type DMPipeline struct {
 	agentByRecip  map[string]sessionrt.ActorID
 	recipByAgent  map[sessionrt.ActorID]string
 	conversations *ConversationSessionMap
+	bindings      ConversationBindingStore
 	logger        *log.Logger
 
 	setupMu      sync.Mutex
@@ -87,6 +90,10 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 	if conversations == nil {
 		conversations = NewConversationSessionMap()
 	}
+	bindings := opts.Bindings
+	if bindings == nil {
+		bindings = NewInMemoryConversationBindingStore()
+	}
 	agentByRecip := normalizeRecipientAgents(opts.AgentByRecipient)
 	recipByAgent := normalizeAgentRecipients(opts.RecipientByAgent)
 	for recipientID, actorID := range agentByRecip {
@@ -101,12 +108,17 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		agentByRecip:  agentByRecip,
 		recipByAgent:  recipByAgent,
 		conversations: conversations,
+		bindings:      bindings,
 		logger:        opts.Logger,
 		subscribed:    map[sessionrt.SessionID]struct{}{},
 		lastFallback:  map[string]time.Time{},
 		processing:    map[string]int{},
 		routes:        map[string]conversationRoute{},
 		heartbeats:    map[string]heartbeatState{},
+	}
+	for _, binding := range bindings.List() {
+		pipeline.conversations.Set(binding.ConversationID, binding.SessionID)
+		pipeline.setConversationRoute(binding.ConversationID, binding.AgentID, binding.RecipientID, binding.Mode)
 	}
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
 	return pipeline, nil
@@ -117,6 +129,15 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	if conversationID == "" {
 		return nil
 	}
+	if inbound.SenderManaged {
+		mode := p.conversationModeFor(conversationID)
+		if mode != ConversationModeDelegation {
+			return nil
+		}
+		if existingSessionID, ok := p.conversations.Get(conversationID); !ok || !p.isSessionActive(ctx, existingSessionID) {
+			return nil
+		}
+	}
 
 	agentID, recipientID := p.routeForInbound(inbound.RecipientID)
 	sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.SenderID, agentID, recipientID)
@@ -125,10 +146,20 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	}
 	p.startProcessing(conversationID)
 
+	from := matrixActorID(inbound.SenderID)
+	if inbound.SenderManaged {
+		if managedActor, ok := p.actorForManagedSender(inbound.SenderID); ok {
+			from = managedActor
+		} else {
+			p.finishProcessing(conversationID)
+			return nil
+		}
+	}
+
 	// Appservice transactions should be acknowledged quickly; dispatch session work async.
 	p.dispatchInboundEvent(sessionrt.Event{
 		SessionID: sessionID,
-		From:      matrixActorID(inbound.SenderID),
+		From:      from,
 		Type:      sessionrt.EventMessage,
 		Payload: sessionrt.Message{
 			Role:    sessionrt.RoleUser,
@@ -154,27 +185,33 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 	if strings.TrimSpace(string(desiredAgentID)) == "" {
 		desiredAgentID = p.agentID
 	}
-	if existing, ok := p.conversations.Get(conversationID); ok {
-		if p.isSessionActive(ctx, existing) && p.conversationAgentCompatible(conversationID, desiredAgentID) {
-			if err := p.ensureSubscription(conversationID, existing); err != nil {
-				return "", err
-			}
-			p.setConversationRoute(conversationID, desiredAgentID, recipientID)
-			return existing, nil
+	if existing, ok := p.lookupConversationSession(conversationID); ok {
+		if !p.isSessionActive(ctx, existing) {
+			return "", fmt.Errorf("conversation %q is bound to inactive session %q", conversationID, existing)
 		}
+		if err := p.ensureSubscription(conversationID, existing); err != nil {
+			return "", err
+		}
+		if _, routeExists := p.currentRoute(conversationID); !routeExists {
+			p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
+		}
+		return existing, nil
 	}
 
 	p.setupMu.Lock()
 	defer p.setupMu.Unlock()
 
-	if existing, ok := p.conversations.Get(conversationID); ok {
-		if p.isSessionActive(ctx, existing) && p.conversationAgentCompatible(conversationID, desiredAgentID) {
-			if err := p.ensureSubscription(conversationID, existing); err != nil {
-				return "", err
-			}
-			p.setConversationRoute(conversationID, desiredAgentID, recipientID)
-			return existing, nil
+	if existing, ok := p.lookupConversationSession(conversationID); ok {
+		if !p.isSessionActive(ctx, existing) {
+			return "", fmt.Errorf("conversation %q is bound to inactive session %q", conversationID, existing)
 		}
+		if err := p.ensureSubscription(conversationID, existing); err != nil {
+			return "", err
+		}
+		if _, routeExists := p.currentRoute(conversationID); !routeExists {
+			p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
+		}
+		return existing, nil
 	}
 
 	created, err := p.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
@@ -190,8 +227,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		_ = p.manager.CancelSession(context.Background(), created.ID)
 		return "", err
 	}
-	p.conversations.Set(conversationID, created.ID)
-	p.setConversationRoute(conversationID, desiredAgentID, recipientID)
+	if err := p.bindConversation(conversationID, created.ID, desiredAgentID, recipientID, ConversationModeDM); err != nil {
+		_ = p.manager.CancelSession(context.Background(), created.ID)
+		return "", err
+	}
 	return created.ID, nil
 }
 
@@ -267,7 +306,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			}
 			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 				ConversationID: conversationID,
-				SenderID:       p.recipientForConversation(conversationID),
+				SenderID:       p.senderForConversationEvent(conversationID, event.From),
 				Text:           msg.Content,
 			}); err != nil && p.logger != nil {
 				p.logger.Printf("send dm response failed: %v", err)
@@ -339,6 +378,79 @@ func (p *DMPipeline) isCurrentConversationSession(conversationID string, session
 	return ok && current == sessionID
 }
 
+func (p *DMPipeline) lookupConversationSession(conversationID string) (sessionrt.SessionID, bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", false
+	}
+	if existing, ok := p.conversations.Get(conversationID); ok {
+		return existing, true
+	}
+	if p.bindings == nil {
+		return "", false
+	}
+	binding, ok := p.bindings.GetByConversation(conversationID)
+	if !ok {
+		return "", false
+	}
+	p.conversations.Set(conversationID, binding.SessionID)
+	p.setConversationRoute(conversationID, binding.AgentID, binding.RecipientID, binding.Mode)
+	return binding.SessionID, true
+}
+
+func (p *DMPipeline) bindConversation(conversationID string, sessionID sessionrt.SessionID, agentID sessionrt.ActorID, recipientID string, mode ConversationMode) error {
+	conversationID = strings.TrimSpace(conversationID)
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if conversationID == "" || strings.TrimSpace(string(sessionID)) == "" {
+		return fmt.Errorf("conversation id and session id are required")
+	}
+	if strings.TrimSpace(string(agentID)) == "" {
+		agentID = p.agentID
+	}
+	if strings.TrimSpace(recipientID) == "" {
+		recipientID = strings.TrimSpace(p.recipByAgent[agentID])
+	}
+	mode = normalizeConversationMode(mode)
+	if p.bindings != nil {
+		if err := p.bindings.Set(ConversationBinding{
+			ConversationID: conversationID,
+			SessionID:      sessionID,
+			AgentID:        agentID,
+			RecipientID:    recipientID,
+			Mode:           mode,
+		}); err != nil {
+			return err
+		}
+	}
+	p.conversations.Set(conversationID, sessionID)
+	p.setConversationRoute(conversationID, agentID, recipientID, mode)
+	return nil
+}
+
+func (p *DMPipeline) BindConversation(conversationID string, sessionID sessionrt.SessionID, agentID sessionrt.ActorID, recipientID string, mode ConversationMode) error {
+	if err := p.bindConversation(conversationID, sessionID, agentID, recipientID, mode); err != nil {
+		return err
+	}
+	return p.ensureSubscription(conversationID, sessionID)
+}
+
+func (p *DMPipeline) ConversationForSession(sessionID sessionrt.SessionID) (string, bool) {
+	if p.bindings == nil {
+		conversations := p.conversations.Snapshot()
+		for conversationID, currentSessionID := range conversations {
+			if currentSessionID == sessionID {
+				return conversationID, true
+			}
+		}
+		return "", false
+	}
+	binding, ok := p.bindings.GetBySession(sessionID)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(binding.ConversationID), true
+}
+
 func (p *DMPipeline) routeForInbound(recipientID string) (sessionrt.ActorID, string) {
 	recipientNorm := normalizeRecipientID(recipientID)
 	if recipientNorm != "" {
@@ -354,7 +466,7 @@ func (p *DMPipeline) routeForInbound(recipientID string) (sessionrt.ActorID, str
 	return agentID, fallbackRecipient
 }
 
-func (p *DMPipeline) setConversationRoute(conversationID string, agentID sessionrt.ActorID, recipientID string) {
+func (p *DMPipeline) setConversationRoute(conversationID string, agentID sessionrt.ActorID, recipientID string, mode ConversationMode) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return
@@ -366,30 +478,25 @@ func (p *DMPipeline) setConversationRoute(conversationID string, agentID session
 	if recipientID == "" {
 		recipientID = strings.TrimSpace(p.recipByAgent[agentID])
 	}
+	mode = normalizeConversationMode(mode)
 	p.routeMu.Lock()
 	defer p.routeMu.Unlock()
 	p.routes[conversationID] = conversationRoute{
 		AgentID:     agentID,
 		RecipientID: recipientID,
+		Mode:        mode,
 	}
 }
 
-func (p *DMPipeline) conversationAgentCompatible(conversationID string, desired sessionrt.ActorID) bool {
+func (p *DMPipeline) currentRoute(conversationID string) (conversationRoute, bool) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
-		return true
-	}
-	desired = sessionrt.ActorID(strings.TrimSpace(string(desired)))
-	if desired == "" {
-		return true
+		return conversationRoute{}, false
 	}
 	p.routeMu.RLock()
 	defer p.routeMu.RUnlock()
 	route, ok := p.routes[conversationID]
-	if !ok || strings.TrimSpace(string(route.AgentID)) == "" {
-		return true
-	}
-	return route.AgentID == desired
+	return route, ok
 }
 
 func (p *DMPipeline) recipientForConversation(conversationID string) string {
@@ -397,10 +504,18 @@ func (p *DMPipeline) recipientForConversation(conversationID string) string {
 	if conversationID == "" {
 		return ""
 	}
-	p.routeMu.RLock()
-	route, ok := p.routes[conversationID]
-	p.routeMu.RUnlock()
+	route, ok := p.currentRoute(conversationID)
 	if !ok {
+		if p.bindings != nil {
+			if binding, exists := p.bindings.GetByConversation(conversationID); exists {
+				if strings.TrimSpace(binding.RecipientID) != "" {
+					return strings.TrimSpace(binding.RecipientID)
+				}
+				if strings.TrimSpace(string(binding.AgentID)) != "" {
+					return strings.TrimSpace(p.recipByAgent[binding.AgentID])
+				}
+			}
+		}
 		return ""
 	}
 	if strings.TrimSpace(route.RecipientID) != "" {
@@ -412,23 +527,78 @@ func (p *DMPipeline) recipientForConversation(conversationID string) string {
 	return ""
 }
 
+func (p *DMPipeline) senderForConversationEvent(conversationID string, eventFrom sessionrt.ActorID) string {
+	from := sessionrt.ActorID(strings.TrimSpace(string(eventFrom)))
+	if strings.TrimSpace(string(from)) != "" {
+		if sender := strings.TrimSpace(p.recipByAgent[from]); sender != "" {
+			return sender
+		}
+	}
+	return p.recipientForConversation(conversationID)
+}
+
+func (p *DMPipeline) conversationModeFor(conversationID string) ConversationMode {
+	route, ok := p.currentRoute(conversationID)
+	if ok {
+		return normalizeConversationMode(route.Mode)
+	}
+	if p.bindings != nil {
+		if binding, ok := p.bindings.GetByConversation(conversationID); ok {
+			return normalizeConversationMode(binding.Mode)
+		}
+	}
+	return ConversationModeDM
+}
+
+func (p *DMPipeline) actorForManagedSender(senderID string) (sessionrt.ActorID, bool) {
+	actor, ok := p.agentByRecip[normalizeRecipientID(senderID)]
+	if !ok || strings.TrimSpace(string(actor)) == "" {
+		return "", false
+	}
+	return actor, true
+}
+
 func (p *DMPipeline) HeartbeatTargets() []HeartbeatTarget {
-	conversations := p.conversations.Snapshot()
-	if len(conversations) == 0 {
+	if p.bindings == nil {
+		conversations := p.conversations.Snapshot()
+		if len(conversations) == 0 {
+			return nil
+		}
+		out := make([]HeartbeatTarget, 0, len(conversations))
+		for conversationID, sessionID := range conversations {
+			conversationID = strings.TrimSpace(conversationID)
+			if conversationID == "" || strings.TrimSpace(string(sessionID)) == "" {
+				continue
+			}
+			agentID := p.agentID
+			if route, ok := p.currentRoute(conversationID); ok && strings.TrimSpace(string(route.AgentID)) != "" {
+				agentID = route.AgentID
+			}
+			out = append(out, HeartbeatTarget{
+				ConversationID: conversationID,
+				SessionID:      sessionID,
+				AgentID:        agentID,
+			})
+		}
+		return out
+	}
+	bindings := p.bindings.List()
+	if len(bindings) == 0 {
 		return nil
 	}
-	out := make([]HeartbeatTarget, 0, len(conversations))
-	for conversationID, sessionID := range conversations {
-		conversationID = strings.TrimSpace(conversationID)
+	out := make([]HeartbeatTarget, 0, len(bindings))
+	for _, binding := range bindings {
+		conversationID := strings.TrimSpace(binding.ConversationID)
+		sessionID := sessionrt.SessionID(strings.TrimSpace(string(binding.SessionID)))
 		if conversationID == "" || strings.TrimSpace(string(sessionID)) == "" {
 			continue
 		}
 		agentID := p.agentID
-		p.routeMu.RLock()
-		if route, ok := p.routes[conversationID]; ok && strings.TrimSpace(string(route.AgentID)) != "" {
+		if route, ok := p.currentRoute(conversationID); ok && strings.TrimSpace(string(route.AgentID)) != "" {
 			agentID = route.AgentID
+		} else if strings.TrimSpace(string(binding.AgentID)) != "" {
+			agentID = binding.AgentID
 		}
-		p.routeMu.RUnlock()
 		out = append(out, HeartbeatTarget{
 			ConversationID: conversationID,
 			SessionID:      sessionID,

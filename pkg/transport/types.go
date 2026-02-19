@@ -5,6 +5,7 @@ import "context"
 type InboundMessage struct {
 	ConversationID string
 	SenderID       string
+	SenderManaged  bool
 	RecipientID    string
 	EventID        string
 	Text           string

@@ -69,6 +69,9 @@ func TestWebSearchMCPToolRunSuccess(t *testing.T) {
 			if gotQuery := strings.TrimSpace(args["query"].(string)); gotQuery != "what is mcp" {
 				t.Fatalf("query = %q, want what is mcp", gotQuery)
 			}
+			if gotSearchQuery := strings.TrimSpace(args["search_query"].(string)); gotSearchQuery != "what is mcp" {
+				t.Fatalf("search_query = %q, want what is mcp", gotSearchQuery)
+			}
 			if gotLang := strings.TrimSpace(args["lang"].(string)); gotLang != "en" {
 				t.Fatalf("lang = %q, want en", gotLang)
 			}

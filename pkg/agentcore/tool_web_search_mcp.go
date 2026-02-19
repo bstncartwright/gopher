@@ -138,11 +138,15 @@ func (t *webSearchMCPTool) Run(ctx context.Context, input ToolInput) (ToolOutput
 	}
 
 	selectedTool := selectMCPToolName(strings.TrimSpace(toolName), availableTools)
-	args := map[string]any{"query": query}
+	args := map[string]any{
+		"query":        query,
+		"search_query": query,
+	}
 	for key, value := range extraParams {
 		args[key] = value
 	}
 	args["query"] = query
+	args["search_query"] = query
 
 	callToolReq := map[string]any{
 		"jsonrpc": "2.0",

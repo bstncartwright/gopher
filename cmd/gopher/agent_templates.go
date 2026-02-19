@@ -226,7 +226,7 @@ func defaultPoliciesTemplate() string {
   "fs_roots": ["./"],
   "allow_cross_agent_fs": false,
   "can_shell": true,
-  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"],
   "network": {
     "enabled": true,
     "allow_domains": ["*"]

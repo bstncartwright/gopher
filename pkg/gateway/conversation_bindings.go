@@ -21,13 +21,14 @@ const (
 )
 
 type ConversationBinding struct {
-	ConversationID string              `json:"conversation_id"`
-	SessionID      sessionrt.SessionID `json:"session_id"`
-	AgentID        sessionrt.ActorID   `json:"agent_id,omitempty"`
-	RecipientID    string              `json:"recipient_id,omitempty"`
-	Mode           ConversationMode    `json:"mode"`
-	CreatedAt      time.Time           `json:"created_at"`
-	UpdatedAt      time.Time           `json:"updated_at"`
+	ConversationID   string              `json:"conversation_id"`
+	ConversationName string              `json:"conversation_name,omitempty"`
+	SessionID        sessionrt.SessionID `json:"session_id"`
+	AgentID          sessionrt.ActorID   `json:"agent_id,omitempty"`
+	RecipientID      string              `json:"recipient_id,omitempty"`
+	Mode             ConversationMode    `json:"mode"`
+	CreatedAt        time.Time           `json:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at"`
 }
 
 type ConversationBindingStore interface {
@@ -100,6 +101,9 @@ func (s *FileConversationBindingStore) Set(binding ConversationBinding) error {
 	defer s.mu.Unlock()
 	if existing, ok := s.items[normalized.ConversationID]; ok {
 		normalized.CreatedAt = existing.CreatedAt
+		if normalized.ConversationName == "" {
+			normalized.ConversationName = existing.ConversationName
+		}
 	}
 	for conversationID, existing := range s.items {
 		if conversationID == normalized.ConversationID {
@@ -227,6 +231,9 @@ func (s *InMemoryConversationBindingStore) Set(binding ConversationBinding) erro
 	defer s.mu.Unlock()
 	if existing, ok := s.items[normalized.ConversationID]; ok {
 		normalized.CreatedAt = existing.CreatedAt
+		if normalized.ConversationName == "" {
+			normalized.ConversationName = existing.ConversationName
+		}
 	}
 	for conversationID, existing := range s.items {
 		if conversationID == normalized.ConversationID {
@@ -258,6 +265,7 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 	if conversationID == "" {
 		return ConversationBinding{}, fmt.Errorf("conversation id is required")
 	}
+	conversationName := strings.TrimSpace(binding.ConversationName)
 	sessionID := sessionrt.SessionID(strings.TrimSpace(string(binding.SessionID)))
 	if strings.TrimSpace(string(sessionID)) == "" {
 		return ConversationBinding{}, fmt.Errorf("session id is required")
@@ -276,13 +284,14 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 		updatedAt = now
 	}
 	return ConversationBinding{
-		ConversationID: conversationID,
-		SessionID:      sessionID,
-		AgentID:        agentID,
-		RecipientID:    recipientID,
-		Mode:           mode,
-		CreatedAt:      createdAt,
-		UpdatedAt:      updatedAt,
+		ConversationID:   conversationID,
+		ConversationName: conversationName,
+		SessionID:        sessionID,
+		AgentID:          agentID,
+		RecipientID:      recipientID,
+		Mode:             mode,
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
 	}, nil
 }
 
@@ -298,6 +307,7 @@ func normalizeConversationMode(mode ConversationMode) ConversationMode {
 func cloneConversationBinding(in ConversationBinding) ConversationBinding {
 	out := in
 	out.ConversationID = strings.TrimSpace(out.ConversationID)
+	out.ConversationName = strings.TrimSpace(out.ConversationName)
 	out.SessionID = sessionrt.SessionID(strings.TrimSpace(string(out.SessionID)))
 	out.AgentID = sessionrt.ActorID(strings.TrimSpace(string(out.AgentID)))
 	out.RecipientID = strings.TrimSpace(out.RecipientID)

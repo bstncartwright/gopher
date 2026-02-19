@@ -305,6 +305,48 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}
 }
 
+func TestDMPipelinePersistsConversationNameFromInbound(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	bindings := NewInMemoryConversationBindingStore()
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		Bindings:  bindings,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID:   "!dm:name",
+		ConversationName: "Writer Room",
+		SenderID:         "@user:hs",
+		Text:             "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	binding, ok := bindings.GetByConversation("!dm:name")
+	if !ok {
+		t.Fatalf("expected binding for conversation")
+	}
+	if binding.ConversationName != "Writer Room" {
+		t.Fatalf("conversation name = %q, want Writer Room", binding.ConversationName)
+	}
+}
+
 func TestDMPipelineIgnoresManagedSenderOutsideDelegationRoom(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

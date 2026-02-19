@@ -36,20 +36,29 @@ type SessionStore interface {
 	ListSessions(ctx context.Context) ([]sessionrt.SessionRecord, error)
 }
 
+type SessionMetadata struct {
+	ConversationID   string
+	ConversationName string
+}
+
+type SessionMetadataResolver func(sessionID sessionrt.SessionID) (SessionMetadata, bool)
+
 type ServerOptions struct {
-	ListenAddr   string
-	Logger       *log.Logger
-	Store        SessionStore
-	NodeSnapshot func() []scheduler.NodeInfo
+	ListenAddr      string
+	Logger          *log.Logger
+	Store           SessionStore
+	SessionMetadata SessionMetadataResolver
+	NodeSnapshot    func() []scheduler.NodeInfo
 }
 
 type Server struct {
-	listenAddr   string
-	logger       *log.Logger
-	store        SessionStore
-	nodeSnapshot func() []scheduler.NodeInfo
-	templates    *template.Template
-	assets       fs.FS
+	listenAddr      string
+	logger          *log.Logger
+	store           SessionStore
+	sessionMetadata SessionMetadataResolver
+	nodeSnapshot    func() []scheduler.NodeInfo
+	templates       *template.Template
+	assets          fs.FS
 }
 
 type pageData struct {
@@ -76,15 +85,19 @@ type sessionsData struct {
 }
 
 type sessionRow struct {
-	SessionID string
-	Status    string
-	UpdatedAt string
-	LastSeq   uint64
+	SessionID      string
+	Title          string
+	ConversationID string
+	Status         string
+	UpdatedAt      string
+	LastSeq        uint64
 }
 
 type sessionDetailData struct {
 	HasSessionStore bool
 	SessionID       string
+	Title           string
+	ConversationID  string
 	Error           string
 	LastSeq         uint64
 	Events          []eventRow
@@ -118,12 +131,13 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		nodeSnapshot = func() []scheduler.NodeInfo { return nil }
 	}
 	return &Server{
-		listenAddr:   listenAddr,
-		logger:       opts.Logger,
-		store:        opts.Store,
-		nodeSnapshot: nodeSnapshot,
-		templates:    tpl,
-		assets:       assetsFS,
+		listenAddr:      listenAddr,
+		logger:          opts.Logger,
+		store:           opts.Store,
+		sessionMetadata: opts.SessionMetadata,
+		nodeSnapshot:    nodeSnapshot,
+		templates:       tpl,
+		assets:          assetsFS,
 	}, nil
 }
 
@@ -248,11 +262,22 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]sessionRow, 0, len(records))
 	for _, record := range records {
+		sessionID := strings.TrimSpace(string(record.SessionID))
+		metadata := s.lookupSessionMetadata(record.SessionID)
+		title := metadata.ConversationName
+		if title == "" {
+			title = metadata.ConversationID
+		}
+		if title == "" {
+			title = sessionID
+		}
 		rows = append(rows, sessionRow{
-			SessionID: strings.TrimSpace(string(record.SessionID)),
-			Status:    sessionStatusText(record.Status),
-			UpdatedAt: formatTime(record.UpdatedAt),
-			LastSeq:   record.LastSeq,
+			SessionID:      sessionID,
+			Title:          title,
+			ConversationID: metadata.ConversationID,
+			Status:         sessionStatusText(record.Status),
+			UpdatedAt:      formatTime(record.UpdatedAt),
+			LastSeq:        record.LastSeq,
 		})
 	}
 	data.Sessions = rows
@@ -284,6 +309,15 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	data.Events = toEventRows(events)
 	if len(events) > 0 {
 		data.LastSeq = events[len(events)-1].Seq
+	}
+	metadata := s.lookupSessionMetadata(sessionrt.SessionID(data.SessionID))
+	data.ConversationID = metadata.ConversationID
+	if metadata.ConversationName != "" {
+		data.Title = metadata.ConversationName
+	} else if metadata.ConversationID != "" {
+		data.Title = metadata.ConversationID
+	} else {
+		data.Title = data.SessionID
 	}
 	s.renderTemplate(w, "session_detail.html", data)
 }
@@ -389,6 +423,19 @@ func (s *Server) logf(format string, args ...any) {
 		return
 	}
 	s.logger.Printf(format, args...)
+}
+
+func (s *Server) lookupSessionMetadata(sessionID sessionrt.SessionID) SessionMetadata {
+	if s.sessionMetadata == nil {
+		return SessionMetadata{}
+	}
+	metadata, ok := s.sessionMetadata(sessionID)
+	if !ok {
+		return SessionMetadata{}
+	}
+	metadata.ConversationID = strings.TrimSpace(metadata.ConversationID)
+	metadata.ConversationName = strings.TrimSpace(metadata.ConversationName)
+	return metadata
 }
 
 func writeJSON(w http.ResponseWriter, payload any) {

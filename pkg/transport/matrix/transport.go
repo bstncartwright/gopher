@@ -48,6 +48,7 @@ type Transport struct {
 	managedUserIDs    []string
 	managedUsers      map[string]struct{}
 	roomManagedUsers  map[string]map[string]struct{}
+	roomNames         map[string]string
 	richTextEnabled   bool
 	presenceEnabled   bool
 	presenceInterval  time.Duration
@@ -226,6 +227,7 @@ func New(opts Options) (*Transport, error) {
 		managedUserIDs:    managedUserIDs,
 		managedUsers:      managedUsers,
 		roomManagedUsers:  map[string]map[string]struct{}{},
+		roomNames:         map[string]string{},
 		richTextEnabled:   opts.RichTextEnabled,
 		presenceEnabled:   presenceEnabled,
 		presenceInterval:  presenceInterval,
@@ -865,6 +867,10 @@ func (t *Transport) handleTransaction(writer http.ResponseWriter, request *http.
 
 	for _, event := range body.Events {
 		t.trackManagedRoomMembership(event)
+		t.trackRoomName(event)
+	}
+
+	for _, event := range body.Events {
 		if t.shouldSkipEvent(event) {
 			continue
 		}
@@ -959,15 +965,6 @@ func (t *Transport) invitedManagedUser(event matrixEvent) (string, bool) {
 		return t.managedUserIDs[0], true
 	}
 	return "", false
-}
-
-func (t *Transport) isBotInvite(event matrixEvent) bool {
-	_, ok := t.invitedManagedUser(event)
-	return ok
-}
-
-func (t *Transport) joinRoom(ctx context.Context, roomID string) error {
-	return t.joinRoomAs(ctx, roomID, t.resolveRoomManagedUser(roomID))
 }
 
 func (t *Transport) joinRoomAs(ctx context.Context, roomID string, userID string) error {
@@ -1077,12 +1074,13 @@ func (t *Transport) toInboundMessage(event matrixEvent) (transport.InboundMessag
 		return transport.InboundMessage{}, false
 	}
 	return transport.InboundMessage{
-		ConversationID: event.RoomID,
-		SenderID:       event.Sender,
-		SenderManaged:  t.isManagedUser(event.Sender),
-		RecipientID:    t.resolveRoomManagedUser(event.RoomID),
-		EventID:        strings.TrimSpace(event.EventID),
-		Text:           body,
+		ConversationID:   event.RoomID,
+		ConversationName: t.resolveRoomName(event.RoomID),
+		SenderID:         event.Sender,
+		SenderManaged:    t.isManagedUser(event.Sender),
+		RecipientID:      t.resolveRoomManagedUser(event.RoomID),
+		EventID:          strings.TrimSpace(event.EventID),
+		Text:             body,
 	}, true
 }
 
@@ -1141,6 +1139,52 @@ func (t *Transport) trackManagedRoomMembership(event matrixEvent) {
 	case "leave", "ban":
 		t.clearRoomManagedUser(roomID, userID)
 	}
+}
+
+func (t *Transport) trackRoomName(event matrixEvent) {
+	roomID := strings.TrimSpace(event.RoomID)
+	if roomID == "" {
+		return
+	}
+	switch strings.TrimSpace(event.Type) {
+	case "m.room.name":
+		name, _ := event.Content["name"].(string)
+		t.setRoomName(roomID, name)
+	case "m.room.canonical_alias":
+		if t.resolveRoomName(roomID) != "" {
+			return
+		}
+		alias, _ := event.Content["alias"].(string)
+		t.setRoomName(roomID, alias)
+	}
+}
+
+func (t *Transport) setRoomName(roomID, name string) {
+	roomID = strings.TrimSpace(roomID)
+	name = strings.TrimSpace(name)
+	if roomID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.roomNames == nil {
+		t.roomNames = map[string]string{}
+	}
+	if name == "" {
+		delete(t.roomNames, roomID)
+		return
+	}
+	t.roomNames[roomID] = name
+}
+
+func (t *Transport) resolveRoomName(roomID string) string {
+	roomID = strings.TrimSpace(roomID)
+	if roomID == "" {
+		return ""
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return strings.TrimSpace(t.roomNames[roomID])
 }
 
 func (t *Transport) setRoomManagedUser(roomID, userID string) {

@@ -303,8 +303,10 @@ func TestStartGatewayPanelInvokedInLimitedMode(t *testing.T) {
 
 	fakeRuntime := &fakePanelRuntime{}
 	var gotStore panel.SessionStore
+	var gotMetadata panel.SessionMetadataResolver
 	newGatewayPanel = func(opts panel.ServerOptions) (panelRuntime, error) {
 		gotStore = opts.Store
+		gotMetadata = opts.SessionMetadata
 		return fakeRuntime, nil
 	}
 
@@ -315,7 +317,7 @@ func TestStartGatewayPanelInvokedInLimitedMode(t *testing.T) {
 		Panel: config.PanelConfig{ListenAddr: "127.0.0.1:29329"},
 	}
 
-	if err := startGatewayPanel(ctx, cfg, process, nil, log.New(io.Discard, "", 0)); err != nil {
+	if err := startGatewayPanel(ctx, cfg, process, nil, nil, log.New(io.Discard, "", 0)); err != nil {
 		t.Fatalf("startGatewayPanel() error: %v", err)
 	}
 
@@ -330,5 +332,8 @@ func TestStartGatewayPanelInvokedInLimitedMode(t *testing.T) {
 	}
 	if gotStore != nil {
 		t.Fatalf("expected nil session store in limited mode")
+	}
+	if gotMetadata != nil {
+		t.Fatalf("expected nil session metadata resolver in limited mode")
 	}
 }

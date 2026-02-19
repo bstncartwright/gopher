@@ -136,6 +136,16 @@
         highlightSelected();
       }
 
+      function scrollDetailToBottom() {
+        var container = document.getElementById("session-detail");
+        if (!container) {
+          return;
+        }
+        requestAnimationFrame(function () {
+          container.scrollTop = container.scrollHeight;
+        });
+      }
+
       function highlightSelected() {
         var nodes = document.querySelectorAll("[data-session-card]");
         for (var i = 0; i < nodes.length; i++) {
@@ -163,6 +173,7 @@
         }
         if (event.detail.target.id === "session-detail") {
           syncStateFromDetail();
+          scrollDetailToBottom();
         }
         if (event.detail.target.id === "sessions-list") {
           highlightSelected();

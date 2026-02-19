@@ -14,11 +14,12 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 		t.Fatalf("NewFileConversationBindingStore() error: %v", err)
 	}
 	err = store.Set(ConversationBinding{
-		ConversationID: "!dm:one",
-		SessionID:      "sess-1",
-		AgentID:        "agent:a",
-		RecipientID:    "@agent:local",
-		Mode:           ConversationModeDM,
+		ConversationID:   "!dm:one",
+		ConversationName: "Writer Room",
+		SessionID:        "sess-1",
+		AgentID:          "agent:a",
+		RecipientID:      "@agent:local",
+		Mode:             ConversationModeDM,
 	})
 	if err != nil {
 		t.Fatalf("Set() error: %v", err)
@@ -37,6 +38,9 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 	}
 	if got.Mode != ConversationModeDM {
 		t.Fatalf("mode = %q, want dm", got.Mode)
+	}
+	if got.ConversationName != "Writer Room" {
+		t.Fatalf("conversation name = %q, want Writer Room", got.ConversationName)
 	}
 }
 

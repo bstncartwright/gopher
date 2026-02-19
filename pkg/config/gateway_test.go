@@ -56,8 +56,8 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if cfg.Panel.ListenAddr != "127.0.0.1:29329" {
 		t.Fatalf("panel listen addr = %q, want 127.0.0.1:29329", cfg.Panel.ListenAddr)
 	}
-	if cfg.Panel.CaptureThinking {
-		t.Fatalf("panel capture thinking = true, want false")
+	if !cfg.Panel.CaptureThinking {
+		t.Fatalf("panel capture thinking = false, want true")
 	}
 }
 

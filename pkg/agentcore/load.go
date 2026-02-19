@@ -343,6 +343,11 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 	if cfg == nil {
 		return
 	}
+	// Backfill baseline tools for legacy configs that omit enabled_tools entirely.
+	if len(cfg.EnabledTools) == 0 {
+		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:fs")
+		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:runtime")
+	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
 	if cfg.DisableDefaultSearchMCP {
 		return

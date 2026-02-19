@@ -430,6 +430,29 @@ func TestLoadAgentDisableDefaultSearchMCPSkipsImplicitTool(t *testing.T) {
 	}
 }
 
+func TestLoadAgentOmittedEnabledToolsBackfillsBaselineRuntimeTools(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = nil
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if _, ok := agent.Tools.Get("exec"); !ok {
+		t.Fatalf("expected exec tool to be enabled for omitted enabled_tools")
+	}
+	if _, ok := agent.Tools.Get("read"); !ok {
+		t.Fatalf("expected fs tools to be enabled for omitted enabled_tools")
+	}
+	if !containsTool(agent.Config.EnabledTools, "group:runtime") {
+		t.Fatalf("expected group:runtime in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+	if !containsTool(agent.Config.EnabledTools, "group:fs") {
+		t.Fatalf("expected group:fs in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+}
+
 func TestLoadAgentExplicitWebSearchStillWorksWhenDefaultDisabled(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"group:fs", "web_search"}

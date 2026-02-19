@@ -31,6 +31,7 @@ heartbeat behavior:
 - disabled by default.
 - enable per agent in `agents/<agent_id>/config.json` via:
   - `"heartbeat": { "every": "15m" }`
+- agents can also self-configure heartbeat settings at runtime with the `heartbeat` tool (`get`, `set`, `disable`) when collaboration tools are enabled.
 - optional heartbeat fields:
   - `"prompt"` custom poll prompt
   - `"ack_max_chars"` max chars to suppress when reply includes `HEARTBEAT_OK` (default `300`)

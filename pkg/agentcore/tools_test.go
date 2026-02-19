@@ -19,3 +19,10 @@ func TestBuildRegistryWebSearchAliasesAreDeduped(t *testing.T) {
 		t.Fatalf("schema[0].Name = %q, want web_search", schemas[0].Name)
 	}
 }
+
+func TestBuildRegistryGroupCollaborationEnablesHeartbeat(t *testing.T) {
+	registry := buildRegistry([]string{"group:collaboration"}, defaultPolicies())
+	if _, ok := registry.Get("heartbeat"); !ok {
+		t.Fatalf("expected heartbeat tool to be enabled")
+	}
+}

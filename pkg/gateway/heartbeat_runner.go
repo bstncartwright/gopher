@@ -58,9 +58,6 @@ func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
 	if opts.Pipeline == nil {
 		return nil, fmt.Errorf("dm pipeline is required")
 	}
-	if len(opts.Schedules) == 0 {
-		return nil, fmt.Errorf("at least one heartbeat schedule is required")
-	}
 	nowFn := opts.Now
 	if nowFn == nil {
 		nowFn = time.Now
@@ -73,38 +70,15 @@ func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
 	normalized := make([]HeartbeatSchedule, 0, len(opts.Schedules))
 	seen := map[sessionrt.ActorID]struct{}{}
 	for _, schedule := range opts.Schedules {
-		agentID := sessionrt.ActorID(strings.TrimSpace(string(schedule.AgentID)))
-		if strings.TrimSpace(string(agentID)) == "" {
-			return nil, fmt.Errorf("heartbeat schedule agent id is required")
+		validated, err := normalizeHeartbeatSchedule(schedule, opts.Logger)
+		if err != nil {
+			return nil, err
 		}
-		if _, exists := seen[agentID]; exists {
-			return nil, fmt.Errorf("duplicate heartbeat schedule for agent %q", agentID)
+		if _, exists := seen[validated.AgentID]; exists {
+			return nil, fmt.Errorf("duplicate heartbeat schedule for agent %q", validated.AgentID)
 		}
-		seen[agentID] = struct{}{}
-		if schedule.Every <= 0 {
-			return nil, fmt.Errorf("heartbeat schedule for agent %q must have every > 0", agentID)
-		}
-		schedule.AgentID = agentID
-		schedule.Prompt = strings.TrimSpace(schedule.Prompt)
-		if schedule.Prompt == "" {
-			schedule.Prompt = "Run heartbeat checks. If no action is needed, reply exactly HEARTBEAT_OK."
-		}
-		if schedule.AckMaxChars <= 0 {
-			schedule.AckMaxChars = heartbeatAckDefaultChars
-		}
-		schedule.Timezone = strings.TrimSpace(schedule.Timezone)
-		if schedule.Timezone != "" {
-			location, err := time.LoadLocation(schedule.Timezone)
-			if err != nil {
-				if opts.Logger != nil {
-					opts.Logger.Printf("heartbeat schedule timezone ignored agent=%s timezone=%q err=%v", agentID, schedule.Timezone, err)
-				}
-				schedule.Timezone = ""
-			} else {
-				schedule.location = location
-			}
-		}
-		normalized = append(normalized, schedule)
+		seen[validated.AgentID] = struct{}{}
+		normalized = append(normalized, validated)
 	}
 	sort.Slice(normalized, func(i, j int) bool {
 		return string(normalized[i].AgentID) < string(normalized[j].AgentID)
@@ -119,6 +93,117 @@ func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
 		logger:       opts.Logger,
 		nextRun:      map[sessionrt.ActorID]time.Time{},
 	}, nil
+}
+
+func normalizeHeartbeatSchedule(schedule HeartbeatSchedule, logger *log.Logger) (HeartbeatSchedule, error) {
+	agentID := sessionrt.ActorID(strings.TrimSpace(string(schedule.AgentID)))
+	if strings.TrimSpace(string(agentID)) == "" {
+		return HeartbeatSchedule{}, fmt.Errorf("heartbeat schedule agent id is required")
+	}
+	if schedule.Every <= 0 {
+		return HeartbeatSchedule{}, fmt.Errorf("heartbeat schedule for agent %q must have every > 0", agentID)
+	}
+	schedule.AgentID = agentID
+	schedule.Prompt = strings.TrimSpace(schedule.Prompt)
+	if schedule.Prompt == "" {
+		schedule.Prompt = "Run heartbeat checks. If no action is needed, reply exactly HEARTBEAT_OK."
+	}
+	if schedule.AckMaxChars <= 0 {
+		schedule.AckMaxChars = heartbeatAckDefaultChars
+	}
+	schedule.Timezone = strings.TrimSpace(schedule.Timezone)
+	schedule.location = nil
+	if schedule.Timezone != "" {
+		location, err := time.LoadLocation(schedule.Timezone)
+		if err != nil {
+			if logger != nil {
+				logger.Printf("heartbeat schedule timezone ignored agent=%s timezone=%q err=%v", agentID, schedule.Timezone, err)
+			}
+			schedule.Timezone = ""
+		} else {
+			schedule.location = location
+		}
+	}
+	return schedule, nil
+}
+
+func (r *HeartbeatRunner) UpsertSchedule(schedule HeartbeatSchedule) error {
+	normalized, err := normalizeHeartbeatSchedule(schedule, r.logger)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now().UTC()
+	replaced := false
+	for i := range r.schedules {
+		if r.schedules[i].AgentID == normalized.AgentID {
+			r.schedules[i] = normalized
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		r.schedules = append(r.schedules, normalized)
+	}
+	sort.Slice(r.schedules, func(i, j int) bool {
+		return string(r.schedules[i].AgentID) < string(r.schedules[j].AgentID)
+	})
+	r.nextRun[normalized.AgentID] = now.Add(normalized.Every)
+	return nil
+}
+
+func (r *HeartbeatRunner) RemoveSchedule(agentID sessionrt.ActorID) bool {
+	target := sessionrt.ActorID(strings.TrimSpace(string(agentID)))
+	if strings.TrimSpace(string(target)) == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	index := -1
+	for i := range r.schedules {
+		if r.schedules[i].AgentID == target {
+			index = i
+			break
+		}
+	}
+	if index == -1 {
+		delete(r.nextRun, target)
+		return false
+	}
+	r.schedules = append(r.schedules[:index], r.schedules[index+1:]...)
+	delete(r.nextRun, target)
+	return true
+}
+
+func (r *HeartbeatRunner) schedulesSnapshot() []HeartbeatSchedule {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]HeartbeatSchedule, len(r.schedules))
+	copy(out, r.schedules)
+	return out
+}
+
+func (r *HeartbeatRunner) nextRunFor(agentID sessionrt.ActorID, fallback time.Time) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next, ok := r.nextRun[agentID]
+	if !ok {
+		return fallback
+	}
+	return next
+}
+
+func (r *HeartbeatRunner) setNextRun(agentID sessionrt.ActorID, next time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, schedule := range r.schedules {
+		if schedule.AgentID == agentID {
+			r.nextRun[agentID] = next
+			return
+		}
+	}
+	delete(r.nextRun, agentID)
 }
 
 func (r *HeartbeatRunner) Start(ctx context.Context) error {
@@ -171,12 +256,10 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 	targets := r.pipeline.HeartbeatTargets()
 	sessionCache := map[sessionrt.SessionID]*sessionrt.Session{}
 	sessionErrs := map[sessionrt.SessionID]error{}
+	schedules := r.schedulesSnapshot()
 
-	for _, schedule := range r.schedules {
-		next, ok := r.nextRun[schedule.AgentID]
-		if !ok {
-			next = now
-		}
+	for _, schedule := range schedules {
+		next := r.nextRunFor(schedule.AgentID, now)
 		if next.After(now) {
 			continue
 		}
@@ -184,7 +267,7 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 			if r.logger != nil {
 				r.logger.Printf("heartbeat skip reason=sleep-hours agent=%s timezone=%s local_hour=%d", schedule.AgentID, schedule.Timezone, now.In(schedule.location).Hour())
 			}
-			r.nextRun[schedule.AgentID] = now.Add(schedule.Every)
+			r.setNextRun(schedule.AgentID, now.Add(schedule.Every))
 			continue
 		}
 
@@ -237,7 +320,7 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 			}
 		}
 
-		r.nextRun[schedule.AgentID] = now.Add(schedule.Every)
+		r.setNextRun(schedule.AgentID, now.Add(schedule.Every))
 	}
 }
 

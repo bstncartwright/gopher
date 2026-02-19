@@ -82,6 +82,7 @@ type Agent struct {
 	Processes             *ProcessManager
 	Cron                  CronToolService
 	Delegation            DelegationToolService
+	HeartbeatService      HeartbeatToolService
 	Heartbeat             AgentHeartbeat
 	KnownAgents           []string
 	CaptureThinkingDeltas bool

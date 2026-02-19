@@ -10,19 +10,30 @@ import (
 )
 
 type recordingSessionManager struct {
-	mu     sync.Mutex
-	events []sessionrt.Event
+	mu        sync.Mutex
+	events    []sessionrt.Event
+	sessions  map[sessionrt.SessionID]*sessionrt.Session
+	sendError error
 }
 
 func (m *recordingSessionManager) CreateSession(context.Context, sessionrt.CreateSessionOptions) (*sessionrt.Session, error) {
 	return nil, nil
 }
 
-func (m *recordingSessionManager) GetSession(context.Context, sessionrt.SessionID) (*sessionrt.Session, error) {
-	return nil, nil
+func (m *recordingSessionManager) GetSession(_ context.Context, id sessionrt.SessionID) (*sessionrt.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	session, ok := m.sessions[id]
+	if !ok {
+		return nil, nil
+	}
+	return cloneSessionRecord(session), nil
 }
 
 func (m *recordingSessionManager) SendEvent(_ context.Context, e sessionrt.Event) error {
+	if m.sendError != nil {
+		return m.sendError
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events = append(m.events, e)
@@ -47,12 +58,39 @@ func (m *recordingSessionManager) sentEvents() []sessionrt.Event {
 	return out
 }
 
+func cloneSessionRecord(in *sessionrt.Session) *sessionrt.Session {
+	if in == nil {
+		return nil
+	}
+	participants := make(map[sessionrt.ActorID]sessionrt.Participant, len(in.Participants))
+	for actorID, participant := range in.Participants {
+		participants[actorID] = participant
+	}
+	return &sessionrt.Session{
+		ID:           in.ID,
+		Participants: participants,
+		CreatedAt:    in.CreatedAt,
+		Status:       in.Status,
+	}
+}
+
 func TestHeartbeatRunnerProcessDueDispatchesPoll(t *testing.T) {
 	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
-	manager := &recordingSessionManager{}
+	manager := &recordingSessionManager{
+		sessions: map[sessionrt.SessionID]*sessionrt.Session{
+			"sess-1": {
+				ID: "sess-1",
+				Participants: map[sessionrt.ActorID]sessionrt.Participant{
+					"agent:a": {ID: "agent:a", Type: sessionrt.ActorAgent},
+				},
+				Status: sessionrt.SessionActive,
+			},
+		},
+	}
 	pipeline := &DMPipeline{
 		agentID:       "agent:a",
 		conversations: NewConversationSessionMap(),
+		recipByAgent:  map[sessionrt.ActorID]string{},
 		routes:        map[string]conversationRoute{},
 		processing:    map[string]int{},
 		heartbeats:    map[string]heartbeatState{},
@@ -92,6 +130,9 @@ func TestHeartbeatRunnerProcessDueDispatchesPoll(t *testing.T) {
 	if payload.Role != sessionrt.RoleUser || payload.Content != "hb" {
 		t.Fatalf("payload = %#v, want user hb", payload)
 	}
+	if payload.TargetActorID != "agent:a" {
+		t.Fatalf("target actor id = %q, want agent:a", payload.TargetActorID)
+	}
 
 	state, ok := pipeline.heartbeats["!dm:one"]
 	if !ok {
@@ -104,10 +145,21 @@ func TestHeartbeatRunnerProcessDueDispatchesPoll(t *testing.T) {
 
 func TestHeartbeatRunnerProcessDueSkipsBusyConversations(t *testing.T) {
 	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
-	manager := &recordingSessionManager{}
+	manager := &recordingSessionManager{
+		sessions: map[sessionrt.SessionID]*sessionrt.Session{
+			"sess-1": {
+				ID: "sess-1",
+				Participants: map[sessionrt.ActorID]sessionrt.Participant{
+					"agent:a": {ID: "agent:a", Type: sessionrt.ActorAgent},
+				},
+				Status: sessionrt.SessionActive,
+			},
+		},
+	}
 	pipeline := &DMPipeline{
 		agentID:       "agent:a",
 		conversations: NewConversationSessionMap(),
+		recipByAgent:  map[sessionrt.ActorID]string{},
 		routes:        map[string]conversationRoute{},
 		processing:    map[string]int{"!dm:one": 1},
 		heartbeats:    map[string]heartbeatState{},
@@ -134,5 +186,167 @@ func TestHeartbeatRunnerProcessDueSkipsBusyConversations(t *testing.T) {
 
 	if len(manager.sentEvents()) != 0 {
 		t.Fatalf("expected no heartbeat dispatch while conversation is processing")
+	}
+}
+
+func TestHeartbeatRunnerDispatchesOnlyWhenScheduledAgentIsParticipant(t *testing.T) {
+	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
+	manager := &recordingSessionManager{
+		sessions: map[sessionrt.SessionID]*sessionrt.Session{
+			"sess-room": {
+				ID: "sess-room",
+				Participants: map[sessionrt.ActorID]sessionrt.Participant{
+					"agent:a": {ID: "agent:a", Type: sessionrt.ActorAgent},
+					"agent:b": {ID: "agent:b", Type: sessionrt.ActorAgent},
+				},
+				Status: sessionrt.SessionActive,
+			},
+		},
+	}
+	pipeline := &DMPipeline{
+		agentID:       "agent:a",
+		conversations: NewConversationSessionMap(),
+		recipByAgent: map[sessionrt.ActorID]string{
+			"agent:a": "@agent:a",
+			"agent:b": "@agent:b",
+		},
+		routes:     map[string]conversationRoute{},
+		processing: map[string]int{},
+		heartbeats: map[string]heartbeatState{},
+	}
+	pipeline.conversations.Set("!room:one", "sess-room")
+
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager:  manager,
+		Pipeline: pipeline,
+		Schedules: []HeartbeatSchedule{
+			{AgentID: "agent:b", Every: time.Minute, Prompt: "hb-b"},
+		},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+	runner.nextRun["agent:b"] = now
+	runner.processDue(context.Background())
+
+	events := manager.sentEvents()
+	if len(events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(events))
+	}
+	payload, ok := events[0].Payload.(sessionrt.Message)
+	if !ok {
+		t.Fatalf("payload type = %T, want session.Message", events[0].Payload)
+	}
+	if payload.TargetActorID != "agent:b" {
+		t.Fatalf("target actor id = %q, want agent:b", payload.TargetActorID)
+	}
+}
+
+func TestHeartbeatRunnerDispatchesPerAgentSchedulesForSameSession(t *testing.T) {
+	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
+	manager := &recordingSessionManager{
+		sessions: map[sessionrt.SessionID]*sessionrt.Session{
+			"sess-room": {
+				ID: "sess-room",
+				Participants: map[sessionrt.ActorID]sessionrt.Participant{
+					"agent:a": {ID: "agent:a", Type: sessionrt.ActorAgent},
+					"agent:b": {ID: "agent:b", Type: sessionrt.ActorAgent},
+				},
+				Status: sessionrt.SessionActive,
+			},
+		},
+	}
+	pipeline := &DMPipeline{
+		agentID:       "agent:a",
+		conversations: NewConversationSessionMap(),
+		recipByAgent: map[sessionrt.ActorID]string{
+			"agent:a": "@agent:a",
+			"agent:b": "@agent:b",
+		},
+		routes:     map[string]conversationRoute{},
+		processing: map[string]int{},
+		heartbeats: map[string]heartbeatState{},
+	}
+	pipeline.conversations.Set("!room:one", "sess-room")
+
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager:  manager,
+		Pipeline: pipeline,
+		Schedules: []HeartbeatSchedule{
+			{AgentID: "agent:a", Every: time.Minute, Prompt: "hb-a"},
+			{AgentID: "agent:b", Every: time.Minute, Prompt: "hb-b"},
+		},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+	runner.nextRun["agent:a"] = now
+	runner.nextRun["agent:b"] = now
+	runner.processDue(context.Background())
+
+	events := manager.sentEvents()
+	if len(events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(events))
+	}
+	targets := map[sessionrt.ActorID]struct{}{}
+	for _, event := range events {
+		payload, ok := event.Payload.(sessionrt.Message)
+		if !ok {
+			t.Fatalf("payload type = %T, want session.Message", event.Payload)
+		}
+		targets[payload.TargetActorID] = struct{}{}
+	}
+	if _, ok := targets["agent:a"]; !ok {
+		t.Fatalf("missing target agent:a")
+	}
+	if _, ok := targets["agent:b"]; !ok {
+		t.Fatalf("missing target agent:b")
+	}
+}
+
+func TestHeartbeatRunnerSkipsWhenScheduledAgentNotInRoomMembership(t *testing.T) {
+	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
+	manager := &recordingSessionManager{
+		sessions: map[sessionrt.SessionID]*sessionrt.Session{
+			"sess-room": {
+				ID: "sess-room",
+				Participants: map[sessionrt.ActorID]sessionrt.Participant{
+					"agent:b": {ID: "agent:b", Type: sessionrt.ActorAgent},
+				},
+				Status: sessionrt.SessionActive,
+			},
+		},
+	}
+	pipeline := &DMPipeline{
+		agentID:       "agent:b",
+		transport:     &fakeTransport{managed: map[string][]string{"!room:one": {"@agent:a"}}},
+		conversations: NewConversationSessionMap(),
+		recipByAgent: map[sessionrt.ActorID]string{
+			"agent:b": "@agent:b",
+		},
+		routes:     map[string]conversationRoute{},
+		processing: map[string]int{},
+		heartbeats: map[string]heartbeatState{},
+	}
+	pipeline.conversations.Set("!room:one", "sess-room")
+
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager:  manager,
+		Pipeline: pipeline,
+		Schedules: []HeartbeatSchedule{
+			{AgentID: "agent:b", Every: time.Minute, Prompt: "hb-b"},
+		},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+	runner.nextRun["agent:b"] = now
+	runner.processDue(context.Background())
+
+	if len(manager.sentEvents()) != 0 {
+		t.Fatalf("expected no heartbeat dispatch when scheduled agent is not in room membership")
 	}
 }

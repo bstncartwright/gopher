@@ -34,6 +34,8 @@ heartbeat behavior:
 - optional heartbeat fields:
   - `"prompt"` custom poll prompt
   - `"ack_max_chars"` max chars to suppress when reply includes `HEARTBEAT_OK` (default `300`)
+- runtime sends heartbeat polls with explicit `target_actor_id`, so multi-agent sessions do not require `@agent` mention text for routing.
+- when room=session includes multiple agents, heartbeat skips dispatch if the target agent's managed matrix user is not currently joined in that room.
 
 example model policy:
 

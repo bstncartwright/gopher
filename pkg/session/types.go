@@ -72,8 +72,9 @@ const (
 )
 
 type Message struct {
-	Role    Role   `json:"role"`
-	Content string `json:"content"`
+	Role          Role    `json:"role"`
+	Content       string  `json:"content"`
+	TargetActorID ActorID `json:"target_actor_id,omitempty"`
 }
 
 type Role string

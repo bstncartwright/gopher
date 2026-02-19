@@ -82,7 +82,15 @@ func messageFromPayload(payload any) (Message, bool) {
 		if !ok {
 			return Message{}, false
 		}
-		return Message{Role: role, Content: content}, true
+		targetActorID := ActorID("")
+		if targetAny, exists := v["target_actor_id"]; exists && targetAny != nil {
+			targetRaw, ok := targetAny.(string)
+			if !ok {
+				return Message{}, false
+			}
+			targetActorID = ActorID(strings.TrimSpace(targetRaw))
+		}
+		return Message{Role: role, Content: content, TargetActorID: targetActorID}, true
 	default:
 		return Message{}, false
 	}

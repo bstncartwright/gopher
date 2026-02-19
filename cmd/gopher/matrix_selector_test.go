@@ -83,3 +83,57 @@ func TestMatrixMentionAgentSelectorMultiAgentRequiresSingleMention(t *testing.T)
 		t.Fatalf("did not expect selection when multiple agent mentions are present")
 	}
 }
+
+func TestMatrixMentionAgentSelectorUsesTargetActorIDFirst(t *testing.T) {
+	selector := matrixMentionAgentSelector(agentMatrixIdentitySet{
+		ActorByUserID: map[string]sessionrt.ActorID{
+			"@planner:example.com": "planner",
+			"@writer:example.com":  "writer",
+		},
+	})
+	session := &sessionrt.Session{
+		Participants: map[sessionrt.ActorID]sessionrt.Participant{
+			"planner": {ID: "planner", Type: sessionrt.ActorAgent},
+			"writer":  {ID: "writer", Type: sessionrt.ActorAgent},
+		},
+	}
+	actorID, ok := selector(session, sessionrt.Event{
+		Type: sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:          sessionrt.RoleUser,
+			Content:       "no mention needed",
+			TargetActorID: "writer",
+		},
+	})
+	if !ok {
+		t.Fatalf("expected selection for target_actor_id")
+	}
+	if actorID != "writer" {
+		t.Fatalf("actor id = %q, want writer", actorID)
+	}
+}
+
+func TestMatrixMentionAgentSelectorIgnoresInvalidTargetActorID(t *testing.T) {
+	selector := matrixMentionAgentSelector(agentMatrixIdentitySet{
+		ActorByUserID: map[string]sessionrt.ActorID{
+			"@planner:example.com": "planner",
+			"@writer:example.com":  "writer",
+		},
+	})
+	session := &sessionrt.Session{
+		Participants: map[sessionrt.ActorID]sessionrt.Participant{
+			"planner": {ID: "planner", Type: sessionrt.ActorAgent},
+			"writer":  {ID: "writer", Type: sessionrt.ActorAgent},
+		},
+	}
+	if _, ok := selector(session, sessionrt.Event{
+		Type: sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:          sessionrt.RoleUser,
+			Content:       "no mention",
+			TargetActorID: "agent:missing",
+		},
+	}); ok {
+		t.Fatalf("did not expect selection for invalid target_actor_id")
+	}
+}

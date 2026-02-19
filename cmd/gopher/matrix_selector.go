@@ -35,6 +35,9 @@ func matrixMentionAgentSelector(identities agentMatrixIdentitySet) sessionrt.Age
 		if !ok || message.Role != sessionrt.RoleUser {
 			return "", false
 		}
+		if actorID, ok := selectedActorFromMessageTarget(message, participantSet); ok {
+			return actorID, true
+		}
 		mentions := mentionedParticipantActors(message.Content, identities.ActorByUserID, participantSet)
 		if len(mentions) != 1 {
 			return "", false
@@ -56,13 +59,33 @@ func sessionMessageFromEvent(event sessionrt.Event) (sessionrt.Message, bool) {
 		if !roleOK || !contentOK {
 			return sessionrt.Message{}, false
 		}
+		targetActorID := sessionrt.ActorID("")
+		if targetRaw, exists := payload["target_actor_id"]; exists && targetRaw != nil {
+			targetText, ok := targetRaw.(string)
+			if !ok {
+				return sessionrt.Message{}, false
+			}
+			targetActorID = sessionrt.ActorID(strings.TrimSpace(targetText))
+		}
 		return sessionrt.Message{
-			Role:    sessionrt.Role(strings.TrimSpace(roleRaw)),
-			Content: contentRaw,
+			Role:          sessionrt.Role(strings.TrimSpace(roleRaw)),
+			Content:       contentRaw,
+			TargetActorID: targetActorID,
 		}, true
 	default:
 		return sessionrt.Message{}, false
 	}
+}
+
+func selectedActorFromMessageTarget(message sessionrt.Message, participantSet map[sessionrt.ActorID]struct{}) (sessionrt.ActorID, bool) {
+	target := sessionrt.ActorID(strings.TrimSpace(string(message.TargetActorID)))
+	if strings.TrimSpace(string(target)) == "" {
+		return "", false
+	}
+	if _, ok := participantSet[target]; !ok {
+		return "", false
+	}
+	return target, true
 }
 
 func mentionedParticipantActors(text string, actorByUserID map[string]sessionrt.ActorID, participantSet map[sessionrt.ActorID]struct{}) []sessionrt.ActorID {

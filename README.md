@@ -282,6 +282,8 @@ Run the accessibility audit and apply fixes.
        - `heartbeat.every` (duration; required to enable, examples: `"15m"`, `"1h"`, `"30"` where bare numbers mean minutes)
        - `heartbeat.prompt` (optional custom poll prompt)
        - `heartbeat.ack_max_chars` (optional suppression threshold for `HEARTBEAT_OK` replies; default `300`)
+       - heartbeat dispatch targets the scheduled agent explicitly via `target_actor_id` (no `@mention` required)
+       - in matrix room=session flows with multiple agents, heartbeat is skipped when the target agent's managed user is not currently joined in that room
    - cross-agent file access is policy-gated in `policies.json`:
      - set `allow_cross_agent_fs = true` and include additional paths in `fs_roots` when an agent should read/write another agent workspace
 2. configure gateway matrix block in `/etc/gopher/gopher.toml`:

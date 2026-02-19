@@ -32,7 +32,6 @@ type conversationRoute struct {
 type HeartbeatTarget struct {
 	ConversationID string
 	SessionID      sessionrt.SessionID
-	AgentID        sessionrt.ActorID
 }
 
 type DMPipeline struct {
@@ -74,6 +73,10 @@ const (
 
 type typingTransport interface {
 	SendTyping(ctx context.Context, conversationID string, typing bool) error
+}
+
+type managedConversationUsersReader interface {
+	ManagedUsersForConversation(conversationID string) []string
 }
 
 func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
@@ -558,6 +561,29 @@ func (p *DMPipeline) actorForManagedSender(senderID string) (sessionrt.ActorID, 
 	return actor, true
 }
 
+func (p *DMPipeline) CanDispatchHeartbeat(conversationID string, agentID sessionrt.ActorID) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	agentID = sessionrt.ActorID(strings.TrimSpace(string(agentID)))
+	if conversationID == "" || strings.TrimSpace(string(agentID)) == "" {
+		return false
+	}
+	provider, ok := p.transport.(managedConversationUsersReader)
+	if !ok {
+		return true
+	}
+	recipientID := normalizeRecipientID(p.recipByAgent[agentID])
+	if recipientID == "" {
+		return false
+	}
+	managedUsers := provider.ManagedUsersForConversation(conversationID)
+	for _, managedUserID := range managedUsers {
+		if normalizeRecipientID(managedUserID) == recipientID {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *DMPipeline) HeartbeatTargets() []HeartbeatTarget {
 	if p.bindings == nil {
 		conversations := p.conversations.Snapshot()
@@ -570,14 +596,9 @@ func (p *DMPipeline) HeartbeatTargets() []HeartbeatTarget {
 			if conversationID == "" || strings.TrimSpace(string(sessionID)) == "" {
 				continue
 			}
-			agentID := p.agentID
-			if route, ok := p.currentRoute(conversationID); ok && strings.TrimSpace(string(route.AgentID)) != "" {
-				agentID = route.AgentID
-			}
 			out = append(out, HeartbeatTarget{
 				ConversationID: conversationID,
 				SessionID:      sessionID,
-				AgentID:        agentID,
 			})
 		}
 		return out
@@ -593,16 +614,9 @@ func (p *DMPipeline) HeartbeatTargets() []HeartbeatTarget {
 		if conversationID == "" || strings.TrimSpace(string(sessionID)) == "" {
 			continue
 		}
-		agentID := p.agentID
-		if route, ok := p.currentRoute(conversationID); ok && strings.TrimSpace(string(route.AgentID)) != "" {
-			agentID = route.AgentID
-		} else if strings.TrimSpace(string(binding.AgentID)) != "" {
-			agentID = binding.AgentID
-		}
 		out = append(out, HeartbeatTarget{
 			ConversationID: conversationID,
 			SessionID:      sessionID,
-			AgentID:        agentID,
 		})
 	}
 	return out

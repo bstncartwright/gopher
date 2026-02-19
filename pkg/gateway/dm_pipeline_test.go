@@ -56,6 +56,7 @@ type fakeTransport struct {
 	handler transport.InboundHandler
 	sent    []transport.OutboundMessage
 	typing  []typingSignal
+	managed map[string][]string
 }
 
 type typingSignal struct {
@@ -103,6 +104,18 @@ func (f *fakeTransport) typingSignals() []typingSignal {
 	defer f.mu.Unlock()
 	out := make([]typingSignal, len(f.typing))
 	copy(out, f.typing)
+	return out
+}
+
+func (f *fakeTransport) ManagedUsersForConversation(conversationID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	users := f.managed[conversationID]
+	if len(users) == 0 {
+		return nil
+	}
+	out := make([]string, len(users))
+	copy(out, users)
 	return out
 }
 
@@ -941,6 +954,44 @@ func TestDMPipelineStripsHeartbeatTokenWhenAlertExceedsAckLimit(t *testing.T) {
 	}
 	if len([]rune(got.Text)) != len([]rune(alert)) {
 		t.Fatalf("forwarded alert length = %d, want %d", len([]rune(got.Text)), len([]rune(alert)))
+	}
+}
+
+func TestDMPipelineCanDispatchHeartbeatUsesManagedMembership(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{
+		managed: map[string][]string{
+			"!room:one": {"@writer:hs", "@planner:hs"},
+		},
+	}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:planner",
+		RecipientByAgent: map[sessionrt.ActorID]string{
+			"agent:planner": "@planner:hs",
+			"agent:writer":  "@writer:hs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if !pipeline.CanDispatchHeartbeat("!room:one", "agent:writer") {
+		t.Fatalf("expected writer heartbeat dispatch to be allowed")
+	}
+	if pipeline.CanDispatchHeartbeat("!room:one", "agent:reviewer") {
+		t.Fatalf("did not expect dispatch for unknown agent mapping")
+	}
+	if pipeline.CanDispatchHeartbeat("!room:two", "agent:writer") {
+		t.Fatalf("did not expect dispatch for room without membership")
 	}
 }
 

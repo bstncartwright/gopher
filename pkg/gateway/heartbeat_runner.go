@@ -150,10 +150,8 @@ func (r *HeartbeatRunner) loop(ctx context.Context) {
 func (r *HeartbeatRunner) processDue(ctx context.Context) {
 	now := r.now().UTC()
 	targets := r.pipeline.HeartbeatTargets()
-	targetsByAgent := make(map[sessionrt.ActorID][]HeartbeatTarget, len(r.schedules))
-	for _, target := range targets {
-		targetsByAgent[target.AgentID] = append(targetsByAgent[target.AgentID], target)
-	}
+	sessionCache := map[sessionrt.SessionID]*sessionrt.Session{}
+	sessionErrs := map[sessionrt.SessionID]error{}
 
 	for _, schedule := range r.schedules {
 		next, ok := r.nextRun[schedule.AgentID]
@@ -164,29 +162,87 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 			continue
 		}
 
-		agentTargets := targetsByAgent[schedule.AgentID]
-		for _, target := range agentTargets {
+		for _, target := range targets {
 			if r.pipeline.IsConversationProcessing(target.ConversationID) {
+				if r.logger != nil {
+					r.logger.Printf("heartbeat skip reason=conversation-processing agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
+				}
+				continue
+			}
+			session, err := r.loadSession(ctx, target.SessionID, sessionCache, sessionErrs)
+			if err != nil {
+				if r.logger != nil {
+					r.logger.Printf("heartbeat skip reason=session-load-failed agent=%s conversation=%s session=%s err=%v", schedule.AgentID, target.ConversationID, target.SessionID, err)
+				}
+				continue
+			}
+			if !heartbeatHasAgentParticipant(session, schedule.AgentID) {
+				if r.logger != nil {
+					r.logger.Printf("heartbeat skip reason=not-participant agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
+				}
+				continue
+			}
+			if !r.pipeline.CanDispatchHeartbeat(target.ConversationID, schedule.AgentID) {
+				if r.logger != nil {
+					r.logger.Printf("heartbeat skip reason=not-in-room agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
+				}
 				continue
 			}
 			r.pipeline.MarkHeartbeatPending(target.ConversationID, schedule.AckMaxChars)
-			err := r.manager.SendEvent(ctx, sessionrt.Event{
+			sendErr := r.manager.SendEvent(ctx, sessionrt.Event{
 				SessionID: target.SessionID,
 				From:      sessionrt.SystemActorID,
 				Type:      sessionrt.EventMessage,
 				Payload: sessionrt.Message{
-					Role:    sessionrt.RoleUser,
-					Content: schedule.Prompt,
+					Role:          sessionrt.RoleUser,
+					Content:       schedule.Prompt,
+					TargetActorID: schedule.AgentID,
 				},
 			})
-			if err != nil {
+			if sendErr != nil {
 				r.pipeline.UnmarkHeartbeatPending(target.ConversationID)
 				if r.logger != nil {
-					r.logger.Printf("heartbeat dispatch failed agent=%s conversation=%s session=%s err=%v", schedule.AgentID, target.ConversationID, target.SessionID, err)
+					r.logger.Printf("heartbeat dispatch failed reason=send-failed agent=%s conversation=%s session=%s err=%v", schedule.AgentID, target.ConversationID, target.SessionID, sendErr)
 				}
+				continue
+			}
+			if r.logger != nil {
+				r.logger.Printf("heartbeat dispatched agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
 			}
 		}
 
 		r.nextRun[schedule.AgentID] = now.Add(schedule.Every)
 	}
+}
+
+func (r *HeartbeatRunner) loadSession(ctx context.Context, sessionID sessionrt.SessionID, cache map[sessionrt.SessionID]*sessionrt.Session, errs map[sessionrt.SessionID]error) (*sessionrt.Session, error) {
+	if session, ok := cache[sessionID]; ok {
+		return session, nil
+	}
+	if err, ok := errs[sessionID]; ok {
+		return nil, err
+	}
+	session, err := r.manager.GetSession(ctx, sessionID)
+	if err != nil {
+		errs[sessionID] = err
+		return nil, err
+	}
+	if session == nil {
+		err := fmt.Errorf("session is nil")
+		errs[sessionID] = err
+		return nil, err
+	}
+	cache[sessionID] = session
+	return session, nil
+}
+
+func heartbeatHasAgentParticipant(session *sessionrt.Session, agentID sessionrt.ActorID) bool {
+	if session == nil || strings.TrimSpace(string(agentID)) == "" {
+		return false
+	}
+	participant, ok := session.Participants[agentID]
+	if !ok {
+		return false
+	}
+	return participant.Type == sessionrt.ActorAgent
 }

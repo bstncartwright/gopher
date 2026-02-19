@@ -1197,6 +1197,26 @@ func (t *Transport) resolveRoomManagedUser(roomID string) string {
 	return ""
 }
 
+func (t *Transport) ManagedUsersForConversation(conversationID string) []string {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil
+	}
+	t.mu.RLock()
+	users, ok := t.roomManagedUsers[conversationID]
+	if !ok || len(users) == 0 {
+		t.mu.RUnlock()
+		return nil
+	}
+	out := make([]string, 0, len(users))
+	for userID := range users {
+		out = append(out, userID)
+	}
+	t.mu.RUnlock()
+	sort.Strings(out)
+	return out
+}
+
 func (t *Transport) isAuthorized(request *http.Request) bool {
 	token := strings.TrimSpace(request.URL.Query().Get("access_token"))
 	if token != "" {

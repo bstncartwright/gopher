@@ -168,6 +168,52 @@ func TestHandleTransactionSetsRecipientFromManagedMembership(t *testing.T) {
 	}
 }
 
+func TestManagedUsersForConversationReturnsSortedSnapshot(t *testing.T) {
+	instance, err := New(Options{
+		HomeserverURL:  "http://127.0.0.1:8008",
+		AppserviceID:   "gopher",
+		ASToken:        "as-token",
+		HSToken:        "hs-token",
+		BotUserID:      "@planner:local",
+		ManagedUserIDs: []string{"@writer:local"},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	instance.setRoomManagedUser("!room:one", "@writer:local")
+	instance.setRoomManagedUser("!room:one", "@planner:local")
+
+	users := instance.ManagedUsersForConversation("!room:one")
+	if len(users) != 2 {
+		t.Fatalf("managed users length = %d, want 2", len(users))
+	}
+	if users[0] != "@planner:local" || users[1] != "@writer:local" {
+		t.Fatalf("managed users = %#v, want sorted planner/writer", users)
+	}
+
+	users[0] = "@mutated:local"
+	latest := instance.ManagedUsersForConversation("!room:one")
+	if latest[0] != "@planner:local" {
+		t.Fatalf("expected snapshot copy; got %#v", latest)
+	}
+}
+
+func TestManagedUsersForConversationUnknownRoomReturnsEmpty(t *testing.T) {
+	instance, err := New(Options{
+		HomeserverURL: "http://127.0.0.1:8008",
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+		BotUserID:     "@planner:local",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if got := instance.ManagedUsersForConversation("!missing:local"); len(got) != 0 {
+		t.Fatalf("managed users length = %d, want 0", len(got))
+	}
+}
+
 func TestHandleTransactionIsIdempotentPerTransactionID(t *testing.T) {
 	instance, err := New(Options{
 		HomeserverURL: "http://127.0.0.1:8008",

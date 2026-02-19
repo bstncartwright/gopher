@@ -21,6 +21,10 @@ const (
 	defaultHeartbeatAckMaxChars = 300
 )
 
+func defaultShellAllowlistValues() []string {
+	return []string{"echo", "git", "go", "bun", "node", "bash"}
+}
+
 func LoadAgent(workspacePath string) (*Agent, error) {
 	slog.Info("load_agent: starting agent load", "workspace_path", workspacePath)
 	if strings.TrimSpace(workspacePath) == "" {
@@ -260,11 +264,23 @@ func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
 	}
 
 	var rawPolicies struct {
-		Network json.RawMessage `json:"network"`
+		CanShell       *bool           `json:"can_shell"`
+		ShellAllowlist *[]string       `json:"shell_allowlist"`
+		Network        json.RawMessage `json:"network"`
 	}
 	if err := json.Unmarshal(raw, &rawPolicies); err != nil {
 		return
 	}
+	if rawPolicies.CanShell != nil && !*rawPolicies.CanShell && shellAllowlistIsUnspecifiedOrDefault(rawPolicies.ShellAllowlist) {
+		policies.CanShell = true
+	}
+	if rawPolicies.CanShell == nil {
+		policies.CanShell = true
+	}
+	if rawPolicies.ShellAllowlist == nil && policies.CanShell {
+		policies.ShellAllowlist = defaultShellAllowlistValues()
+	}
+
 	if len(rawPolicies.Network) == 0 {
 		policies.Network.Enabled = true
 		policies.Network.AllowDomains = []string{"*"}
@@ -278,12 +294,49 @@ func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
 	if err := json.Unmarshal(rawPolicies.Network, &rawNetwork); err != nil {
 		return
 	}
+	if rawNetwork.Enabled != nil && !*rawNetwork.Enabled && networkDomainsAreUnrestricted(rawNetwork.AllowDomains) {
+		policies.Network.Enabled = true
+		policies.Network.AllowDomains = []string{"*"}
+		return
+	}
 	if rawNetwork.Enabled == nil {
 		policies.Network.Enabled = true
 	}
 	if rawNetwork.AllowDomains == nil && policies.Network.Enabled {
 		policies.Network.AllowDomains = []string{"*"}
 	}
+}
+
+func networkDomainsAreUnrestricted(allowDomains *[]string) bool {
+	if allowDomains == nil {
+		return true
+	}
+	for _, candidate := range *allowDomains {
+		if normalizeDomainHost(candidate) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func shellAllowlistIsUnspecifiedOrDefault(allowlist *[]string) bool {
+	if allowlist == nil {
+		return true
+	}
+	normalizedAllowlist := normalizeUniqueStrings(*allowlist)
+	if len(normalizedAllowlist) == 0 {
+		return true
+	}
+	defaultAllowlist := normalizeUniqueStrings(defaultShellAllowlistValues())
+	if len(normalizedAllowlist) != len(defaultAllowlist) {
+		return false
+	}
+	for i := range normalizedAllowlist {
+		if normalizedAllowlist[i] != defaultAllowlist[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func applyDefaultEnabledTools(cfg *AgentConfig) {

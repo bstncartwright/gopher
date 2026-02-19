@@ -10,6 +10,7 @@ func TestWebSearchPolicyDeniedWhenNetworkDisabled(t *testing.T) {
 	config.EnabledTools = []string{"web_search"}
 	policies := defaultPolicies()
 	policies.Network.Enabled = false
+	policies.Network.AllowDomains = []string{"example.com"}
 	workspace := createTestWorkspace(t, config, policies)
 
 	agent, err := LoadAgent(workspace)

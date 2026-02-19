@@ -53,6 +53,27 @@ func TestLoadAgentDefaultsLegacyMissingNetworkPolicy(t *testing.T) {
 	}
 }
 
+func TestLoadAgentDefaultsLegacyMissingShellPolicy(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  "network": { "enabled": true, "allow_domains": ["*"] },
+  "budget": { "max_tokens_per_session": 200000 }
+}`)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if !agent.Policies.CanShell {
+		t.Fatalf("expected shell to default enabled when can_shell is omitted")
+	}
+	if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash"}) {
+		t.Fatalf("shell_allowlist = %#v, want default allowlist", agent.Policies.ShellAllowlist)
+	}
+}
+
 func TestLoadAgentDefaultsNetworkAllowDomainsWhenEnabledOmitted(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
@@ -70,6 +91,133 @@ func TestLoadAgentDefaultsNetworkAllowDomainsWhenEnabledOmitted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"*"}) {
 		t.Fatalf("allow_domains = %#v, want [\"*\"]", agent.Policies.Network.AllowDomains)
+	}
+}
+
+func TestLoadAgentDefaultsLegacyDisabledNetworkWithoutDomainRestrictions(t *testing.T) {
+	tests := []struct {
+		name          string
+		networkPolicy string
+	}{
+		{
+			name:          "enabled false with no allow_domains",
+			networkPolicy: `"network": { "enabled": false }`,
+		},
+		{
+			name:          "enabled false with wildcard allow_domains",
+			networkPolicy: `"network": { "enabled": false, "allow_domains": ["*"] }`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+			mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  "can_shell": true,
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  `+tc.networkPolicy+`,
+  "budget": { "max_tokens_per_session": 200000 }
+}`)
+
+			agent, err := LoadAgent(workspace)
+			if err != nil {
+				t.Fatalf("LoadAgent() error: %v", err)
+			}
+			if !agent.Policies.Network.Enabled {
+				t.Fatalf("expected legacy unrestricted network policy to default enabled")
+			}
+			if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"*"}) {
+				t.Fatalf("allow_domains = %#v, want [\"*\"]", agent.Policies.Network.AllowDomains)
+			}
+		})
+	}
+}
+
+func TestLoadAgentKeepsExplicitDisabledNetworkWithRestrictedDomains(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  "can_shell": true,
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"],
+  "network": { "enabled": false, "allow_domains": ["example.com"] },
+  "budget": { "max_tokens_per_session": 200000 }
+}`)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if agent.Policies.Network.Enabled {
+		t.Fatalf("expected explicit restricted network policy to remain disabled")
+	}
+	if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"example.com"}) {
+		t.Fatalf("allow_domains = %#v, want [\"example.com\"]", agent.Policies.Network.AllowDomains)
+	}
+}
+
+func TestLoadAgentDefaultsLegacyDisabledShellWithoutRestrictions(t *testing.T) {
+	tests := []struct {
+		name        string
+		shellPolicy string
+	}{
+		{
+			name:        "can_shell false with no shell_allowlist",
+			shellPolicy: `"can_shell": false`,
+		},
+		{
+			name:        "can_shell false with default shell_allowlist",
+			shellPolicy: `"can_shell": false, "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash"]`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+			mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  `+tc.shellPolicy+`,
+  "network": { "enabled": true, "allow_domains": ["*"] },
+  "budget": { "max_tokens_per_session": 200000 }
+}`)
+
+			agent, err := LoadAgent(workspace)
+			if err != nil {
+				t.Fatalf("LoadAgent() error: %v", err)
+			}
+			if !agent.Policies.CanShell {
+				t.Fatalf("expected legacy unrestricted shell policy to default enabled")
+			}
+			if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash"}) {
+				t.Fatalf("shell_allowlist = %#v, want default allowlist", agent.Policies.ShellAllowlist)
+			}
+		})
+	}
+}
+
+func TestLoadAgentKeepsExplicitDisabledShellWithRestrictedAllowlist(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  "can_shell": false,
+  "shell_allowlist": ["echo"],
+  "network": { "enabled": true, "allow_domains": ["*"] },
+  "budget": { "max_tokens_per_session": 200000 }
+}`)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if agent.Policies.CanShell {
+		t.Fatalf("expected explicit restricted shell policy to remain disabled")
+	}
+	if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo"}) {
+		t.Fatalf("shell_allowlist = %#v, want [\"echo\"]", agent.Policies.ShellAllowlist)
 	}
 }
 

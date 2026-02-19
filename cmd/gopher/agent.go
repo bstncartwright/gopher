@@ -409,6 +409,34 @@ func ensureAgentWorkspace(agentID, workspace string) error {
 			return fmt.Errorf("write workspace file %s: %w", path, err)
 		}
 	}
+	if err := ensureMemoryNotes(workspace, time.Now()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureMemoryNotes(workspace string, now time.Time) error {
+	memoryDir := filepath.Join(workspace, "memory")
+	if err := os.MkdirAll(memoryDir, 0o755); err != nil {
+		return fmt.Errorf("create memory directory %s: %w", memoryDir, err)
+	}
+
+	dates := []string{
+		now.Format("2006-01-02"),
+		now.AddDate(0, 0, -1).Format("2006-01-02"),
+	}
+	for _, date := range dates {
+		path := filepath.Join(memoryDir, date+".md")
+		if _, err := os.Stat(path); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("check memory note %s: %w", path, err)
+		}
+		content := fmt.Sprintf("# Daily Memory - %s\n\n", date)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write memory note %s: %w", path, err)
+		}
+	}
 	return nil
 }
 

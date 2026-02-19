@@ -39,12 +39,35 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if strings.TrimSpace(opts.ConfigPath) == "" {
 		return fmt.Errorf("config path is required")
 	}
+	role := strings.ToLower(strings.TrimSpace(opts.Role))
+	if role == "" {
+		role = "gateway"
+	}
+	if role != "gateway" && role != "node" {
+		return fmt.Errorf("invalid service role %q", opts.Role)
+	}
 	workingDir := resolveServiceWorkingDir()
-	unit, err := service.RenderGatewayUnit(service.GatewayUnitConfig{
-		ExecStart:  fmt.Sprintf("%s gateway run --config %s", opts.BinaryPath, opts.ConfigPath),
-		WorkingDir: workingDir,
-		EnvFile:    opts.EnvPath,
-	})
+	var (
+		unit     string
+		unitName string
+		err      error
+	)
+	switch role {
+	case "gateway":
+		unitName = "gopher-gateway.service"
+		unit, err = service.RenderGatewayUnit(service.GatewayUnitConfig{
+			ExecStart:  fmt.Sprintf("%s gateway run --config %s", opts.BinaryPath, opts.ConfigPath),
+			WorkingDir: workingDir,
+			EnvFile:    opts.EnvPath,
+		})
+	case "node":
+		unitName = "gopher-node.service"
+		unit, err = service.RenderNodeUnit(service.NodeUnitConfig{
+			ExecStart:  fmt.Sprintf("%s node run --config %s", opts.BinaryPath, opts.ConfigPath),
+			WorkingDir: workingDir,
+			EnvFile:    opts.EnvPath,
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -55,12 +78,15 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", workingDir, err)
 	}
-	if err := os.WriteFile("/etc/systemd/system/gopher-gateway.service", []byte(unit), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join("/etc/systemd/system", unitName), []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
-	updatesEnabled, err := r.installUpdaterUnits(opts)
-	if err != nil {
-		return err
+	updatesEnabled := false
+	if role == "gateway" {
+		updatesEnabled, err = r.installUpdaterUnits(opts)
+		if err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(opts.EnvPath) != "" {
 		if err := ensureEnvFile(opts.EnvPath); err != nil {
@@ -71,7 +97,7 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if err := runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
 		return err
 	}
-	if err := runner.Run(ctx, "systemctl", "enable", "--now", "gopher-gateway.service"); err != nil {
+	if err := runner.Run(ctx, "systemctl", "enable", "--now", unitName); err != nil {
 		return err
 	}
 	if updatesEnabled {
@@ -79,7 +105,7 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 			return err
 		}
 	}
-	fmt.Fprintln(r.stdout, "installed and started gopher-gateway.service")
+	fmt.Fprintf(r.stdout, "installed and started %s\n", unitName)
 	return nil
 }
 

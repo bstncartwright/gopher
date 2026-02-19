@@ -9,6 +9,7 @@ import (
 
 type fakeServiceRuntime struct {
 	installCalled   bool
+	installOpts     serviceInstallOptions
 	uninstallCalled bool
 	statusCalled    bool
 	startCalled     bool
@@ -19,8 +20,8 @@ type fakeServiceRuntime struct {
 
 func (f *fakeServiceRuntime) Install(ctx context.Context, opts serviceInstallOptions) error {
 	_ = ctx
-	_ = opts
 	f.installCalled = true
+	f.installOpts = opts
 	return nil
 }
 
@@ -77,6 +78,9 @@ func TestRunServiceSubcommandRoutesInstall(t *testing.T) {
 	if !fake.installCalled {
 		t.Fatalf("expected install to be called")
 	}
+	if fake.installOpts.Role != "gateway" {
+		t.Fatalf("install role = %q, want gateway", fake.installOpts.Role)
+	}
 }
 
 func TestRunServiceSubcommandRoutesRestart(t *testing.T) {
@@ -112,5 +116,44 @@ func TestRunServiceSubcommandRoutesLogs(t *testing.T) {
 	}
 	if !fake.logsCalled {
 		t.Fatalf("expected logs to be called")
+	}
+}
+
+func TestRunServiceSubcommandRoutesInstallNodeRole(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+	fake := &fakeServiceRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+	var out bytes.Buffer
+	if err := runServiceSubcommand([]string{"install", "--role", "node"}, &out, &out); err != nil {
+		t.Fatalf("runServiceSubcommand(install --role node) error: %v", err)
+	}
+	if !fake.installCalled {
+		t.Fatalf("expected install to be called")
+	}
+	if fake.installOpts.Role != "node" {
+		t.Fatalf("install role = %q, want node", fake.installOpts.Role)
+	}
+}
+
+func TestRunServiceSubcommandRejectsInvalidInstallRole(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+	fake := &fakeServiceRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+	var out bytes.Buffer
+	if err := runServiceSubcommand([]string{"install", "--role", "invalid"}, &out, &out); err == nil {
+		t.Fatalf("expected invalid role error")
+	}
+	if fake.installCalled {
+		t.Fatalf("install should not be called on invalid role")
 	}
 }

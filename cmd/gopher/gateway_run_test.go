@@ -12,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/config"
 	fabricts "github.com/bstncartwright/gopher/pkg/fabric/nats"
 	"github.com/bstncartwright/gopher/pkg/node"
 	"github.com/bstncartwright/gopher/pkg/scheduler"
+	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
 func TestParseGatewayRunFlagsDefaults(t *testing.T) {
@@ -197,6 +199,57 @@ func TestRunGatewayConfigSubcommandInit(t *testing.T) {
 	}
 	if got := string(body); !strings.Contains(got, "[gateway]") {
 		t.Fatalf("generated config missing gateway section: %q", got)
+	}
+}
+
+func TestBuildRequiredCapabilityResolver(t *testing.T) {
+	runtime := &gatewayAgentRuntime{
+		DefaultActorID: "planner",
+		Agents: map[sessionrt.ActorID]*agentcore.Agent{
+			"planner": {
+				Config: agentcore.AgentConfig{
+					Execution: agentcore.ExecutionConfig{
+						RequiredCapabilities: []string{"tool:gpu", "system:matrix"},
+					},
+				},
+			},
+			"writer": {
+				Config: agentcore.AgentConfig{},
+			},
+		},
+	}
+	resolver, err := buildRequiredCapabilityResolver(runtime)
+	if err != nil {
+		t.Fatalf("buildRequiredCapabilityResolver() error: %v", err)
+	}
+	required := resolver(sessionrt.AgentInput{ActorID: "planner"})
+	if len(required) != 2 {
+		t.Fatalf("required len = %d, want 2", len(required))
+	}
+	aliased := resolver(sessionrt.AgentInput{ActorID: "agent:planner"})
+	if len(aliased) != 2 {
+		t.Fatalf("aliased required len = %d, want 2", len(aliased))
+	}
+	if got := resolver(sessionrt.AgentInput{ActorID: "writer"}); len(got) != 0 {
+		t.Fatalf("writer required = %#v, want none", got)
+	}
+}
+
+func TestBuildRequiredCapabilityResolverRejectsInvalidCapability(t *testing.T) {
+	runtime := &gatewayAgentRuntime{
+		DefaultActorID: "planner",
+		Agents: map[sessionrt.ActorID]*agentcore.Agent{
+			"planner": {
+				Config: agentcore.AgentConfig{
+					Execution: agentcore.ExecutionConfig{
+						RequiredCapabilities: []string{"badformat"},
+					},
+				},
+			},
+		},
+	}
+	if _, err := buildRequiredCapabilityResolver(runtime); err == nil {
+		t.Fatalf("expected invalid required capability error")
 	}
 }
 

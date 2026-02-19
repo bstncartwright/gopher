@@ -178,6 +178,20 @@ func TestLoadAgentHeartbeatInvalidEveryReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoadAgentRejectsInvalidRequiredCapability(t *testing.T) {
+	config := defaultConfig()
+	config.Execution.RequiredCapabilities = []string{"invalid"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected execution.required_capabilities validation error")
+	}
+	if !strings.Contains(err.Error(), "expected kind:name") {
+		t.Fatalf("expected kind:name guidance, got: %v", err)
+	}
+}
+
 func modelsToMap(models []ai.Model) map[string]ai.Model {
 	out := make(map[string]ai.Model, len(models))
 	for _, model := range models {

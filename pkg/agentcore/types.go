@@ -16,6 +16,7 @@ type AgentConfig struct {
 	Name                   string          `json:"name"`
 	Role                   string          `json:"role"`
 	ModelPolicy            string          `json:"model_policy"`
+	Execution              ExecutionConfig `json:"execution"`
 	EnabledTools           []string        `json:"enabled_tools"`
 	SkillsPaths            []string        `json:"skills_paths"`
 	MaxContextMessages     int             `json:"max_context_messages"`
@@ -24,6 +25,10 @@ type AgentConfig struct {
 	UserTimezone           string          `json:"user_timezone"`
 	TimeFormat             string          `json:"time_format"`
 	Heartbeat              HeartbeatConfig `json:"heartbeat"`
+}
+
+type ExecutionConfig struct {
+	RequiredCapabilities []string `json:"required_capabilities"`
 }
 
 type HeartbeatConfig struct {

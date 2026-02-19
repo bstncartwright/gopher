@@ -131,3 +131,13 @@ func TestRunVersionPrintsBinaryVersion(t *testing.T) {
 		t.Fatalf("unexpected version output: %q", out.String())
 	}
 }
+
+func TestRunNodeHelp(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"node", "help"}, &out, io.Discard); err != nil {
+		t.Fatalf("run(node help) error: %v", err)
+	}
+	if !strings.Contains(out.String(), "gopher node run") {
+		t.Fatalf("unexpected node help output: %q", out.String())
+	}
+}

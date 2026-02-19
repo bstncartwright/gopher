@@ -654,6 +654,67 @@ func TestSendTypingCallsHomeserverAPI(t *testing.T) {
 	}
 }
 
+func TestSendTypingAsUsesProvidedManagedSender(t *testing.T) {
+	var typingPath string
+	var typingUserID string
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestCount++
+		if request.URL.Path == "/_matrix/client/v3/register" {
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"user_id":"@writer:local"}`))
+			return
+		}
+		if request.Method != http.MethodPut {
+			t.Fatalf("method = %s, want PUT", request.Method)
+		}
+		if !strings.Contains(request.URL.Path, "/typing/") {
+			t.Fatalf("path = %q, expected typing endpoint", request.URL.Path)
+		}
+		typingPath = request.URL.Path
+		typingUserID = request.URL.Query().Get("user_id")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL:  server.URL,
+		AppserviceID:   "gopher",
+		ASToken:        "as-token",
+		HSToken:        "hs-token",
+		ListenAddr:     "127.0.0.1:0",
+		BotUserID:      "@gopher:local",
+		ManagedUserIDs: []string{"@writer:local"},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = instance.Start(ctx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	if err := instance.SendTypingAs(context.Background(), "!dm:local", "@writer:local", true); err != nil {
+		t.Fatalf("SendTypingAs() error: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for requestCount < 3 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if requestCount < 3 {
+		t.Fatalf("homeserver request count = %d, want >= 3", requestCount)
+	}
+	if typingUserID != "@writer:local" {
+		t.Fatalf("typing user_id = %q, want @writer:local", typingUserID)
+	}
+	if !strings.HasSuffix(typingPath, "/typing/@writer:local") && !strings.HasSuffix(typingPath, "/typing/%40writer:local") && !strings.HasSuffix(typingPath, "/typing/%40writer%3Alocal") {
+		t.Fatalf("typing path = %q, expected writer typing path", typingPath)
+	}
+}
+
 func TestPresenceStartKeepaliveAndStop(t *testing.T) {
 	onlineCalls := 0
 	offlineCalls := 0

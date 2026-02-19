@@ -90,6 +90,10 @@ type typingTransport interface {
 	SendTyping(ctx context.Context, conversationID string, typing bool) error
 }
 
+type typingSenderTransport interface {
+	SendTypingAs(ctx context.Context, conversationID, senderID string, typing bool) error
+}
+
 type managedConversationUsersReader interface {
 	ManagedUsersForConversation(conversationID string) []string
 }
@@ -615,6 +619,18 @@ func (p *DMPipeline) sendTyping(conversationID string, typing bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dmTypingTimeout)
 	defer cancel()
+	if senderTypingAPI, ok := p.transport.(typingSenderTransport); ok {
+		senderID := p.recipientForConversation(conversationID)
+		if err := senderTypingAPI.SendTypingAs(ctx, conversationID, senderID, typing); err != nil {
+			slog.Warn("dm_pipeline: send dm typing failed",
+				"conversation_id", conversationID,
+				"sender_id", senderID,
+				"typing", typing,
+				"error", err,
+			)
+		}
+		return
+	}
 	if err := typingAPI.SendTyping(ctx, conversationID, typing); err != nil {
 		slog.Warn("dm_pipeline: send dm typing failed",
 			"conversation_id", conversationID,

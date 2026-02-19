@@ -87,7 +87,7 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	slog.Debug("load_agent: heartbeat config normalized", "enabled", heartbeat.Enabled, "every", heartbeat.Every)
 
 	policies := AgentPolicies{}
-	if err := decodeJSONFile(policiesPath, &policies); err != nil {
+	if err := decodePoliciesFile(policiesPath, &policies); err != nil {
 		slog.Error("load_agent: failed to read policies.json", "policies_path", policiesPath, "error", err)
 		return nil, fmt.Errorf("read policies.json: %w", err)
 	}
@@ -237,6 +237,53 @@ func decodeJSONFile(path string, out any) error {
 		return err
 	}
 	return nil
+}
+
+func decodePoliciesFile(path string, out *AgentPolicies) error {
+	if out == nil {
+		return fmt.Errorf("policies output is required")
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(blob, out); err != nil {
+		return err
+	}
+	applyDefaultPolicies(blob, out)
+	return nil
+}
+
+func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
+	if policies == nil {
+		return
+	}
+
+	var rawPolicies struct {
+		Network json.RawMessage `json:"network"`
+	}
+	if err := json.Unmarshal(raw, &rawPolicies); err != nil {
+		return
+	}
+	if len(rawPolicies.Network) == 0 {
+		policies.Network.Enabled = true
+		policies.Network.AllowDomains = []string{"*"}
+		return
+	}
+
+	var rawNetwork struct {
+		Enabled      *bool     `json:"enabled"`
+		AllowDomains *[]string `json:"allow_domains"`
+	}
+	if err := json.Unmarshal(rawPolicies.Network, &rawNetwork); err != nil {
+		return
+	}
+	if rawNetwork.Enabled == nil {
+		policies.Network.Enabled = true
+	}
+	if rawNetwork.AllowDomains == nil && policies.Network.Enabled {
+		policies.Network.AllowDomains = []string{"*"}
+	}
 }
 
 func applyDefaultEnabledTools(cfg *AgentConfig) {

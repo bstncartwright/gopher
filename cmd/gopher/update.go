@@ -37,6 +37,7 @@ var (
 	shouldPromptSudoForUpdate     = isInteractiveTerminal
 	retryWithSudoForUpdate        = rerunUpdateWithSudo
 	envLookupForUpdate            = os.Getenv
+	defaultServiceNameForUpdate   = inferDefaultServiceNameForUpdate
 )
 
 type noopRunner struct{}
@@ -111,6 +112,10 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("resolve current executable path: %w", err)
 		}
 	}
+	resolvedServiceName := strings.TrimSpace(*serviceName)
+	if resolvedServiceName == "" {
+		resolvedServiceName = strings.TrimSpace(defaultServiceNameForUpdate())
+	}
 
 	asset, err := selectAssetForUpdate(release, runtime.GOOS, runtime.GOARCH, strings.TrimSpace(*assetPattern))
 	if err != nil {
@@ -119,12 +124,12 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 	checksumsAsset, _ := selectChecksumsAssetForUpdate(release)
 
 	runner := update.CommandRunner(noopRunner{})
-	if strings.TrimSpace(*serviceName) != "" {
+	if resolvedServiceName != "" {
 		runner = systemctlRunner{}
 	}
 	if err := applyReleaseForUpdate(ctx, update.ApplyOptions{
 		BinaryPath:   targetBinaryPath,
-		ServiceName:  strings.TrimSpace(*serviceName),
+		ServiceName:  resolvedServiceName,
 		Token:        ghToken,
 		AssetURL:     asset.DownloadURL(),
 		AssetName:    asset.Name,
@@ -173,8 +178,25 @@ func printUpdateUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --repo <repo>           github repo (default: gopher)")
 	fmt.Fprintln(out, "  --binary-path <path>    binary path to replace (default: current executable)")
 	fmt.Fprintln(out, "  --asset-pattern <text>  additional asset name filter")
-	fmt.Fprintln(out, "  --service-name <name>   optional systemd service to restart after update")
+	fmt.Fprintln(out, "  --service-name <name>   systemd service to restart after update (default: auto-detect gateway service on linux)")
 	fmt.Fprintln(out, "  --github-token <token>  github token (or GOPHER_GITHUB_TOKEN / GOPHER_GITHUB_UPDATE_TOKEN)")
+}
+
+func inferDefaultServiceNameForUpdate() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	const gatewayServiceName = "gopher-gateway.service"
+	for _, path := range []string{
+		filepath.Join("/etc/systemd/system", gatewayServiceName),
+		filepath.Join("/lib/systemd/system", gatewayServiceName),
+		filepath.Join("/usr/lib/systemd/system", gatewayServiceName),
+	} {
+		if _, err := os.Stat(path); err == nil {
+			return gatewayServiceName
+		}
+	}
+	return ""
 }
 
 func isInteractiveTerminal() bool {

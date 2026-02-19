@@ -75,6 +75,9 @@ func TestRunUpdateSubcommandApplyWhenNewerReleaseExists(t *testing.T) {
 		if opts.BinaryPath != "/tmp/gopher" {
 			t.Fatalf("binary path = %q, want /tmp/gopher", opts.BinaryPath)
 		}
+		if opts.ServiceName != "" {
+			t.Fatalf("service name = %q, want empty", opts.ServiceName)
+		}
 		if opts.AssetURL == "" {
 			t.Fatalf("expected asset url to be set")
 		}
@@ -93,6 +96,49 @@ func TestRunUpdateSubcommandApplyWhenNewerReleaseExists(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "updated binary to v1.2.4") {
 		t.Fatalf("expected output to mention applied update, got: %q", out.String())
+	}
+}
+
+func TestRunUpdateSubcommandAutoDetectsGatewayServiceName(t *testing.T) {
+	restore := stubUpdateDependencies(t)
+	defer restore()
+
+	binaryVersion = "v1.2.3"
+	latestReleaseForUpdate = func(ctx context.Context, owner, repo, token string) (update.Release, error) {
+		_ = ctx
+		_ = owner
+		_ = repo
+		_ = token
+		return update.Release{
+			TagName: "v1.2.4",
+			Assets: []update.ReleaseAsset{
+				{Name: "gopher-" + runtime.GOOS + "-" + runtime.GOARCH, URL: "https://example.test/asset"},
+			},
+		}, nil
+	}
+	executablePathForUpdate = func() (string, error) {
+		return "/tmp/gopher", nil
+	}
+	defaultServiceNameForUpdate = func() string {
+		return "gopher-gateway.service"
+	}
+
+	applyCalled := false
+	applyReleaseForUpdate = func(ctx context.Context, opts update.ApplyOptions) error {
+		_ = ctx
+		applyCalled = true
+		if opts.ServiceName != "gopher-gateway.service" {
+			t.Fatalf("service name = %q, want gopher-gateway.service", opts.ServiceName)
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runUpdateSubcommand([]string{"--github-token", "token"}, &out, io.Discard); err != nil {
+		t.Fatalf("runUpdateSubcommand() error: %v", err)
+	}
+	if !applyCalled {
+		t.Fatalf("expected update to be applied")
 	}
 }
 
@@ -219,6 +265,7 @@ func stubUpdateDependencies(t *testing.T) func() {
 	prevShouldPromptSudo := shouldPromptSudoForUpdate
 	prevRetryWithSudo := retryWithSudoForUpdate
 	prevEnvLookup := envLookupForUpdate
+	prevDefaultServiceName := defaultServiceNameForUpdate
 
 	return func() {
 		binaryVersion = prevVersion
@@ -230,5 +277,6 @@ func stubUpdateDependencies(t *testing.T) func() {
 		shouldPromptSudoForUpdate = prevShouldPromptSudo
 		retryWithSudoForUpdate = prevRetryWithSudo
 		envLookupForUpdate = prevEnvLookup
+		defaultServiceNameForUpdate = prevDefaultServiceName
 	}
 }

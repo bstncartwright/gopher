@@ -855,9 +855,7 @@ func appendFallbackDetail(base, detail string) string {
 	if base == "" || detail == "" {
 		return base
 	}
-	if strings.HasSuffix(base, ".") {
-		base = strings.TrimSuffix(base, ".")
-	}
+	base = strings.TrimSuffix(base, ".")
 	return base + " Details: " + detail + "."
 }
 

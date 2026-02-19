@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,7 @@ var _ sessionrt.SessionRegistryStore = (*EventStore)(nil)
 func NewEventStore(opts EventStoreOptions) (*EventStore, error) {
 	path := strings.TrimSpace(opts.Path)
 	if path == "" {
+		slog.Error("sqlite_store: path is required")
 		return nil, fmt.Errorf("%w: sqlite path is required", sessionrt.ErrInvalidSession)
 	}
 	streamBuf := opts.StreamBuffer
@@ -43,8 +45,10 @@ func NewEventStore(opts EventStoreOptions) (*EventStore, error) {
 		streamBuf = 32
 	}
 
+	slog.Info("sqlite_store: opening database", "path", path, "stream_buffer", streamBuf)
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
+		slog.Error("sqlite_store: failed to open database", "path", path, "error", err)
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
@@ -57,8 +61,10 @@ func NewEventStore(opts EventStoreOptions) (*EventStore, error) {
 	}
 	if err := store.initSchema(context.Background()); err != nil {
 		_ = db.Close()
+		slog.Error("sqlite_store: failed to init schema", "path", path, "error", err)
 		return nil, err
 	}
+	slog.Info("sqlite_store: database initialized", "path", path)
 	return store, nil
 }
 
@@ -66,6 +72,7 @@ func (s *EventStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	slog.Info("sqlite_store: closing database")
 	return s.db.Close()
 }
 
@@ -81,20 +88,29 @@ func (s *EventStore) Append(ctx context.Context, event sessionrt.Event) error {
 
 	sessionID := strings.TrimSpace(string(event.SessionID))
 	if sessionID == "" {
+		slog.Error("sqlite_store: session ID is required for append")
 		return fmt.Errorf("%w: session ID is required", sessionrt.ErrInvalidEvent)
 	}
+
+	slog.Debug("sqlite_store: appending event",
+		"session_id", sessionID,
+		"event_type", event.Type,
+		"event_seq", event.Seq,
+	)
 
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
 	}
 	payload, err := json.Marshal(event.Payload)
 	if err != nil {
+		slog.Error("sqlite_store: failed to marshal payload", "session_id", sessionID, "error", err)
 		return fmt.Errorf("marshal event payload: %w", err)
 	}
 	timestampMillis := event.Timestamp.UTC().UnixMilli()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		slog.Error("sqlite_store: failed to begin transaction", "session_id", sessionID, "error", err)
 		return fmt.Errorf("begin append transaction: %w", err)
 	}
 	defer func() {
@@ -112,8 +128,14 @@ func (s *EventStore) Append(ctx context.Context, event sessionrt.Event) error {
 	if record.LastSeq > 0 {
 		switch {
 		case event.Seq <= record.LastSeq:
+			slog.Debug("sqlite_store: event already exists, skipping", "session_id", sessionID, "seq", event.Seq)
 			return nil
 		case event.Seq != record.LastSeq+1:
+			slog.Error("sqlite_store: sequence must be monotonic",
+				"session_id", sessionID,
+				"last_seq", record.LastSeq,
+				"next_seq", event.Seq,
+			)
 			return fmt.Errorf("%w: sequence must be monotonic for session %s (last=%d next=%d)", sessionrt.ErrInvalidEvent, event.SessionID, record.LastSeq, event.Seq)
 		}
 	}
@@ -124,8 +146,10 @@ func (s *EventStore) Append(ctx context.Context, event sessionrt.Event) error {
 	`, sessionID, int64(event.Seq), string(event.ID), timestampMillis, string(event.From), string(event.Type), payload)
 	if err != nil {
 		if isSQLitePrimaryKeyViolation(err) {
+			slog.Debug("sqlite_store: event already exists (constraint)", "session_id", sessionID, "seq", event.Seq)
 			return nil
 		}
+		slog.Error("sqlite_store: failed to insert event", "session_id", sessionID, "error", err)
 		return fmt.Errorf("insert event: %w", err)
 	}
 
@@ -149,8 +173,10 @@ func (s *EventStore) Append(ctx context.Context, event sessionrt.Event) error {
 	}
 
 	if err := tx.Commit(); err != nil {
+		slog.Error("sqlite_store: failed to commit transaction", "session_id", sessionID, "error", err)
 		return fmt.Errorf("commit append transaction: %w", err)
 	}
+	slog.Debug("sqlite_store: event appended", "session_id", sessionID, "event_type", event.Type, "seq", event.Seq)
 	s.notifySubscribers(event)
 	return nil
 }
@@ -165,6 +191,7 @@ func (s *EventStore) List(ctx context.Context, sessionID sessionrt.SessionID) ([
 	default:
 	}
 
+	slog.Debug("sqlite_store: listing events", "session_id", sessionID)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT event_id, timestamp, actor_id, type, payload, seq
 		FROM events
@@ -172,6 +199,7 @@ func (s *EventStore) List(ctx context.Context, sessionID sessionrt.SessionID) ([
 		ORDER BY seq ASC
 	`, string(sessionID))
 	if err != nil {
+		slog.Error("sqlite_store: failed to query events", "session_id", sessionID, "error", err)
 		return nil, fmt.Errorf("query events: %w", err)
 	}
 	defer rows.Close()
@@ -185,10 +213,12 @@ func (s *EventStore) List(ctx context.Context, sessionID sessionrt.SessionID) ([
 		var payloadBlob []byte
 		var seq int64
 		if err := rows.Scan(&eventID, &tsMillis, &actorID, &eventType, &payloadBlob, &seq); err != nil {
+			slog.Error("sqlite_store: failed to scan event row", "session_id", sessionID, "error", err)
 			return nil, fmt.Errorf("scan event row: %w", err)
 		}
 		payload, err := decodePayload(payloadBlob)
 		if err != nil {
+			slog.Error("sqlite_store: failed to decode payload", "session_id", sessionID, "seq", seq, "error", err)
 			return nil, fmt.Errorf("decode payload for session %s seq %d: %w", sessionID, seq, err)
 		}
 		events = append(events, sessionrt.Event{
@@ -202,11 +232,14 @@ func (s *EventStore) List(ctx context.Context, sessionID sessionrt.SessionID) ([
 		})
 	}
 	if err := rows.Err(); err != nil {
+		slog.Error("sqlite_store: error iterating rows", "session_id", sessionID, "error", err)
 		return nil, fmt.Errorf("iterate event rows: %w", err)
 	}
 	if len(events) == 0 {
+		slog.Debug("sqlite_store: no events found", "session_id", sessionID)
 		return nil, sessionrt.ErrSessionNotFound
 	}
+	slog.Debug("sqlite_store: listed events", "session_id", sessionID, "count", len(events))
 	return events, nil
 }
 
@@ -358,6 +391,7 @@ func (s *EventStore) ListSessions(ctx context.Context) ([]sessionrt.SessionRecor
 }
 
 func (s *EventStore) initSchema(ctx context.Context) error {
+	slog.Debug("sqlite_store: initializing schema")
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS events (
 			session_id TEXT NOT NULL,
@@ -370,6 +404,7 @@ func (s *EventStore) initSchema(ctx context.Context) error {
 			PRIMARY KEY (session_id, seq)
 		)
 	`); err != nil {
+		slog.Error("sqlite_store: failed to create events table", "error", err)
 		return fmt.Errorf("create events table: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `
@@ -382,13 +417,16 @@ func (s *EventStore) initSchema(ctx context.Context) error {
 			in_flight INTEGER NOT NULL
 		)
 	`); err != nil {
+		slog.Error("sqlite_store: failed to create sessions table", "error", err)
 		return fmt.Errorf("create sessions table: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq)
 	`); err != nil {
+		slog.Error("sqlite_store: failed to create events index", "error", err)
 		return fmt.Errorf("create events index: %w", err)
 	}
+	slog.Debug("sqlite_store: schema initialized")
 	return nil
 }
 

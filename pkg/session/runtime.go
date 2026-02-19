@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -47,16 +48,23 @@ func newSessionRuntime(session *Session) *sessionRuntime {
 }
 
 func (m *Manager) runSession(rt *sessionRuntime) {
+	slog.Debug("session_runtime: starting session runtime", "session_id", rt.sessionID)
 	defer close(rt.done)
 
 	for {
 		select {
 		case <-rt.ctx.Done():
+			slog.Debug("session_runtime: context done, stopping", "session_id", rt.sessionID)
 			return
 		case req := <-rt.queue:
+			slog.Debug("session_runtime: processing request",
+				"session_id", rt.sessionID,
+				"request_kind", req.kind,
+			)
 			err, terminal := m.handleRuntimeRequest(rt, req)
 			req.resp <- err
 			if terminal {
+				slog.Debug("session_runtime: terminal request, stopping", "session_id", rt.sessionID)
 				return
 			}
 		}
@@ -70,6 +78,10 @@ func (m *Manager) handleRuntimeRequest(rt *sessionRuntime, req runtimeRequest) (
 	case runtimeRequestCancel:
 		return m.handleCancelRequest(rt, req), true
 	default:
+		slog.Error("session_runtime: unknown request kind",
+			"session_id", rt.sessionID,
+			"request_kind", req.kind,
+		)
 		return fmt.Errorf("%w: unknown runtime request kind", ErrInvalidEvent), false
 	}
 }
@@ -77,10 +89,24 @@ func (m *Manager) handleRuntimeRequest(rt *sessionRuntime, req runtimeRequest) (
 func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (error, bool) {
 	e, err := m.canonicalizeEvent(rt, req.event)
 	if err != nil {
+		slog.Error("session_runtime: failed to canonicalize event",
+			"session_id", rt.sessionID,
+			"event_type", req.event.Type,
+			"error", err,
+		)
 		return err, false
 	}
 
+	slog.Debug("session_runtime: appending persisted event",
+		"session_id", rt.sessionID,
+		"event_type", e.Type,
+		"event_seq", e.Seq,
+	)
 	if err := m.appendPersistedEvent(req.ctx, rt, e); err != nil {
+		slog.Error("session_runtime: failed to append event",
+			"session_id", rt.sessionID,
+			"error", err,
+		)
 		return m.failSession(rt, fmt.Errorf("append event: %w", err)), true
 	}
 
@@ -91,14 +117,31 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 	sessionSnapshot := cloneSession(rt.session)
 	selectedActorIDs, ok := m.selectFn(sessionSnapshot, e)
 	if !ok {
+		slog.Debug("session_runtime: agent selector returned no actors",
+			"session_id", rt.sessionID,
+			"event_type", e.Type,
+		)
 		return nil, false
 	}
 	actorIDs := resolveSelectedAgentActors(sessionSnapshot, selectedActorIDs)
 	if len(actorIDs) == 0 {
+		slog.Debug("session_runtime: no resolved agent actors",
+			"session_id", rt.sessionID,
+		)
 		return nil, false
 	}
 
+	slog.Info("session_runtime: triggering agent execution",
+		"session_id", rt.sessionID,
+		"actor_ids", actorIDs,
+		"event_type", e.Type,
+	)
+
 	if err := m.setInFlight(req.ctx, rt, true); err != nil {
+		slog.Error("session_runtime: failed to set in-flight",
+			"session_id", rt.sessionID,
+			"error", err,
+		)
 		return m.failSession(rt, fmt.Errorf("set in-flight: %w", err)), true
 	}
 	defer func() {
@@ -106,22 +149,51 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 	}()
 
 	for _, actorID := range actorIDs {
+		slog.Debug("session_runtime: loading history for actor",
+			"session_id", rt.sessionID,
+			"actor_id", actorID,
+		)
 		history, err := m.store.List(req.ctx, rt.sessionID)
 		if err != nil {
+			slog.Error("session_runtime: failed to list history",
+				"session_id", rt.sessionID,
+				"actor_id", actorID,
+				"error", err,
+			)
 			return m.failSession(rt, fmt.Errorf("list history: %w", err)), true
 		}
 
+		slog.Debug("session_runtime: executing agent step",
+			"session_id", rt.sessionID,
+			"actor_id", actorID,
+			"history_count", len(history),
+		)
 		output, err := m.executor.Step(rt.ctx, AgentInput{
 			SessionID: rt.sessionID,
 			ActorID:   actorID,
 			History:   history,
 		})
 		if err != nil {
+			slog.Error("session_runtime: agent step failed",
+				"session_id", rt.sessionID,
+				"actor_id", actorID,
+				"error", err,
+			)
 			return m.recordAgentStepError(rt, actorID, err), false
 		}
 
+		slog.Info("session_runtime: agent step complete",
+			"session_id", rt.sessionID,
+			"actor_id", actorID,
+			"output_events_count", len(output.Events),
+		)
+
 		for _, produced := range output.Events {
 			if produced.SessionID != "" && produced.SessionID != rt.sessionID {
+				slog.Error("session_runtime: executor returned wrong session",
+					"session_id", rt.sessionID,
+					"produced_session_id", produced.SessionID,
+				)
 				return m.failSession(rt, fmt.Errorf("%w: executor returned session %q for runtime %q", ErrInvalidEvent, produced.SessionID, rt.sessionID)), true
 			}
 			if strings.TrimSpace(string(produced.From)) == "" {
@@ -131,9 +203,17 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 
 			canonical, err := m.canonicalizeEvent(rt, produced)
 			if err != nil {
+				slog.Error("session_runtime: failed to canonicalize agent event",
+					"session_id", rt.sessionID,
+					"error", err,
+				)
 				return m.failSession(rt, fmt.Errorf("canonicalize agent event: %w", err)), true
 			}
 			if err := m.appendPersistedEvent(req.ctx, rt, canonical); err != nil {
+				slog.Error("session_runtime: failed to append agent event",
+					"session_id", rt.sessionID,
+					"error", err,
+				)
 				return m.failSession(rt, fmt.Errorf("append agent event: %w", err)), true
 			}
 		}
@@ -143,8 +223,16 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 }
 
 func (m *Manager) handleCancelRequest(rt *sessionRuntime, req runtimeRequest) error {
+	slog.Info("session_runtime: handling cancel request",
+		"session_id", rt.sessionID,
+		"reason", req.reason,
+	)
 	currentStatus := rt.session.Status
 	if currentStatus != SessionActive {
+		slog.Warn("session_runtime: session not active for cancel",
+			"session_id", rt.sessionID,
+			"status", currentStatus,
+		)
 		return ErrSessionNotActive
 	}
 
@@ -158,9 +246,17 @@ func (m *Manager) handleCancelRequest(rt *sessionRuntime, req runtimeRequest) er
 		},
 	})
 	if err != nil {
+		slog.Error("session_runtime: failed to canonicalize cancel event",
+			"session_id", rt.sessionID,
+			"error", err,
+		)
 		return err
 	}
 	if err := m.appendPersistedEvent(req.ctx, rt, cancelEvent); err != nil {
+		slog.Error("session_runtime: failed to append cancel event",
+			"session_id", rt.sessionID,
+			"error", err,
+		)
 		return err
 	}
 
@@ -168,11 +264,16 @@ func (m *Manager) handleCancelRequest(rt *sessionRuntime, req runtimeRequest) er
 	_ = m.persistSessionRecord(context.Background(), rt, cancelEvent.Timestamp)
 	m.setSessionStatus(rt, SessionPaused)
 	rt.cancel()
+	slog.Info("session_runtime: session cancelled", "session_id", rt.sessionID)
 	return nil
 }
 
 func (m *Manager) failSession(rt *sessionRuntime, cause error) error {
 	msg := cause.Error()
+	slog.Error("session_runtime: failing session",
+		"session_id", rt.sessionID,
+		"cause", msg,
+	)
 
 	errEvent, err := m.canonicalizeEvent(rt, Event{
 		SessionID: rt.sessionID,
@@ -208,6 +309,11 @@ func (m *Manager) failSession(rt *sessionRuntime, cause error) error {
 
 func (m *Manager) recordAgentStepError(rt *sessionRuntime, actorID ActorID, cause error) error {
 	errWithContext := fmt.Errorf("agent step: %w", cause)
+	slog.Error("session_runtime: recording agent step error",
+		"session_id", rt.sessionID,
+		"actor_id", actorID,
+		"error", errWithContext,
+	)
 	errEvent, err := m.canonicalizeEvent(rt, Event{
 		SessionID: rt.sessionID,
 		From:      actorID,

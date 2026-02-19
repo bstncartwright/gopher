@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"time"
 )
@@ -60,6 +61,7 @@ func (t *execTool) Schema() ToolSchema {
 func (t *execTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error) {
 	command, err := requiredStringArg(input.Args, "command")
 	if err != nil {
+		slog.Error("exec_tool: command arg required")
 		return ToolOutput{Status: ToolStatusError}, err
 	}
 
@@ -81,6 +83,7 @@ func (t *execTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error)
 
 	envMap, err := parseEnvMap(input.Args["env"])
 	if err != nil {
+		slog.Error("exec_tool: failed to parse env map", "error", err)
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
 	}
 
@@ -91,6 +94,15 @@ func (t *execTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error)
 		}
 	}
 
+	slog.Debug("exec_tool: preparing execution",
+		"command", command,
+		"workdir", workdir,
+		"timeout_seconds", timeoutSeconds,
+		"background", background,
+		"env_count", len(envMap),
+		"session_id", input.Session.ID,
+	)
+
 	if background {
 		return t.runBackground(ctx, input, command, workdir, envMap, timeoutDuration)
 	}
@@ -98,6 +110,8 @@ func (t *execTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error)
 }
 
 func (t *execTool) runForeground(ctx context.Context, command string, workdir string, envMap map[string]string, timeout time.Duration) (ToolOutput, error) {
+	startTime := time.Now()
+	slog.Debug("exec_tool: running foreground command", "command", command, "workdir", workdir, "timeout", timeout)
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -119,6 +133,7 @@ func (t *execTool) runForeground(ctx context.Context, command string, workdir st
 	cmd.Stderr = stderr
 
 	runErr := cmd.Run()
+	duration := time.Since(startTime)
 	exitCode := 0
 	if runErr != nil {
 		if exitErr, ok := runErr.(*exec.ExitError); ok {
@@ -127,6 +142,15 @@ func (t *execTool) runForeground(ctx context.Context, command string, workdir st
 			exitCode = -1
 		}
 	}
+
+	slog.Info("exec_tool: foreground command complete",
+		"command", command,
+		"exit_code", exitCode,
+		"duration_ms", duration.Milliseconds(),
+		"stdout_length", len(stdout.String()),
+		"stderr_length", len(stderr.String()),
+		"success", exitCode == 0,
+	)
 
 	result := map[string]any{
 		"command":   command,
@@ -144,13 +168,21 @@ func (t *execTool) runForeground(ctx context.Context, command string, workdir st
 }
 
 func (t *execTool) runBackground(ctx context.Context, input ToolInput, command string, workdir string, envMap map[string]string, timeout time.Duration) (ToolOutput, error) {
+	slog.Debug("exec_tool: starting background command", "command", command, "workdir", workdir, "timeout", timeout)
 	session, err := input.Agent.Processes.Start(ctx, command, workdir, envMap, timeout)
 	if err != nil {
+		slog.Error("exec_tool: failed to start background process", "command", command, "error", err)
 		return ToolOutput{
 			Status: ToolStatusError,
 			Result: map[string]any{"error": err.Error()},
 		}, fmt.Errorf("exec background start: %w", err)
 	}
+
+	slog.Info("exec_tool: background process started",
+		"command", command,
+		"session_id", session.ID,
+		"pid", session.PID,
+	)
 
 	time.Sleep(100 * time.Millisecond)
 

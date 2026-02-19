@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -69,12 +70,15 @@ type Runtime struct {
 func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 	nodeID := strings.TrimSpace(opts.NodeID)
 	if nodeID == "" {
+		slog.Error("node_runtime: node ID is required")
 		return nil, fmt.Errorf("node ID is required")
 	}
 	if opts.Fabric == nil {
+		slog.Error("node_runtime: fabric is required", "node_id", nodeID)
 		return nil, fmt.Errorf("fabric is required")
 	}
 	if opts.Executor == nil {
+		slog.Error("node_runtime: executor is required", "node_id", nodeID)
 		return nil, fmt.Errorf("executor is required")
 	}
 	interval := opts.HeartbeatInterval
@@ -85,6 +89,12 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
+	slog.Info("node_runtime: creating runtime",
+		"node_id", nodeID,
+		"is_gateway", opts.IsGateway,
+		"capabilities_count", len(opts.Capabilities),
+		"heartbeat_interval", interval,
+	)
 	return &Runtime{
 		nodeID:       nodeID,
 		isGateway:    opts.IsGateway,
@@ -108,15 +118,18 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.running {
+		slog.Debug("node_runtime: already running", "node_id", r.nodeID)
 		return nil
 	}
 
+	slog.Info("node_runtime: starting", "node_id", r.nodeID)
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	r.subs = nil
 
 	controlSub, err := r.fabric.Subscribe(fabricts.NodeControlSubject(r.nodeID), r.handleControlMessage)
 	if err != nil {
 		r.cancel()
+		slog.Error("node_runtime: failed to subscribe to control", "node_id", r.nodeID, "error", err)
 		return fmt.Errorf("subscribe control: %w", err)
 	}
 	r.subs = append(r.subs, controlSub)
@@ -132,6 +145,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 	go r.heartbeatLoop()
 	r.running = true
+	slog.Info("node_runtime: started", "node_id", r.nodeID)
 	return nil
 }
 
@@ -141,6 +155,7 @@ func (r *Runtime) Stop() {
 	if !r.running {
 		return
 	}
+	slog.Info("node_runtime: stopping", "node_id", r.nodeID)
 	for _, sub := range r.subs {
 		sub.Unsubscribe()
 	}
@@ -149,18 +164,24 @@ func (r *Runtime) Stop() {
 		r.cancel()
 	}
 	r.running = false
+	slog.Info("node_runtime: stopped", "node_id", r.nodeID)
 }
 
 func (r *Runtime) heartbeatLoop() {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
+	heartbeatCount := 0
 	for {
 		select {
 		case <-r.ctx.Done():
+			slog.Debug("node_runtime: heartbeat loop stopped", "node_id", r.nodeID, "heartbeats_sent", heartbeatCount)
 			return
 		case <-ticker.C:
-			_ = r.publishHeartbeat(context.Background())
+			heartbeatCount++
+			if err := r.publishHeartbeat(context.Background()); err != nil {
+				slog.Warn("node_runtime: heartbeat failed", "node_id", r.nodeID, "error", err)
+			}
 		}
 	}
 }
@@ -174,8 +195,14 @@ func (r *Runtime) publishCapabilities(ctx context.Context) error {
 	}
 	blob, err := json.Marshal(announcement)
 	if err != nil {
+		slog.Error("node_runtime: failed to marshal capabilities", "node_id", r.nodeID, "error", err)
 		return fmt.Errorf("marshal capabilities: %w", err)
 	}
+	slog.Debug("node_runtime: publishing capabilities",
+		"node_id", r.nodeID,
+		"is_gateway", r.isGateway,
+		"capabilities_count", len(r.capabilities),
+	)
 	return r.fabric.Publish(ctx, fabricts.Message{
 		Subject: fabricts.NodeCapabilitiesSubject(r.nodeID),
 		Data:    blob,
@@ -191,6 +218,7 @@ func (r *Runtime) publishHeartbeat(ctx context.Context) error {
 	}
 	blob, err := json.Marshal(heartbeat)
 	if err != nil {
+		slog.Error("node_runtime: failed to marshal heartbeat", "node_id", r.nodeID, "error", err)
 		return fmt.Errorf("marshal heartbeat: %w", err)
 	}
 	return r.fabric.Publish(ctx, fabricts.Message{
@@ -202,9 +230,17 @@ func (r *Runtime) publishHeartbeat(ctx context.Context) error {
 func (r *Runtime) handleControlMessage(ctx context.Context, message fabricts.Message) {
 	var request ExecutionRequest
 	if err := json.Unmarshal(message.Data, &request); err != nil {
+		slog.Error("node_runtime: failed to decode execution request", "node_id", r.nodeID, "error", err)
 		r.respond(ctx, message.Reply, ExecutionResponse{Error: fmt.Sprintf("decode execution request: %v", err)})
 		return
 	}
+
+	slog.Info("node_runtime: handling execution request",
+		"node_id", r.nodeID,
+		"session_id", request.SessionID,
+		"actor_id", request.ActorID,
+		"history_count", len(request.History),
+	)
 
 	output, err := r.executor.Step(r.ctx, sessionrt.AgentInput{
 		SessionID: request.SessionID,
@@ -212,9 +248,20 @@ func (r *Runtime) handleControlMessage(ctx context.Context, message fabricts.Mes
 		History:   request.History,
 	})
 	if err != nil {
+		slog.Error("node_runtime: execution failed",
+			"node_id", r.nodeID,
+			"session_id", request.SessionID,
+			"error", err,
+		)
 		r.respond(ctx, message.Reply, ExecutionResponse{Error: err.Error()})
 		return
 	}
+
+	slog.Info("node_runtime: execution complete",
+		"node_id", r.nodeID,
+		"session_id", request.SessionID,
+		"events_count", len(output.Events),
+	)
 	r.respond(ctx, message.Reply, ExecutionResponse{Events: output.Events})
 }
 

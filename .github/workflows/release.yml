@@ -66,7 +66,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        goarch: [amd64, arm64]
+        goarch:
+          - amd64
+          # - arm64 # temporarily disabled; keep for later re-enable
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -114,8 +116,8 @@ jobs:
         run: |
           mkdir -p release
           cp dist/release-linux-amd64/gopher-linux-amd64 release/
-          cp dist/release-linux-arm64/gopher-linux-arm64 release/
-          cat dist/release-linux-amd64/gopher-linux-amd64.sha256 dist/release-linux-arm64/gopher-linux-arm64.sha256 > release/checksums.txt
+          # cp dist/release-linux-arm64/gopher-linux-arm64 release/ # temporarily disabled
+          cat dist/release-linux-amd64/gopher-linux-amd64.sha256 > release/checksums.txt
 
       - name: create github release
         uses: softprops/action-gh-release@v2
@@ -123,7 +125,7 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ github.sha }}
+          # Add release/gopher-linux-arm64 back when arm64 build is re-enabled.
           files: |
             release/gopher-linux-amd64
-            release/gopher-linux-arm64
             release/checksums.txt

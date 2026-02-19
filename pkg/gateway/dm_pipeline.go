@@ -3,7 +3,8 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +21,6 @@ type DMPipelineOptions struct {
 	RecipientByAgent map[sessionrt.ActorID]string
 	Conversations    *ConversationSessionMap
 	Bindings         ConversationBindingStore
-	Logger           *log.Logger
 }
 
 type conversationRoute struct {
@@ -42,7 +42,6 @@ type DMPipeline struct {
 	recipByAgent  map[sessionrt.ActorID]string
 	conversations *ConversationSessionMap
 	bindings      ConversationBindingStore
-	logger        *log.Logger
 
 	setupMu      sync.Mutex
 	subscribedMu sync.Mutex
@@ -66,9 +65,17 @@ const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmFallbackMinInterval    = 5 * time.Second
+	dmFallbackDetailMaxChars = 120
 	dmTypingTimeout          = 3 * time.Second
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	heartbeatAckDefaultChars = 300
+)
+
+var (
+	fallbackAuthBearerPattern     = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*bearer\s+[^\s,;]+`)
+	fallbackBearerPattern         = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;]+`)
+	fallbackSensitiveValuePattern = regexp.MustCompile(`(?i)\b(authorization|bearer|api[-_ ]?key|token|secret|password)\b\s*[:=]?\s*([^\s,;]+)`)
+	fallbackLongTokenPattern      = regexp.MustCompile(`\b[A-Za-z0-9_-]{24,}\b`)
 )
 
 type typingTransport interface {
@@ -81,12 +88,15 @@ type managedConversationUsersReader interface {
 
 func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 	if opts.Manager == nil {
+		slog.Error("dm_pipeline: session manager is required")
 		return nil, fmt.Errorf("session manager is required")
 	}
 	if opts.Transport == nil {
+		slog.Error("dm_pipeline: transport is required")
 		return nil, fmt.Errorf("transport is required")
 	}
 	if strings.TrimSpace(string(opts.AgentID)) == "" {
+		slog.Error("dm_pipeline: agent id is required")
 		return nil, fmt.Errorf("agent id is required")
 	}
 	conversations := opts.Conversations
@@ -104,6 +114,10 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 			recipByAgent[actorID] = recipientID
 		}
 	}
+	slog.Info("dm_pipeline: creating pipeline",
+		"agent_id", opts.AgentID,
+		"agents_by_recipient_count", len(agentByRecip),
+	)
 	pipeline := &DMPipeline{
 		manager:       opts.Manager,
 		transport:     opts.Transport,
@@ -112,7 +126,6 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		recipByAgent:  recipByAgent,
 		conversations: conversations,
 		bindings:      bindings,
-		logger:        opts.Logger,
 		subscribed:    map[sessionrt.SessionID]struct{}{},
 		lastFallback:  map[string]time.Time{},
 		processing:    map[string]int{},
@@ -124,6 +137,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		pipeline.setConversationRoute(binding.ConversationID, binding.AgentID, binding.RecipientID, binding.Mode)
 	}
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
+	slog.Info("dm_pipeline: pipeline created", "agent_id", opts.AgentID)
 	return pipeline, nil
 }
 
@@ -132,12 +146,25 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	if conversationID == "" {
 		return nil
 	}
+	slog.Debug("dm_pipeline: handling inbound",
+		"conversation_id", conversationID,
+		"sender_id", inbound.SenderID,
+		"recipient_id", inbound.RecipientID,
+		"sender_managed", inbound.SenderManaged,
+	)
 	if inbound.SenderManaged {
 		mode := p.conversationModeFor(conversationID)
 		if mode != ConversationModeDelegation {
+			slog.Debug("dm_pipeline: skipping managed sender - not delegation mode",
+				"conversation_id", conversationID,
+				"mode", mode,
+			)
 			return nil
 		}
 		if existingSessionID, ok := p.conversations.Get(conversationID); !ok || !p.isSessionActive(ctx, existingSessionID) {
+			slog.Debug("dm_pipeline: skipping managed sender - no active session",
+				"conversation_id", conversationID,
+			)
 			return nil
 		}
 	}
@@ -145,6 +172,11 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	agentID, recipientID := p.routeForInbound(inbound.RecipientID)
 	sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID)
 	if err != nil {
+		slog.Error("dm_pipeline: failed to resolve session",
+			"conversation_id", conversationID,
+			"sender_id", inbound.SenderID,
+			"error", err,
+		)
 		return err
 	}
 	p.startProcessing(conversationID)
@@ -176,9 +208,11 @@ func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID,
 	go func() {
 		if err := p.manager.SendEvent(context.Background(), event); err != nil {
 			p.finishProcessing(conversationID)
-			if p.logger != nil {
-				p.logger.Printf("send dm session event failed conversation_id=%q sender=%q err=%v", conversationID, senderID, err)
-			}
+			slog.Error("dm_pipeline: send dm session event failed",
+				"conversation_id", conversationID,
+				"sender_id", senderID,
+				"error", err,
+			)
 			p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), err.Error())
 		}
 	}()
@@ -191,9 +225,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 	}
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
 		if !p.isSessionActive(ctx, existing) {
-			if p.logger != nil {
-				p.logger.Printf("conversation_id=%q has inactive session=%q; creating replacement session", conversationID, existing)
-			}
+			slog.Debug("dm_pipeline: conversation has inactive session; creating replacement",
+				"conversation_id", conversationID,
+				"session_id", existing,
+			)
 		} else {
 			if err := p.ensureSubscription(conversationID, existing); err != nil {
 				return "", err
@@ -219,9 +254,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
 		if !p.isSessionActive(ctx, existing) {
-			if p.logger != nil {
-				p.logger.Printf("conversation_id=%q has inactive session=%q after lock; creating replacement session", conversationID, existing)
-			}
+			slog.Debug("dm_pipeline: conversation has inactive session after lock; creating replacement",
+				"conversation_id", conversationID,
+				"session_id", existing,
+			)
 		} else {
 			if err := p.ensureSubscription(conversationID, existing); err != nil {
 				return "", err
@@ -242,6 +278,11 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		}
 	}
 
+	slog.Info("dm_pipeline: creating new session",
+		"conversation_id", conversationID,
+		"agent_id", desiredAgentID,
+		"sender_id", senderID,
+	)
 	created, err := p.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: desiredAgentID, Type: sessionrt.ActorAgent},
@@ -249,6 +290,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		},
 	})
 	if err != nil {
+		slog.Error("dm_pipeline: failed to create session",
+			"conversation_id", conversationID,
+			"error", err,
+		)
 		return "", fmt.Errorf("create dm session: %w", err)
 	}
 	if err := p.ensureSubscription(conversationID, created.ID); err != nil {
@@ -259,6 +304,10 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		_ = p.manager.CancelSession(context.Background(), created.ID)
 		return "", err
 	}
+	slog.Info("dm_pipeline: session created",
+		"conversation_id", conversationID,
+		"session_id", created.ID,
+	)
 	return created.ID, nil
 }
 
@@ -344,12 +393,19 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			if content == "" {
 				continue
 			}
+			slog.Debug("dm_pipeline: sending message",
+				"conversation_id", conversationID,
+				"content_length", len(content),
+			)
 			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 				ConversationID: conversationID,
 				SenderID:       p.senderForConversationEvent(conversationID, event.From),
 				Text:           msg.Content,
-			}); err != nil && p.logger != nil {
-				p.logger.Printf("send dm response failed: %v", err)
+			}); err != nil {
+				slog.Error("dm_pipeline: send dm response failed",
+					"conversation_id", conversationID,
+					"error", err,
+				)
 			}
 		}
 	}()
@@ -408,8 +464,12 @@ func (p *DMPipeline) sendTyping(conversationID string, typing bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dmTypingTimeout)
 	defer cancel()
-	if err := typingAPI.SendTyping(ctx, conversationID, typing); err != nil && p.logger != nil {
-		p.logger.Printf("send dm typing failed conversation_id=%q typing=%t err=%v", conversationID, typing, err)
+	if err := typingAPI.SendTyping(ctx, conversationID, typing); err != nil {
+		slog.Warn("dm_pipeline: send dm typing failed",
+			"conversation_id", conversationID,
+			"typing", typing,
+			"error", err,
+		)
 	}
 }
 
@@ -769,11 +829,69 @@ func errorTextFromPayload(payload any) string {
 }
 
 func fallbackReplyForError(message string) string {
+	detail := fallbackErrorDetail(message)
 	text := strings.ToLower(strings.TrimSpace(message))
 	if strings.Contains(text, "rate limit") || strings.Contains(text, "429") {
-		return dmRateLimitFallbackReply
+		if detail == "" {
+			detail = "rate limit (429)"
+		}
+		return appendFallbackDetail(dmRateLimitFallbackReply, detail)
 	}
-	return dmErrorFallbackReply
+	return appendFallbackDetail(dmErrorFallbackReply, detail)
+}
+
+func fallbackErrorDetail(message string) string {
+	sanitized := sanitizeFallbackErrorDetail(message)
+	if sanitized == "" {
+		return ""
+	}
+	text := strings.ToLower(sanitized)
+	switch {
+	case strings.Contains(text, "rate limit"), strings.Contains(text, "429"), strings.Contains(text, "too many requests"):
+		return "rate limit (429)"
+	case strings.Contains(text, "deadline exceeded"), strings.Contains(text, "timed out"), strings.Contains(text, "timeout"):
+		return "request timed out"
+	case strings.Contains(text, "connection refused"), strings.Contains(text, "upstream connect"), strings.Contains(text, "connection reset"), strings.Contains(text, "dial tcp"), strings.Contains(text, "no such host"):
+		return "connection to provider failed"
+	case strings.Contains(text, "unauthorized"), strings.Contains(text, "invalid api key"), strings.Contains(text, "401"):
+		return "provider authentication failed (401)"
+	case strings.Contains(text, "forbidden"), strings.Contains(text, "403"):
+		return "provider rejected the request (403)"
+	case strings.Contains(text, "model not found"), strings.Contains(text, "404"):
+		return "model not found (404)"
+	case strings.Contains(text, "service unavailable"), strings.Contains(text, "overloaded"), strings.Contains(text, "502"), strings.Contains(text, "503"), strings.Contains(text, "500"), strings.Contains(text, "bad gateway"):
+		return "provider service unavailable"
+	}
+	return sanitized
+}
+
+func sanitizeFallbackErrorDetail(message string) string {
+	detail := strings.TrimSpace(message)
+	if detail == "" {
+		return ""
+	}
+	detail = strings.Join(strings.Fields(detail), " ")
+	detail = fallbackAuthBearerPattern.ReplaceAllString(detail, "authorization=[redacted]")
+	detail = fallbackBearerPattern.ReplaceAllString(detail, "bearer [redacted]")
+	detail = fallbackSensitiveValuePattern.ReplaceAllString(detail, "$1=[redacted]")
+	detail = fallbackLongTokenPattern.ReplaceAllString(detail, "[redacted]")
+	if len([]rune(detail)) > dmFallbackDetailMaxChars {
+		runes := []rune(detail)
+		detail = strings.TrimSpace(string(runes[:dmFallbackDetailMaxChars])) + "..."
+	}
+	return strings.TrimSpace(detail)
+}
+
+func appendFallbackDetail(base, detail string) string {
+	base = strings.TrimSpace(base)
+	detail = strings.TrimSpace(strings.TrimRight(detail, "."))
+	if base == "" || detail == "" {
+		return base
+	}
+	if strings.HasSuffix(base, ".") {
+		base = strings.TrimSuffix(base, ".")
+	}
+	return base + " Details: " + detail + "."
 }
 
 func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) {
@@ -793,12 +911,19 @@ func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) 
 	p.fallbackMu.Unlock()
 
 	reply := fallbackReplyForError(rawErr)
+	slog.Warn("dm_pipeline: sending error fallback",
+		"conversation_id", conversationID,
+		"error_message", rawErr,
+	)
 	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 		ConversationID: conversationID,
 		SenderID:       strings.TrimSpace(senderID),
 		Text:           reply,
-	}); err != nil && p.logger != nil {
-		p.logger.Printf("send dm error fallback failed: %v", err)
+	}); err != nil {
+		slog.Error("dm_pipeline: send dm error fallback failed",
+			"conversation_id", conversationID,
+			"error", err,
+		)
 	}
 }
 

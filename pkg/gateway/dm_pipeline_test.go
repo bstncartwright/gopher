@@ -61,6 +61,7 @@ type fakeTransport struct {
 
 type typingSignal struct {
 	ConversationID string
+	SenderID       string
 	Typing         bool
 }
 
@@ -78,10 +79,14 @@ func (f *fakeTransport) SendMessage(_ context.Context, message transport.Outboun
 	return nil
 }
 func (f *fakeTransport) SendTyping(_ context.Context, conversationID string, typing bool) error {
+	return f.SendTypingAs(context.Background(), conversationID, "", typing)
+}
+func (f *fakeTransport) SendTypingAs(_ context.Context, conversationID, senderID string, typing bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.typing = append(f.typing, typingSignal{
 		ConversationID: conversationID,
+		SenderID:       senderID,
 		Typing:         typing,
 	})
 	return nil
@@ -512,6 +517,72 @@ func TestDMPipelineRoutesByRecipientToMatchingAgentWorkspace(t *testing.T) {
 	participant, ok := loaded.Participants["agent:writer"]
 	if !ok || participant.Type != sessionrt.ActorAgent {
 		t.Fatalf("expected agent:writer participant, got %#v", loaded.Participants)
+	}
+}
+
+func TestDMPipelineTypingUsesRoutedRecipientSender(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:planner",
+		AgentByRecipient: map[string]sessionrt.ActorID{
+			"@writer:hs": "agent:writer",
+		},
+		RecipientByAgent: map[sessionrt.ActorID]string{
+			"agent:planner": "@planner:hs",
+			"agent:writer":  "@writer:hs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:typing-route",
+		SenderID:       "@user:hs",
+		RecipientID:    "@writer:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		signals := fake.typingSignals()
+		for _, signal := range signals {
+			if signal.ConversationID == "!dm:typing-route" && signal.Typing {
+				return true
+			}
+		}
+		return false
+	})
+
+	signals := fake.typingSignals()
+	var first typingSignal
+	found := false
+	for _, signal := range signals {
+		if signal.ConversationID == "!dm:typing-route" && signal.Typing {
+			first = signal
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected typing=true signal for !dm:typing-route")
+	}
+	if first.SenderID != "@writer:hs" {
+		t.Fatalf("typing sender id = %q, want @writer:hs", first.SenderID)
 	}
 }
 

@@ -1,3 +1,4 @@
+//lint:file-ignore SA1019 nhooyr websocket is required for codex compatibility.
 package ai
 
 import (
@@ -40,19 +41,19 @@ var codexToolCallProviders = map[Provider]struct{}{
 }
 
 type codexRequestBody struct {
-	Model                string           `json:"model"`
-	Store                bool             `json:"store"`
-	Stream               bool             `json:"stream,omitempty"`
-	Instructions         string           `json:"instructions,omitempty"`
-	Input                []any            `json:"input,omitempty"`
-	Tools                []map[string]any `json:"tools,omitempty"`
-	ToolChoice           string           `json:"tool_choice,omitempty"`
-	ParallelToolCalls    bool             `json:"parallel_tool_calls,omitempty"`
-	Temperature          *float64         `json:"temperature,omitempty"`
-	Reasoning            map[string]any   `json:"reasoning,omitempty"`
-	Text                 map[string]any   `json:"text,omitempty"`
-	Include              []string         `json:"include,omitempty"`
-	PromptCacheKey       string           `json:"prompt_cache_key,omitempty"`
+	Model             string           `json:"model"`
+	Store             bool             `json:"store"`
+	Stream            bool             `json:"stream,omitempty"`
+	Instructions      string           `json:"instructions,omitempty"`
+	Input             []any            `json:"input,omitempty"`
+	Tools             []map[string]any `json:"tools,omitempty"`
+	ToolChoice        string           `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool             `json:"parallel_tool_calls,omitempty"`
+	Temperature       *float64         `json:"temperature,omitempty"`
+	Reasoning         map[string]any   `json:"reasoning,omitempty"`
+	Text              map[string]any   `json:"text,omitempty"`
+	Include           []string         `json:"include,omitempty"`
+	PromptCacheKey    string           `json:"prompt_cache_key,omitempty"`
 }
 
 func StreamOpenAICodexResponses(model Model, conversation Context, options *StreamOptions) *AssistantMessageEventStream {
@@ -212,16 +213,16 @@ func buildCodexRequestBody(model Model, conversation Context, options *OpenAICod
 		textVerbosity = "medium"
 	}
 	body := codexRequestBody{
-		Model:                model.ID,
-		Store:                false,
-		Stream:               true,
-		Instructions:         conversation.SystemPrompt,
-		Input:                messages,
-		Text:                 map[string]any{"verbosity": textVerbosity},
-		Include:              []string{"reasoning.encrypted_content"},
-		PromptCacheKey:       options.SessionID,
-		ToolChoice:           "auto",
-		ParallelToolCalls:    true,
+		Model:             model.ID,
+		Store:             false,
+		Stream:            true,
+		Instructions:      conversation.SystemPrompt,
+		Input:             messages,
+		Text:              map[string]any{"verbosity": textVerbosity},
+		Include:           []string{"reasoning.encrypted_content"},
+		PromptCacheKey:    options.SessionID,
+		ToolChoice:        "auto",
+		ParallelToolCalls: true,
 	}
 	if options.Temperature != nil {
 		body.Temperature = options.Temperature

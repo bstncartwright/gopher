@@ -97,18 +97,6 @@ func (s *AssistantMessageEventStream) Dropped() int {
 	return s.dropped
 }
 
-func (s *AssistantMessageEventStream) closeOnce() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	select {
-	case <-s.wait:
-		return
-	default:
-		close(s.wait)
-		close(s.events)
-	}
-}
-
 func (s *AssistantMessageEventStream) Result(ctx context.Context) (AssistantMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()

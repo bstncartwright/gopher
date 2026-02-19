@@ -391,14 +391,25 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 }
 
 func (t *Transport) SendTyping(ctx context.Context, conversationID string, typing bool) error {
+	return t.SendTypingAs(ctx, conversationID, "", typing)
+}
+
+func (t *Transport) SendTypingAs(ctx context.Context, conversationID, senderID string, typing bool) error {
 	roomID := strings.TrimSpace(conversationID)
 	if roomID == "" {
 		return fmt.Errorf("matrix typing conversation id is required")
 	}
-	userID := strings.TrimSpace(t.resolveRoomManagedUser(roomID))
+	userID := strings.TrimSpace(senderID)
+	if userID != "" && !t.isManagedUser(userID) {
+		userID = ""
+	}
+	if userID == "" {
+		userID = strings.TrimSpace(t.resolveRoomManagedUser(roomID))
+	}
 	if userID == "" {
 		return nil
 	}
+	t.setRoomManagedUser(roomID, userID)
 	t.mu.RLock()
 	started := t.started
 	queue := t.typingQueue

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -613,9 +612,4 @@ func mapAnthropicStopReason(reason string) StopReason {
 	default:
 		return StopReasonStop
 	}
-}
-
-func parseInt(value string) int {
-	v, _ := strconv.Atoi(strings.TrimSpace(value))
-	return v
 }

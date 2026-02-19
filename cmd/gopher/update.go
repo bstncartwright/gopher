@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -30,6 +34,9 @@ var (
 	selectChecksumsAssetForUpdate = update.SelectChecksumsAsset
 	applyReleaseForUpdate         = update.ApplyRelease
 	executablePathForUpdate       = os.Executable
+	shouldPromptSudoForUpdate     = isInteractiveTerminal
+	retryWithSudoForUpdate        = rerunUpdateWithSudo
+	envLookupForUpdate            = os.Getenv
 )
 
 type noopRunner struct{}
@@ -42,7 +49,6 @@ func (noopRunner) Run(ctx context.Context, command string, args ...string) error
 }
 
 func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
-	_ = stderr
 	if wantsHelp(args) {
 		printUpdateUsage(stdout)
 		return nil
@@ -125,6 +131,21 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 		ChecksumsURL: checksumsAsset.DownloadURL(),
 		Runner:       runner,
 	}); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			if envLookupForUpdate("GOPHER_UPDATE_ELEVATED") != "1" && shouldPromptSudoForUpdate() {
+				if stderr != nil {
+					fmt.Fprintln(stderr, "permission denied updating binary; retrying with sudo")
+				}
+				if retryErr := retryWithSudoForUpdate(ctx, args, stdout, stderr); retryErr == nil {
+					return nil
+				}
+			}
+			commandName := filepath.Base(os.Args[0])
+			if commandName == "." || commandName == "/" || commandName == "" {
+				commandName = "gopher"
+			}
+			return fmt.Errorf("%w\nhint: %q is not writable by the current user; retry with elevated permissions:\n  sudo -E %s update", err, targetBinaryPath, commandName)
+		}
 		return err
 	}
 
@@ -154,4 +175,30 @@ func printUpdateUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --asset-pattern <text>  additional asset name filter")
 	fmt.Fprintln(out, "  --service-name <name>   optional systemd service to restart after update")
 	fmt.Fprintln(out, "  --github-token <token>  github token (or GOPHER_GITHUB_TOKEN / GOPHER_GITHUB_UPDATE_TOKEN)")
+}
+
+func isInteractiveTerminal() bool {
+	stdin, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (stdin.Mode() & os.ModeCharDevice) != 0
+}
+
+func rerunUpdateWithSudo(ctx context.Context, updateArgs []string, stdout, stderr io.Writer) error {
+	execPath, err := executablePathForUpdate()
+	if err != nil {
+		return fmt.Errorf("resolve current executable for sudo retry: %w", err)
+	}
+	sudoArgs := []string{"-E", execPath, "update"}
+	sudoArgs = append(sudoArgs, updateArgs...)
+	cmd := exec.CommandContext(ctx, "sudo", sudoArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = append(os.Environ(), "GOPHER_UPDATE_ELEVATED=1")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run sudo update command: %w", err)
+	}
+	return nil
 }

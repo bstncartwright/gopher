@@ -189,6 +189,106 @@ func TestHeartbeatRunnerProcessDueSkipsBusyConversations(t *testing.T) {
 	}
 }
 
+func TestHeartbeatRunnerProcessDueSkipsDuringSleepingHoursWhenTimezoneConfigured(t *testing.T) {
+	now := time.Date(2026, 2, 18, 7, 0, 0, 0, time.UTC) // 02:00 in America/New_York.
+	manager := &recordingSessionManager{
+		sessions: map[sessionrt.SessionID]*sessionrt.Session{
+			"sess-1": {
+				ID: "sess-1",
+				Participants: map[sessionrt.ActorID]sessionrt.Participant{
+					"agent:a": {ID: "agent:a", Type: sessionrt.ActorAgent},
+				},
+				Status: sessionrt.SessionActive,
+			},
+		},
+	}
+	pipeline := &DMPipeline{
+		agentID:       "agent:a",
+		conversations: NewConversationSessionMap(),
+		recipByAgent:  map[sessionrt.ActorID]string{},
+		routes:        map[string]conversationRoute{},
+		processing:    map[string]int{},
+		heartbeats:    map[string]heartbeatState{},
+	}
+	pipeline.conversations.Set("!dm:one", "sess-1")
+	pipeline.setConversationRoute("!dm:one", "agent:a", "@agent:a", ConversationModeDM)
+
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager:  manager,
+		Pipeline: pipeline,
+		Schedules: []HeartbeatSchedule{{
+			AgentID:     "agent:a",
+			Every:       time.Minute,
+			Prompt:      "hb",
+			AckMaxChars: 123,
+			Timezone:    "America/New_York",
+		}},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+
+	runner.nextRun["agent:a"] = now
+	runner.processDue(context.Background())
+
+	if len(manager.sentEvents()) != 0 {
+		t.Fatalf("expected no heartbeat dispatch during configured sleeping hours")
+	}
+	if _, ok := pipeline.heartbeats["!dm:one"]; ok {
+		t.Fatalf("did not expect pending heartbeat state when dispatch is skipped")
+	}
+}
+
+func TestHeartbeatRunnerProcessDueDispatchesOutsideSleepingHoursWhenTimezoneConfigured(t *testing.T) {
+	now := time.Date(2026, 2, 18, 16, 0, 0, 0, time.UTC) // 11:00 in America/New_York.
+	manager := &recordingSessionManager{
+		sessions: map[sessionrt.SessionID]*sessionrt.Session{
+			"sess-1": {
+				ID: "sess-1",
+				Participants: map[sessionrt.ActorID]sessionrt.Participant{
+					"agent:a": {ID: "agent:a", Type: sessionrt.ActorAgent},
+				},
+				Status: sessionrt.SessionActive,
+			},
+		},
+	}
+	pipeline := &DMPipeline{
+		agentID:       "agent:a",
+		conversations: NewConversationSessionMap(),
+		recipByAgent:  map[sessionrt.ActorID]string{},
+		routes:        map[string]conversationRoute{},
+		processing:    map[string]int{},
+		heartbeats:    map[string]heartbeatState{},
+	}
+	pipeline.conversations.Set("!dm:one", "sess-1")
+	pipeline.setConversationRoute("!dm:one", "agent:a", "@agent:a", ConversationModeDM)
+
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager:  manager,
+		Pipeline: pipeline,
+		Schedules: []HeartbeatSchedule{{
+			AgentID:     "agent:a",
+			Every:       time.Minute,
+			Prompt:      "hb",
+			AckMaxChars: 123,
+			Timezone:    "America/New_York",
+		}},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+
+	runner.nextRun["agent:a"] = now
+	runner.processDue(context.Background())
+
+	events := manager.sentEvents()
+	if len(events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(events))
+	}
+}
+
 func TestHeartbeatRunnerDispatchesOnlyWhenScheduledAgentIsParticipant(t *testing.T) {
 	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
 	manager := &recordingSessionManager{

@@ -50,6 +50,9 @@ func TestCollectHeartbeatSchedulesIncludesOnlyEnabledAgents(t *testing.T) {
 	runtime := &gatewayAgentRuntime{
 		Agents: map[sessionrt.ActorID]*agentcore.Agent{
 			"writer": {
+				Config: agentcore.AgentConfig{
+					UserTimezone: "America/New_York",
+				},
 				Heartbeat: agentcore.AgentHeartbeat{
 					Enabled:     true,
 					Every:       15 * time.Minute,
@@ -81,5 +84,8 @@ func TestCollectHeartbeatSchedulesIncludesOnlyEnabledAgents(t *testing.T) {
 	}
 	if schedules[0].AckMaxChars != 120 {
 		t.Fatalf("ack max = %d, want 120", schedules[0].AckMaxChars)
+	}
+	if schedules[0].Timezone != "America/New_York" {
+		t.Fatalf("timezone = %q, want America/New_York", schedules[0].Timezone)
 	}
 }

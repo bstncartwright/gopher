@@ -287,7 +287,11 @@ func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
 }
 
 func applyDefaultEnabledTools(cfg *AgentConfig) {
-	if cfg == nil || cfg.DisableDefaultSearchMCP {
+	if cfg == nil {
+		return
+	}
+	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
+	if cfg.DisableDefaultSearchMCP {
 		return
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_search")

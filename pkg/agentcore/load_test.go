@@ -192,10 +192,66 @@ func TestLoadAgentRejectsInvalidRequiredCapability(t *testing.T) {
 	}
 }
 
+func TestLoadAgentImplicitlyEnablesDefaultWebSearchTool(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:fs"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if _, ok := agent.Tools.Get("web_search"); !ok {
+		t.Fatalf("expected implicit web_search tool to be enabled")
+	}
+	if !containsTool(agent.Config.EnabledTools, "web_search") {
+		t.Fatalf("expected web_search in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+}
+
+func TestLoadAgentDisableDefaultSearchMCPSkipsImplicitTool(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:fs"}
+	config.DisableDefaultSearchMCP = true
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if _, ok := agent.Tools.Get("web_search"); ok {
+		t.Fatalf("did not expect implicit web_search tool when disable_default_search_mcp=true")
+	}
+}
+
+func TestLoadAgentExplicitWebSearchStillWorksWhenDefaultDisabled(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:fs", "web_search"}
+	config.DisableDefaultSearchMCP = true
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if _, ok := agent.Tools.Get("web_search"); !ok {
+		t.Fatalf("expected explicit web_search tool to remain enabled")
+	}
+}
+
 func modelsToMap(models []ai.Model) map[string]ai.Model {
 	out := make(map[string]ai.Model, len(models))
 	for _, model := range models {
 		out[model.ID] = model
 	}
 	return out
+}
+
+func containsTool(tools []string, target string) bool {
+	for _, item := range tools {
+		if strings.TrimSpace(item) == target {
+			return true
+		}
+	}
+	return false
 }

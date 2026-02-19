@@ -85,6 +85,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&processTool{})
 		case "group:collaboration":
 			add(&delegateTool{})
+		case "group:web":
+			add(newWebSearchMCPTool())
 		case "shell", "shell.exec", "exec":
 			add(&execTool{})
 		case "process":
@@ -93,6 +95,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&cronTool{})
 		case "delegate":
 			add(&delegateTool{})
+		case "web_search", "search_mcp", "search":
+			add(newWebSearchMCPTool())
 		case "git", "git.status", "git.diff":
 			// intentionally ignored in v0
 		}

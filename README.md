@@ -284,6 +284,9 @@ Run the accessibility audit and apply fixes.
      - system prompt uses an OpenClaw-style sectioned layout (`full|minimal|none`; default `full`)
      - `<available_skills>` metadata is injected; full skill instructions are loaded on demand via `read`
      - explicit skill invocation is supported via `/skill:<name> [args]`
+     - `web_search` tool is enabled by default at runtime (MCP-backed via `https://api.z.ai/api/mcp/web_search_prime/mcp`)
+       - aliases: `web_search`, `search_mcp`, `search`, and `group:web`
+       - set `disable_default_search_mcp = true` in `config.json` to opt out for that agent
      - bootstrap files are injected every turn with caps:
        - `bootstrap_max_chars` (default `20000`) per file
        - `bootstrap_total_max_chars` (default `150000`) total across injected files
@@ -321,7 +324,7 @@ Run the accessibility audit and apply fixes.
    - `presence_interval = "60s"` (default keepalive)
    - `presence_status_msg = ""` (optional custom status)
    - `rich_text_enabled = true` (default; renders markdown replies as sanitized html with plain-text fallback)
-3. configure model provider key in `/etc/gopher/gopher.env` (example: `ZAI_API_KEY=...`) and restart:
+3. configure model provider key in `/etc/gopher/gopher.env` (required for default `web_search` MCP and zai models: `ZAI_API_KEY=...`) and restart:
    - `sudo systemctl restart gopher-gateway.service`
 4. register appservice in conduit admin room using `/etc/gopher/gopher-appservice-registration.yaml`
    - command message: `@conduit:<server_name>: register-appservice`

@@ -43,6 +43,7 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	if err := decodeJSONFile(configPath, &config); err != nil {
 		return nil, fmt.Errorf("read config.json: %w", err)
 	}
+	applyDefaultEnabledTools(&config)
 	if config.MaxContextMessages <= 0 {
 		config.MaxContextMessages = DefaultContextWindow
 	}
@@ -180,6 +181,26 @@ func decodeJSONFile(path string, out any) error {
 		return err
 	}
 	return nil
+}
+
+func applyDefaultEnabledTools(cfg *AgentConfig) {
+	if cfg == nil || cfg.DisableDefaultSearchMCP {
+		return
+	}
+	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_search")
+}
+
+func appendUniqueTool(tools []string, target string) []string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return tools
+	}
+	for _, tool := range tools {
+		if strings.TrimSpace(tool) == target {
+			return tools
+		}
+	}
+	return append(tools, target)
 }
 
 func resolveAllowedFSRoots(workspace string, roots []string, allowCrossAgentFS bool) ([]string, error) {

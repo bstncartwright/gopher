@@ -53,7 +53,6 @@ type codexRequestBody struct {
 	Text                 map[string]any   `json:"text,omitempty"`
 	Include              []string         `json:"include,omitempty"`
 	PromptCacheKey       string           `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetention string           `json:"prompt_cache_retention,omitempty"`
 }
 
 func StreamOpenAICodexResponses(model Model, conversation Context, options *StreamOptions) *AssistantMessageEventStream {
@@ -221,7 +220,6 @@ func buildCodexRequestBody(model Model, conversation Context, options *OpenAICod
 		Text:                 map[string]any{"verbosity": textVerbosity},
 		Include:              []string{"reasoning.encrypted_content"},
 		PromptCacheKey:       options.SessionID,
-		PromptCacheRetention: ternary(options.SessionID != "", "in-memory", ""),
 		ToolChoice:           "auto",
 		ParallelToolCalls:    true,
 	}

@@ -41,7 +41,7 @@ var codexToolCallProviders = map[Provider]struct{}{
 
 type codexRequestBody struct {
 	Model                string           `json:"model"`
-	Store                bool             `json:"store,omitempty"`
+	Store                bool             `json:"store"`
 	Stream               bool             `json:"stream,omitempty"`
 	Instructions         string           `json:"instructions,omitempty"`
 	Input                []any            `json:"input,omitempty"`

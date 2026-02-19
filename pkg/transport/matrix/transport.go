@@ -967,15 +967,6 @@ func (t *Transport) invitedManagedUser(event matrixEvent) (string, bool) {
 	return "", false
 }
 
-func (t *Transport) isBotInvite(event matrixEvent) bool {
-	_, ok := t.invitedManagedUser(event)
-	return ok
-}
-
-func (t *Transport) joinRoom(ctx context.Context, roomID string) error {
-	return t.joinRoomAs(ctx, roomID, t.resolveRoomManagedUser(roomID))
-}
-
 func (t *Transport) joinRoomAs(ctx context.Context, roomID string, userID string) error {
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/join?access_token=%s",
 		t.homeserverURL,

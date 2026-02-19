@@ -129,3 +129,53 @@ func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {
 		t.Fatalf("expected session history to be updated")
 	}
 }
+
+func TestRunTurnThinkingDeltaCaptureToggle(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		captureThinking bool
+		expectThinking  bool
+	}{
+		{name: "disabled", captureThinking: false, expectThinking: false},
+		{name: "enabled", captureThinking: true, expectThinking: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+			agent, err := LoadAgent(workspace)
+			if err != nil {
+				t.Fatalf("LoadAgent() error: %v", err)
+			}
+			agent.CaptureThinkingDeltas = tc.captureThinking
+
+			assistant := ai.NewAssistantMessage(agent.model)
+			assistant.StopReason = ai.StopReasonStop
+			assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "ok"}}
+
+			agent.Provider = &mockProvider{rounds: []mockRound{
+				{
+					assistant: assistant,
+					events: []ai.AssistantMessageEvent{
+						{Type: ai.EventThinkingDelta, Delta: "private chain"},
+						{Type: ai.EventTextDelta, Delta: "ok"},
+					},
+				},
+			}}
+
+			result, err := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "test"})
+			if err != nil {
+				t.Fatalf("RunTurn() error: %v", err)
+			}
+
+			foundThinking := false
+			for _, event := range result.Events {
+				if event.Type == EventTypeAgentThinkingDelta {
+					foundThinking = true
+					break
+				}
+			}
+			if foundThinking != tc.expectThinking {
+				t.Fatalf("thinking delta presence = %t, want %t", foundThinking, tc.expectThinking)
+			}
+		})
+	}
+}

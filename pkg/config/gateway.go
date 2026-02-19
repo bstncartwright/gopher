@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ type GatewayConfig struct {
 	PruneInterval     time.Duration
 	Capabilities      []scheduler.Capability
 	Matrix            MatrixConfig
+	Panel             PanelConfig
 	Cron              CronConfig
 	Update            UpdateConfig
 	PrimaryConfigPath string
@@ -51,6 +53,11 @@ type MatrixConfig struct {
 	PresenceEnabled   bool
 	PresenceInterval  time.Duration
 	PresenceStatusMsg string
+}
+
+type PanelConfig struct {
+	ListenAddr      string
+	CaptureThinking bool
 }
 
 type CronConfig struct {
@@ -86,6 +93,8 @@ type GatewayOverrides struct {
 	MatrixPresenceEnabled   *bool
 	MatrixPresenceInterval  *time.Duration
 	MatrixPresenceStatusMsg *string
+	PanelListenAddr         *string
+	PanelCaptureThinking    *bool
 	CronEnabled             *bool
 	CronPollInterval        *time.Duration
 	CronTimezone            *string
@@ -115,6 +124,7 @@ type rawGatewayConfig struct {
 	Runtime      *rawRuntimeConfig   `toml:"runtime"`
 	Capabilities []rawCapabilityItem `toml:"capabilities"`
 	Matrix       *rawMatrixConfig    `toml:"matrix"`
+	Panel        *rawPanelConfig     `toml:"panel"`
 	Cron         *rawCronConfig      `toml:"cron"`
 	Update       *rawUpdateConfig    `toml:"update"`
 }
@@ -147,6 +157,11 @@ type rawMatrixConfig struct {
 	PresenceEnabled   *bool   `toml:"presence_enabled"`
 	PresenceInterval  *string `toml:"presence_interval"`
 	PresenceStatusMsg *string `toml:"presence_status_msg"`
+}
+
+type rawPanelConfig struct {
+	ListenAddr      *string `toml:"listen_addr"`
+	CaptureThinking *bool   `toml:"capture_thinking"`
 }
 
 type rawCronConfig struct {
@@ -266,6 +281,10 @@ presence_enabled = true
 presence_interval = "60s"
 presence_status_msg = ""
 
+[gateway.panel]
+listen_addr = "127.0.0.1:29329"
+capture_thinking = false
+
 [gateway.cron]
 enabled = false
 poll_interval = "1s"
@@ -329,6 +348,10 @@ func defaultGatewayConfig() GatewayConfig {
 			PresenceEnabled:   true,
 			PresenceInterval:  60 * time.Second,
 			PresenceStatusMsg: "",
+		},
+		Panel: PanelConfig{
+			ListenAddr:      "127.0.0.1:29329",
+			CaptureThinking: false,
 		},
 		Cron: CronConfig{
 			Enabled:         false,
@@ -485,6 +508,14 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 			cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(*gateway.Matrix.PresenceStatusMsg)
 		}
 	}
+	if gateway.Panel != nil {
+		if gateway.Panel.ListenAddr != nil {
+			cfg.Panel.ListenAddr = strings.TrimSpace(*gateway.Panel.ListenAddr)
+		}
+		if gateway.Panel.CaptureThinking != nil {
+			cfg.Panel.CaptureThinking = *gateway.Panel.CaptureThinking
+		}
+	}
 	if gateway.Cron != nil {
 		if gateway.Cron.Enabled != nil {
 			cfg.Cron.Enabled = *gateway.Cron.Enabled
@@ -629,6 +660,16 @@ func applyGatewayEnv(cfg *GatewayConfig, env map[string]string) error {
 	if value, ok := env["GOPHER_GATEWAY_MATRIX_PRESENCE_STATUS_MSG"]; ok {
 		cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(value)
 	}
+	if value, ok := env["GOPHER_GATEWAY_PANEL_LISTEN_ADDR"]; ok {
+		cfg.Panel.ListenAddr = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_PANEL_CAPTURE_THINKING"]; ok {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_PANEL_CAPTURE_THINKING: %w", err)
+		}
+		cfg.Panel.CaptureThinking = enabled
+	}
 	if value, ok := env["GOPHER_GATEWAY_CRON_ENABLED"]; ok {
 		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
@@ -726,6 +767,12 @@ func applyGatewayOverrides(cfg *GatewayConfig, overrides GatewayOverrides) error
 	}
 	if overrides.MatrixPresenceStatusMsg != nil {
 		cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(*overrides.MatrixPresenceStatusMsg)
+	}
+	if overrides.PanelListenAddr != nil {
+		cfg.Panel.ListenAddr = strings.TrimSpace(*overrides.PanelListenAddr)
+	}
+	if overrides.PanelCaptureThinking != nil {
+		cfg.Panel.CaptureThinking = *overrides.PanelCaptureThinking
 	}
 	if overrides.CronEnabled != nil {
 		cfg.Cron.Enabled = *overrides.CronEnabled
@@ -825,6 +872,9 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 			return fmt.Errorf("gateway.matrix.presence_interval must be > 0 when matrix presence is enabled")
 		}
 	}
+	if err := validateLoopbackListenAddr(strings.TrimSpace(cfg.Panel.ListenAddr), "gateway.panel.listen_addr"); err != nil {
+		return err
+	}
 	if cfg.Update.Enabled {
 		if strings.TrimSpace(cfg.Update.RepoOwner) == "" {
 			return fmt.Errorf("gateway.update.repo_owner is required when update is enabled")
@@ -832,6 +882,28 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 		if strings.TrimSpace(cfg.Update.RepoName) == "" {
 			return fmt.Errorf("gateway.update.repo_name is required when update is enabled")
 		}
+	}
+	return nil
+}
+
+func validateLoopbackListenAddr(value string, fieldName string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", fieldName)
+	}
+	host, _, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", fieldName, err)
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("%s host is required", fieldName)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%s must bind to loopback only (localhost/127.0.0.1/::1)", fieldName)
 	}
 	return nil
 }
@@ -883,6 +955,8 @@ func hasGatewayOverrides(overrides GatewayOverrides) bool {
 		overrides.MatrixPresenceEnabled != nil ||
 		overrides.MatrixPresenceInterval != nil ||
 		overrides.MatrixPresenceStatusMsg != nil ||
+		overrides.PanelListenAddr != nil ||
+		overrides.PanelCaptureThinking != nil ||
 		overrides.CronEnabled != nil ||
 		overrides.CronPollInterval != nil ||
 		overrides.CronTimezone != nil ||

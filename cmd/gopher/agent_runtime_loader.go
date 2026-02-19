@@ -17,7 +17,16 @@ type agentRuntime struct {
 	Agents         map[sessionrt.ActorID]*agentcore.Agent
 }
 
+type agentRuntimeOptions struct {
+	CaptureDeltas   bool
+	CaptureThinking bool
+}
+
 func loadAgentRuntime(workspace string) (*agentRuntime, error) {
+	return loadAgentRuntimeWithOptions(workspace, agentRuntimeOptions{})
+}
+
+func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*agentRuntime, error) {
 	workspaces, err := discoverAgentWorkspaces(workspace)
 	if err != nil {
 		return nil, err
@@ -39,8 +48,12 @@ func loadAgentRuntime(workspace string) (*agentRuntime, error) {
 			return nil, fmt.Errorf("duplicate agent id %q in workspaces %s and %s", actorID, existing.Workspace, candidate)
 		}
 
+		agent.CaptureThinkingDeltas = opts.CaptureThinking
 		agents[actorID] = agent
-		executors[actorID] = agentcore.NewSessionRuntimeAdapter(agent)
+		executors[actorID] = agentcore.NewSessionRuntimeAdapterWithOptions(agent, agentcore.SessionRuntimeAdapterOptions{
+			CaptureDeltas:   opts.CaptureDeltas,
+			CaptureThinking: opts.CaptureThinking,
+		})
 	}
 
 	actorIDs := make([]string, 0, len(agents))

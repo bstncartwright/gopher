@@ -18,6 +18,7 @@ import (
 	fabricts "github.com/bstncartwright/gopher/pkg/fabric/nats"
 	"github.com/bstncartwright/gopher/pkg/gateway"
 	"github.com/bstncartwright/gopher/pkg/node"
+	"github.com/bstncartwright/gopher/pkg/panel"
 	"github.com/bstncartwright/gopher/pkg/scheduler"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
@@ -75,6 +76,14 @@ type gatewayProcess struct {
 	syncer    *gateway.NodeRegistrySync
 	runtime   *node.Runtime
 	executor  sessionrt.AgentExecutor
+}
+
+type panelRuntime interface {
+	RunWithRetry(ctx context.Context) error
+}
+
+var newGatewayPanel = func(opts panel.ServerOptions) (panelRuntime, error) {
+	return panel.NewServer(opts)
 }
 
 func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
@@ -143,6 +152,8 @@ func printGatewayUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --matrix-presence-enabled <bool> override matrix presence updates")
 	fmt.Fprintln(out, "  --matrix-presence-interval <dur> override matrix presence keepalive interval")
 	fmt.Fprintln(out, "  --matrix-presence-status-msg <text> override matrix presence status message")
+	fmt.Fprintln(out, "  --panel-listen-addr <addr>     override observability panel listen address")
+	fmt.Fprintln(out, "  --panel-capture-thinking <bool> override panel thinking capture")
 	fmt.Fprintln(out, "  --cron-enabled <bool>          override cron subsystem enablement")
 	fmt.Fprintln(out, "  --cron-poll-interval <dur>     override cron polling interval")
 	fmt.Fprintln(out, "  --cron-default-timezone <tz>   override default cron timezone")
@@ -164,6 +175,7 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	var matrixEnabled boolOverrideFlag
 	var matrixRichTextEnabled boolOverrideFlag
 	var matrixPresenceEnabled boolOverrideFlag
+	var panelCaptureThinking boolOverrideFlag
 	var cronEnabled boolOverrideFlag
 	configPath := flags.String("config", "", "config path")
 	nodeID := flags.String("node-id", "", "gateway node id override")
@@ -183,6 +195,8 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	flags.Var(&matrixPresenceEnabled, "matrix-presence-enabled", "matrix presence enabled override")
 	matrixPresenceInterval := flags.Duration("matrix-presence-interval", 0, "matrix presence interval override")
 	matrixPresenceStatusMsg := flags.String("matrix-presence-status-msg", "", "matrix presence status message override")
+	panelListenAddr := flags.String("panel-listen-addr", "", "panel listen addr override")
+	flags.Var(&panelCaptureThinking, "panel-capture-thinking", "panel capture thinking override")
 	flags.Var(&cronEnabled, "cron-enabled", "cron enabled override")
 	cronPollInterval := flags.Duration("cron-poll-interval", 0, "cron poll interval override")
 	cronDefaultTimezone := flags.String("cron-default-timezone", "", "cron default timezone override")
@@ -273,6 +287,14 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 		value := strings.TrimSpace(*matrixPresenceStatusMsg)
 		inputs.Overrides.MatrixPresenceStatusMsg = &value
 	}
+	if strings.TrimSpace(*panelListenAddr) != "" {
+		value := strings.TrimSpace(*panelListenAddr)
+		inputs.Overrides.PanelListenAddr = &value
+	}
+	if panelCaptureThinking.set {
+		value := panelCaptureThinking.value
+		inputs.Overrides.PanelCaptureThinking = &value
+	}
 	if cronEnabled.set {
 		value := cronEnabled.value
 		inputs.Overrides.CronEnabled = &value
@@ -316,7 +338,10 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	if err != nil {
 		return fmt.Errorf("resolve workspace directory: %w", err)
 	}
-	agentRuntime, err := loadGatewayAgentRuntime(workspace)
+	agentRuntime, err := loadGatewayAgentRuntimeWithOptions(workspace, agentRuntimeOptions{
+		CaptureDeltas:   true,
+		CaptureThinking: cfg.Panel.CaptureThinking,
+	})
 	if err != nil {
 		return err
 	}
@@ -338,6 +363,14 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 			return err
 		}
 		defer matrixBridge.Stop()
+	}
+
+	var panelStore panel.SessionStore
+	if matrixBridge != nil && matrixBridge.store != nil {
+		panelStore = matrixBridge.store
+	}
+	if err := startGatewayPanel(ctx, cfg, process, panelStore, logger); err != nil {
+		return err
 	}
 
 	logger.Printf("gateway running node_id=%s gateway_id=%s nats_url=%q heartbeat_interval=%s prune_interval=%s capabilities=%s config_sources=%s",
@@ -477,6 +510,35 @@ func runGatewayConfigSubcommand(args []string, stdout, stderr io.Writer) error {
 		printGatewayUsage(stderr)
 		return fmt.Errorf("unknown gateway config command %q", args[0])
 	}
+}
+
+func startGatewayPanel(
+	ctx context.Context,
+	cfg config.GatewayConfig,
+	process *gatewayProcess,
+	store panel.SessionStore,
+	logger *log.Logger,
+) error {
+	if process == nil || process.registry == nil {
+		return fmt.Errorf("create observability panel server: gateway process is not initialized")
+	}
+	panelServer, err := newGatewayPanel(panel.ServerOptions{
+		ListenAddr: cfg.Panel.ListenAddr,
+		Logger:     logger,
+		Store:      store,
+		NodeSnapshot: func() []scheduler.NodeInfo {
+			return process.registry.Snapshot()
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create observability panel server: %w", err)
+	}
+	go func() {
+		if runErr := panelServer.RunWithRetry(ctx); runErr != nil && ctx.Err() == nil && logger != nil {
+			logger.Printf("panel server stopped err=%v", runErr)
+		}
+	}()
+	return nil
 }
 
 func (p *gatewayProcess) Stop() {

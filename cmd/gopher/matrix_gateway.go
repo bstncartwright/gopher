@@ -22,7 +22,11 @@ type matrixDMBridge struct {
 	pipeline  *gateway.DMPipeline
 	cron      *gateway.CronRunner
 	heartbeat *gateway.HeartbeatRunner
-	cancel    context.CancelFunc
+	store     interface {
+		sessionrt.EventStore
+		sessionrt.SessionRegistryStore
+	}
+	cancel context.CancelFunc
 }
 
 type agentMatrixIdentitySet struct {
@@ -169,7 +173,13 @@ func startMatrixDMBridgeWithRuntime(
 		}
 	}
 
-	bridge := &matrixDMBridge{transport: matrixBridge, pipeline: pipeline, cron: cronRunner, heartbeat: heartbeatRunner}
+	bridge := &matrixDMBridge{
+		transport: matrixBridge,
+		pipeline:  pipeline,
+		cron:      cronRunner,
+		heartbeat: heartbeatRunner,
+		store:     store,
+	}
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge.cancel = cancel
 	go bridge.runSupervisor(bridgeCtx, logger)

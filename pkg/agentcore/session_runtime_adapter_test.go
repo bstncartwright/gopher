@@ -124,6 +124,12 @@ func TestWithTurnTimeoutPreservesExistingDeadline(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeTurnTimeoutDefault(t *testing.T) {
+	if sessionRuntimeTurnTimeout != 5*time.Minute {
+		t.Fatalf("default timeout = %s, want %s", sessionRuntimeTurnTimeout, 5*time.Minute)
+	}
+}
+
 func TestSessionRuntimeAdapterDeltaCaptureOptions(t *testing.T) {
 	config := defaultConfig()
 	workspace := createTestWorkspace(t, config, defaultPolicies())

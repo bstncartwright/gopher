@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,8 +14,11 @@ import (
 
 type systemPromptInput struct {
 	Workspace      string
+	AgentID        string
+	KnownAgents    []string
 	PromptMode     PromptMode
 	Tools          ToolRegistry
+	Policies       AgentPolicies
 	SkillsPrompt   string
 	ContextFiles   []BootstrapContextFile
 	IncludeWorking bool
@@ -57,6 +61,22 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		"",
 	)
 
+	if hints := buildToolUsageHints(input.Tools); hints != "" {
+		sections = append(sections,
+			"## Tool Usage Hints",
+			hints,
+			"",
+		)
+	}
+
+	if collaboration := buildCollaborationSection(input); collaboration != "" {
+		sections = append(sections,
+			"## Collaboration",
+			collaboration,
+			"",
+		)
+	}
+
 	if mode == PromptModeFull {
 		skillsPrompt := strings.TrimSpace(input.SkillsPrompt)
 		if skillsPrompt != "" {
@@ -82,6 +102,14 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		"Treat this directory as the primary workspace for file operations unless explicitly instructed otherwise.",
 		"",
 	)
+
+	if policy := buildPolicySection(input.Policies); policy != "" {
+		sections = append(sections,
+			"## Policy Envelope",
+			policy,
+			"",
+		)
+	}
 
 	if mode == PromptModeFull {
 		if docsPath := detectDocsPath(input.Workspace); docsPath != "" {
@@ -204,6 +232,12 @@ func buildRuntimeSection(input systemPromptInput) string {
 		"workspace=" + input.Workspace,
 		"thinking=off",
 	}
+	if agentID := strings.TrimSpace(input.AgentID); agentID != "" {
+		parts = append(parts, "agent="+agentID)
+	}
+	if known := normalizeUniqueStrings(input.KnownAgents); len(known) > 0 {
+		parts = append(parts, "agents="+strings.Join(known, ","))
+	}
 	if repoRoot != "" {
 		parts = append(parts, "repo="+repoRoot)
 	}
@@ -257,4 +291,118 @@ func detectRepoRoot(workspace string) string {
 		}
 		current = parent
 	}
+}
+
+func buildToolUsageHints(registry ToolRegistry) string {
+	lines := make([]string, 0, 4)
+	if toolRegistryHas(registry, "exec") {
+		lines = append(lines, "- `exec` runs shell commands. For long-running or interactive commands, set `background: true` to start a managed session and get a `session_id`.")
+	}
+	if toolRegistryHas(registry, "process") {
+		lines = append(lines, "- `process` manages background sessions. Use `action` in {`list`,`poll`,`log`,`write`,`kill`} with the `session_id` from `exec`.")
+	}
+	if toolRegistryHas(registry, "delegate") {
+		lines = append(lines, "- `delegate` creates a collaboration session with another agent. Provide `action:\"create\"`, `target_agent`, and a concrete `message`.")
+	}
+	if toolRegistryHas(registry, "cron") {
+		lines = append(lines, "- `cron` manages scheduled reminders/checks; omit `session_id` only when the current session should be used.")
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildCollaborationSection(input systemPromptInput) string {
+	known := normalizeUniqueStrings(input.KnownAgents)
+	delegateEnabled := toolRegistryHas(input.Tools, "delegate")
+	if len(known) == 0 && !delegateEnabled {
+		return ""
+	}
+
+	lines := make([]string, 0, 4)
+	if agentID := strings.TrimSpace(input.AgentID); agentID != "" {
+		lines = append(lines, "Your agent id: "+agentID)
+	}
+	if len(known) > 0 {
+		lines = append(lines, "Known agents in this runtime: "+strings.Join(known, ", "))
+	}
+	if delegateEnabled {
+		lines = append(lines, "When another agent is better suited, use `delegate` with `action:\"create\"`, `target_agent`, and task-specific `message`.")
+	} else if len(known) > 1 {
+		lines = append(lines, "Delegation requires the `delegate` tool; if missing from Tooling, ask the user to enable collaboration tools.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildPolicySection(policies AgentPolicies) string {
+	lines := make([]string, 0, 4)
+
+	if policies.CanShell {
+		allowlist := normalizeUniqueStrings(policies.ShellAllowlist)
+		if len(allowlist) == 0 {
+			lines = append(lines, "shell=enabled | shell_allowlist=none")
+		} else {
+			lines = append(lines, "shell=enabled | shell_allowlist="+strings.Join(allowlist, ","))
+		}
+	} else {
+		lines = append(lines, "shell=disabled")
+	}
+
+	if policies.Network.Enabled {
+		domains := normalizeUniqueStrings(policies.Network.AllowDomains)
+		if len(domains) == 0 {
+			lines = append(lines, "network=enabled | allow_domains=unspecified")
+		} else {
+			lines = append(lines, "network=enabled | allow_domains="+strings.Join(domains, ","))
+		}
+	} else {
+		lines = append(lines, "network=disabled")
+	}
+
+	roots := normalizeUniqueStrings(policies.FSRoots)
+	if len(roots) > 0 {
+		lines = append(lines, "fs_roots="+strings.Join(roots, ","))
+	}
+	if policies.AllowCrossAgentFS {
+		lines = append(lines, "allow_cross_agent_fs=true")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func toolRegistryHas(registry ToolRegistry, name string) bool {
+	if registry == nil {
+		return false
+	}
+	for _, schema := range registry.Schemas() {
+		if strings.TrimSpace(schema.Name) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeUniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }

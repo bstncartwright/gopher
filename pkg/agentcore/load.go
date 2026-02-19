@@ -119,6 +119,7 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	if strings.TrimSpace(agent.ID) == "" {
 		return nil, fmt.Errorf("config.agent_id is required")
 	}
+	agent.KnownAgents = []string{strings.TrimSpace(agent.ID)}
 
 	return agent, nil
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAgentCreateListDeleteLifecycle(t *testing.T) {
@@ -33,6 +34,14 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 	} {
 		if _, err := os.Stat(filepath.Join(plannerWorkspace, name)); err != nil {
 			t.Fatalf("expected workspace file %s: %v", name, err)
+		}
+	}
+	for _, date := range []string{
+		time.Now().Format("2006-01-02"),
+		time.Now().AddDate(0, 0, -1).Format("2006-01-02"),
+	} {
+		if _, err := os.Stat(filepath.Join(plannerWorkspace, "memory", date+".md")); err != nil {
+			t.Fatalf("expected memory note %s: %v", date, err)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(workspaceRoot, "USER.md")); err != nil {

@@ -44,6 +44,15 @@ func (t *readTool) Run(_ context.Context, input ToolInput) (ToolOutput, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			if created, createErr := ensureDailyMemoryNote(path); createErr != nil {
+				slog.Error("read_tool: failed to scaffold daily memory note", "path", path, "error", createErr)
+			} else if created {
+				f, err = os.Open(path)
+			}
+		}
+	}
+	if err != nil {
 		slog.Error("read_tool: failed to open file", "path", path, "error", err)
 		return ToolOutput{
 			Status: ToolStatusError,

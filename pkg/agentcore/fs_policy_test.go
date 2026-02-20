@@ -102,3 +102,37 @@ func TestFSPolicyAllowsCrossAgentAccessWhenEnabled(t *testing.T) {
 		t.Fatalf("expected updated target content, got: %q", string(blob))
 	}
 }
+
+func TestReadToolCreatesMissingDailyMemoryNote(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	runner := NewToolRunner(agent)
+	session := agent.NewSession()
+
+	relativePath := filepath.Join("memory", "2025-01-20.md")
+	output, runErr := runner.Run(context.Background(), session, ai.ContentBlock{
+		Type: ai.ContentTypeToolCall,
+		Name: "read",
+		Arguments: map[string]any{
+			"path": relativePath,
+		},
+	})
+	if runErr != nil {
+		t.Fatalf("expected read to scaffold missing daily memory note, got %v", runErr)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("expected ok status, got %q", output.Status)
+	}
+
+	targetPath := filepath.Join(workspace, relativePath)
+	blob, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("expected scaffolded note file at %s: %v", targetPath, err)
+	}
+	if !strings.Contains(string(blob), "2025-01-20") {
+		t.Fatalf("expected scaffolded note to include date, got %q", string(blob))
+	}
+}

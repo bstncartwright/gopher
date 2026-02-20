@@ -137,3 +137,53 @@ func TestAuthLoginUnsupportedProvider(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestAuthDefaultEnvFileUsesEnvOverride(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "custom.env")
+	t.Setenv("GOPHER_ENV_FILE", envPath)
+
+	var out bytes.Buffer
+	if err := runAuthSubcommand([]string{
+		"set",
+		"--provider", "zai",
+		"--api-key", "secret-123",
+	}, &out, &out); err != nil {
+		t.Fatalf("set provider with GOPHER_ENV_FILE override failed: %v", err)
+	}
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env file failed: %v", err)
+	}
+	if !strings.Contains(string(data), "ZAI_API_KEY=secret-123") {
+		t.Fatalf("expected ZAI_API_KEY in env file, got: %s", string(data))
+	}
+}
+
+func TestAuthDefaultEnvFileUsesUserHomeForNonRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires non-root execution")
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GOPHER_ENV_FILE", "")
+	envPath := filepath.Join(home, ".gopher", "gopher.env")
+
+	var out bytes.Buffer
+	if err := runAuthSubcommand([]string{
+		"set",
+		"--provider", "zai",
+		"--api-key", "secret-123",
+	}, &out, &out); err != nil {
+		t.Fatalf("set provider with default home env file failed: %v", err)
+	}
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env file failed: %v", err)
+	}
+	if !strings.Contains(string(data), "ZAI_API_KEY=secret-123") {
+		t.Fatalf("expected ZAI_API_KEY in env file, got: %s", string(data))
+	}
+}

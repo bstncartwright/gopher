@@ -188,7 +188,13 @@ gopher logs --unit gopher-node.service --lines 200
 
 ## auth config cli
 
-`gopher auth` provides provider-aware auth key management for service env files:
+`gopher auth` provides provider-aware auth key management for env files.
+default path resolution is:
+- `$GOPHER_ENV_FILE` (if set)
+- `~/.gopher/gopher.env` (non-root)
+- `/etc/gopher/gopher.env` (root)
+
+for systemd service-managed installs, pass the system path explicitly:
 
 ```bash
 # list provider auth status (configured/missing)

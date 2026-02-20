@@ -60,12 +60,14 @@ func runAuthSubcommand(args []string, stdout, stderr io.Writer) error {
 func printAuthUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage:")
 	fmt.Fprintln(out, "  gopher auth providers")
-	fmt.Fprintln(out, "  gopher auth list [--env-file /etc/gopher/gopher.env]")
+	fmt.Fprintln(out, "  gopher auth list [--env-file <path>]")
 	fmt.Fprintln(out, "  gopher auth login --provider openai-codex [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth set --provider zai --api-key <value> [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth set --key <ENV_KEY> --value <value> [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth unset --provider zai [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth unset --key <ENV_KEY> [--env-file ...]")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "default env file: $GOPHER_ENV_FILE, otherwise ~/.gopher/gopher.env (or /etc/gopher/gopher.env when running as root)")
 }
 
 func runAuthProviders(out io.Writer) error {
@@ -79,7 +81,7 @@ func runAuthProviders(out io.Writer) error {
 func runAuthList(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("auth list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	envFile := flags.String("env-file", "/etc/gopher/gopher.env", "env file path")
+	envFile := flags.String("env-file", defaultAuthEnvFilePath(), "env file path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -126,7 +128,7 @@ func runAuthList(args []string, out io.Writer) error {
 func runAuthSet(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("auth set", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	envFile := flags.String("env-file", "/etc/gopher/gopher.env", "env file path")
+	envFile := flags.String("env-file", defaultAuthEnvFilePath(), "env file path")
 	provider := flags.String("provider", "", "provider id")
 	apiKey := flags.String("api-key", "", "provider API key/token")
 	key := flags.String("key", "", "raw env key")
@@ -165,7 +167,7 @@ func runAuthSet(args []string, out io.Writer) error {
 func runAuthLogin(args []string, in io.Reader, out io.Writer) error {
 	flags := flag.NewFlagSet("auth login", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	envFile := flags.String("env-file", "/etc/gopher/gopher.env", "env file path")
+	envFile := flags.String("env-file", defaultAuthEnvFilePath(), "env file path")
 	provider := flags.String("provider", "", "provider id")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -252,7 +254,7 @@ func runAuthLogin(args []string, in io.Reader, out io.Writer) error {
 func runAuthUnset(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("auth unset", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	envFile := flags.String("env-file", "/etc/gopher/gopher.env", "env file path")
+	envFile := flags.String("env-file", defaultAuthEnvFilePath(), "env file path")
 	provider := flags.String("provider", "", "provider id")
 	key := flags.String("key", "", "raw env key")
 	if err := flags.Parse(args); err != nil {
@@ -292,6 +294,19 @@ func findProviderSpec(provider string) (providerAuthSpec, bool) {
 		}
 	}
 	return providerAuthSpec{}, false
+}
+
+func defaultAuthEnvFilePath() string {
+	if path := strings.TrimSpace(os.Getenv("GOPHER_ENV_FILE")); path != "" {
+		return path
+	}
+	if os.Geteuid() == 0 {
+		return "/etc/gopher/gopher.env"
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".gopher", "gopher.env")
+	}
+	return "/etc/gopher/gopher.env"
 }
 
 func readEnvFileMap(path string) (map[string]string, error) {

@@ -79,13 +79,12 @@ func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResu
 	)
 
 	runner := NewToolRunner(a)
-	for round := 0; round < MaxToolRounds; round++ {
+	for round := 0; ; round++ {
 		roundStart := time.Now()
 		slog.Debug("run_turn: starting round",
 			"agent_id", a.ID,
 			"session_id", s.ID,
 			"round", round,
-			"max_rounds", MaxToolRounds,
 		)
 		if ctx.Err() != nil {
 			turnErr = ctx.Err()
@@ -345,21 +344,6 @@ func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResu
 		// Persist conversation progress after each tool round so retries don't replay executed calls.
 		s.Messages = boundMessages(conversation.Messages, a.Config.MaxContextMessages)
 	}
-
-	s.Messages = boundMessages(conversation.Messages, a.Config.MaxContextMessages)
-	err = fmt.Errorf("max tool rounds exceeded (%d)", MaxToolRounds)
-	slog.Error("run_turn: max tool rounds exceeded",
-		"agent_id", a.ID,
-		"session_id", s.ID,
-		"max_rounds", MaxToolRounds,
-		"total_duration_ms", time.Since(startTime).Milliseconds(),
-	)
-	if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": err.Error()}); emitErr != nil {
-		turnErr = emitErr
-		return TurnResult{Events: emitter.Events()}, emitErr
-	}
-	turnErr = err
-	return TurnResult{Events: emitter.Events()}, err
 }
 
 func getMapKeys(m map[string]any) []string {

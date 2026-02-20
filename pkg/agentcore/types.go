@@ -138,7 +138,6 @@ const (
 
 const (
 	DefaultContextWindow = 40
-	MaxToolRounds        = 8
 )
 
 type PromptMode string

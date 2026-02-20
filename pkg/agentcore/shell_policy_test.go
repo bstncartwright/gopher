@@ -54,7 +54,24 @@ func TestExecPolicyEnforcement(t *testing.T) {
 		}
 	})
 
-	t.Run("denied_when_shell_operators_bypass_allowlist", func(t *testing.T) {
+	t.Run("allowed_when_shell_operators_present", func(t *testing.T) {
+		agent.Policies.ShellAllowlist = []string{"echo", "git"}
+		output, err := runner.Run(context.Background(), session, ai.ContentBlock{
+			Type: ai.ContentTypeToolCall,
+			Name: "exec",
+			Arguments: map[string]any{
+				"command": "echo hello && echo world",
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected exec success for shell operators, got %v", err)
+		}
+		if output.Status != ToolStatusOK {
+			t.Fatalf("expected ok status, got %q", output.Status)
+		}
+	})
+
+	t.Run("denied_when_chained_segment_not_in_allowlist", func(t *testing.T) {
 		agent.Policies.ShellAllowlist = []string{"echo", "git"}
 		_, err = runner.Run(context.Background(), session, ai.ContentBlock{
 			Type: ai.ContentTypeToolCall,
@@ -64,10 +81,61 @@ func TestExecPolicyEnforcement(t *testing.T) {
 			},
 		})
 		if err == nil || !IsPolicyError(err) {
-			t.Fatalf("expected policy error for shell operator bypass, got %v", err)
+			t.Fatalf("expected allowlist policy error for chained curl, got %v", err)
 		}
-		if !strings.Contains(err.Error(), "shell operators") {
-			t.Fatalf("expected shell operators in error, got: %v", err)
+		if !strings.Contains(err.Error(), "shell_allowlist") {
+			t.Fatalf("expected shell_allowlist in error, got: %v", err)
+		}
+	})
+
+	t.Run("denied_when_pipeline_segment_not_in_allowlist", func(t *testing.T) {
+		agent.Policies.ShellAllowlist = []string{"echo"}
+		_, err = runner.Run(context.Background(), session, ai.ContentBlock{
+			Type: ai.ContentTypeToolCall,
+			Name: "exec",
+			Arguments: map[string]any{
+				"command": "echo hello | grep h",
+			},
+		})
+		if err == nil || !IsPolicyError(err) {
+			t.Fatalf("expected allowlist policy error for piped grep, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "shell_allowlist") {
+			t.Fatalf("expected shell_allowlist in error, got: %v", err)
+		}
+	})
+
+	t.Run("denied_when_command_substitution_present_in_allowlist_mode", func(t *testing.T) {
+		agent.Policies.ShellAllowlist = []string{"echo"}
+		_, err = runner.Run(context.Background(), session, ai.ContentBlock{
+			Type: ai.ContentTypeToolCall,
+			Name: "exec",
+			Arguments: map[string]any{
+				"command": "echo $(whoami)",
+			},
+		})
+		if err == nil || !IsPolicyError(err) {
+			t.Fatalf("expected policy error for command substitution, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "command substitution") {
+			t.Fatalf("expected command substitution in error, got: %v", err)
+		}
+	})
+
+	t.Run("denied_when_redirection_present_in_allowlist_mode", func(t *testing.T) {
+		agent.Policies.ShellAllowlist = []string{"echo"}
+		_, err = runner.Run(context.Background(), session, ai.ContentBlock{
+			Type: ai.ContentTypeToolCall,
+			Name: "exec",
+			Arguments: map[string]any{
+				"command": "echo hello > out.txt",
+			},
+		})
+		if err == nil || !IsPolicyError(err) {
+			t.Fatalf("expected policy error for redirection, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "redirections") {
+			t.Fatalf("expected redirections in error, got: %v", err)
 		}
 	})
 
@@ -124,6 +192,23 @@ func TestExecPolicyEnforcement(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("expected exec success with full path, got %v", err)
+		}
+		if output.Status != ToolStatusOK {
+			t.Fatalf("expected ok status, got %q", output.Status)
+		}
+	})
+
+	t.Run("allows_env_prefix_when_command_is_allowlisted", func(t *testing.T) {
+		agent.Policies.ShellAllowlist = []string{"echo"}
+		output, err := runner.Run(context.Background(), session, ai.ContentBlock{
+			Type: ai.ContentTypeToolCall,
+			Name: "exec",
+			Arguments: map[string]any{
+				"command": "FOO=bar echo env_test",
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected exec success with env prefix, got %v", err)
 		}
 		if output.Status != ToolStatusOK {
 			t.Fatalf("expected ok status, got %q", output.Status)

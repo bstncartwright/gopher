@@ -238,6 +238,69 @@ gopher agent delete --id planner
 gopher agent delete --id planner --hard
 ```
 
+## builder + opencode (manual config)
+
+this is an opt-in, per-agent setup. gopher does not scaffold a special builder preset.
+
+prerequisites:
+- `opencode` installed on the host and available on `PATH` (`opencode --help`)
+- credentials already configured outside gopher (`opencode auth list`, `opencode auth login`)
+- runtime tools enabled in the agent config (`group:runtime`)
+
+example `agents/builder/config.json`:
+
+```json
+{
+  "agent_id": "builder",
+  "name": "builder",
+  "role": "assistant",
+  "model_policy": "zai:glm-5",
+  "enabled_tools": ["group:fs", "group:runtime", "group:collaboration"],
+  "max_context_messages": 40
+}
+```
+
+example `agents/builder/policies.json`:
+
+```json
+{
+  "fs_roots": ["./"],
+  "allow_cross_agent_fs": false,
+  "can_shell": true,
+  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher", "opencode"],
+  "network": {
+    "enabled": true,
+    "allow_domains": ["*"]
+  },
+  "budget": {
+    "max_tokens_per_session": 200000
+  }
+}
+```
+
+recommended command pattern from the agent:
+
+```bash
+opencode run --format json "<task>"
+```
+
+runtime guardrails for `opencode` via `exec`:
+- requires `run` subcommand
+- requires `--format json`
+- blocks interactive flags (`--continue`, `--session`, `--fork`, `--attach`)
+- blocks `--dir` (use `exec` tool `workdir` instead)
+- blocks `background=true` for `opencode`
+- returns actionable preflight error when `opencode` is not found on `PATH`
+
+troubleshooting:
+- `exec denied: command "opencode" is not in shell_allowlist`:
+  add `opencode` to `shell_allowlist`.
+- `exec denied: opencode binary not found in PATH`:
+  install/fix `opencode` path on the runtime host.
+- `exec denied: opencode one-shot automation requires opencode run --format json ...`:
+  rewrite command to the standardized one-shot format.
+- non-zero `opencode` exits now include `opencode_troubleshooting` hints in tool results.
+
 ## matrix single-agent dm setup (conduit)
 
 phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages and routes them through one runtime agent workspace.

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	osExec "os/exec"
 	"path/filepath"
 	"strings"
 
@@ -199,6 +200,7 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		if err != nil {
 			return nil, err
 		}
+		bin := extractCommandBinary(command)
 		if len(r.agent.Policies.ShellAllowlist) > 0 {
 			if containsShellOperators(command) {
 				slog.Warn("tool_runner: exec denied - shell operators detected",
@@ -206,7 +208,6 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 				)
 				return nil, &PolicyError{Message: "exec denied: command contains shell operators (;, |, &&, ||, `, $(), newline, &) which bypass allowlist; use a single command"}
 			}
-			bin := extractCommandBinary(command)
 			if !isInAllowlist(bin, r.agent.Policies.ShellAllowlist) {
 				slog.Warn("tool_runner: exec denied - binary not in allowlist",
 					"binary", bin,
@@ -215,6 +216,11 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 				return nil, &PolicyError{Message: fmt.Sprintf("exec denied: command %q is not in shell_allowlist", bin)}
 			}
 			slog.Debug("tool_runner: exec allowed via allowlist", "binary", bin)
+		}
+		if strings.EqualFold(bin, "opencode") {
+			if err := enforceOpencodeExecPolicy(command, out); err != nil {
+				return nil, err
+			}
 		}
 		workdir := r.agent.Workspace
 		if rawWorkdir, ok := optionalStringArg(out, "workdir"); ok && rawWorkdir != "" {
@@ -369,6 +375,113 @@ func extractCommandBinary(command string) string {
 		return command
 	}
 	return filepath.Base(fields[0])
+}
+
+func enforceOpencodeExecPolicy(command string, args map[string]any) error {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return &PolicyError{Message: "exec denied: opencode command is empty"}
+	}
+
+	background, _ := args["background"].(bool)
+	if background {
+		return &PolicyError{Message: "exec denied: opencode does not support background=true; use a foreground one-shot run"}
+	}
+
+	if _, err := osExec.LookPath(fields[0]); err != nil {
+		return &PolicyError{Message: "exec denied: opencode binary not found in PATH; install opencode and verify with `opencode --help`"}
+	}
+
+	commandArgs := fields[1:]
+	subcommand, subcommandIdx := parseOpencodeSubcommand(commandArgs)
+	if !strings.EqualFold(subcommand, "run") {
+		return &PolicyError{Message: "exec denied: opencode must use the `run` subcommand for automation"}
+	}
+
+	if hasAnyFlag(commandArgs, "--continue", "-c", "--session", "-s", "--fork", "--attach") {
+		return &PolicyError{Message: "exec denied: interactive opencode session flags are not allowed (`--continue`, `--session`, `--fork`, `--attach`)"}
+	}
+	if hasAnyFlag(commandArgs, "--dir") {
+		return &PolicyError{Message: "exec denied: opencode `--dir` is not allowed; use the exec tool `workdir` field instead"}
+	}
+
+	runArgs := commandArgs[subcommandIdx+1:]
+	if !flagHasValue(runArgs, "--format", "json") {
+		return &PolicyError{Message: "exec denied: opencode one-shot automation requires `opencode run --format json ...`"}
+	}
+
+	return nil
+}
+
+func parseOpencodeSubcommand(args []string) (string, int) {
+	valueFlags := map[string]struct{}{
+		"--log-level": {},
+		"--port":      {},
+		"--hostname":  {},
+		"--cors":      {},
+		"--model":     {},
+		"-m":          {},
+		"--session":   {},
+		"-s":          {},
+		"--prompt":    {},
+		"--agent":     {},
+		"--command":   {},
+		"--format":    {},
+		"--file":      {},
+		"-f":          {},
+		"--title":     {},
+		"--attach":    {},
+		"--dir":       {},
+		"--variant":   {},
+	}
+
+	for idx := 0; idx < len(args); idx++ {
+		token := strings.TrimSpace(args[idx])
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			if strings.Contains(token, "=") {
+				continue
+			}
+			if _, hasValue := valueFlags[token]; hasValue {
+				idx++
+			}
+			continue
+		}
+		return token, idx
+	}
+	return "", -1
+}
+
+func hasAnyFlag(args []string, names ...string) bool {
+	for _, candidate := range args {
+		for _, name := range names {
+			if candidate == name || strings.HasPrefix(candidate, name+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func flagHasValue(args []string, name string, expected string) bool {
+	expect := strings.ToLower(strings.Trim(strings.TrimSpace(expected), `"'`))
+	for idx, candidate := range args {
+		if candidate == name {
+			if idx+1 >= len(args) {
+				return false
+			}
+			next := strings.ToLower(strings.Trim(strings.TrimSpace(args[idx+1]), `"'`))
+			return next == expect
+		}
+		if strings.HasPrefix(candidate, name+"=") {
+			value := strings.TrimPrefix(candidate, name+"=")
+			value = strings.ToLower(strings.Trim(strings.TrimSpace(value), `"'`))
+			return value == expect
+		}
+	}
+	return false
 }
 
 func domainAllowed(target string, allowDomains []string) bool {

@@ -28,6 +28,13 @@ type linuxServiceRuntime struct {
 	stderr io.Writer
 }
 
+const (
+	gopherGatewayUnitName = "gopher-gateway.service"
+	gopherNodeUnitName    = "gopher-node.service"
+)
+
+var readUnitStatusForManagedUnit = readUnitStatus
+
 func defaultServiceRuntime(stdout, stderr io.Writer) serviceRuntime {
 	return &linuxServiceRuntime{stdout: stdout, stderr: stderr}
 }
@@ -262,15 +269,27 @@ func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
 }
 
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {
-	return systemctlRunner{}.Run(ctx, "systemctl", "start", "gopher-gateway.service")
+	unit, err := resolveManagedServiceUnit(ctx)
+	if err != nil {
+		return err
+	}
+	return systemctlRunner{}.Run(ctx, "systemctl", "start", unit)
 }
 
 func (r *linuxServiceRuntime) Stop(ctx context.Context) error {
-	return systemctlRunner{}.Run(ctx, "systemctl", "stop", "gopher-gateway.service")
+	unit, err := resolveManagedServiceUnit(ctx)
+	if err != nil {
+		return err
+	}
+	return systemctlRunner{}.Run(ctx, "systemctl", "stop", unit)
 }
 
 func (r *linuxServiceRuntime) Restart(ctx context.Context) error {
-	return systemctlRunner{}.Run(ctx, "systemctl", "restart", "gopher-gateway.service")
+	unit, err := resolveManagedServiceUnit(ctx)
+	if err != nil {
+		return err
+	}
+	return systemctlRunner{}.Run(ctx, "systemctl", "restart", unit)
 }
 
 func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) error {
@@ -347,6 +366,37 @@ func durationToOnCalendar(d time.Duration) string {
 		return "daily"
 	default:
 		return "weekly"
+	}
+}
+
+func resolveManagedServiceUnit(ctx context.Context) (string, error) {
+	gateway, err := readUnitStatusForManagedUnit(ctx, gopherGatewayUnitName)
+	if err != nil {
+		return "", err
+	}
+	node, err := readUnitStatusForManagedUnit(ctx, gopherNodeUnitName)
+	if err != nil {
+		return "", err
+	}
+
+	gatewayInstalled := gateway.LoadState != "not-found"
+	nodeInstalled := node.LoadState != "not-found"
+
+	switch {
+	case gatewayInstalled && !nodeInstalled:
+		return gopherGatewayUnitName, nil
+	case nodeInstalled && !gatewayInstalled:
+		return gopherNodeUnitName, nil
+	case gatewayInstalled && nodeInstalled:
+		if strings.EqualFold(gateway.ActiveState, "active") && !strings.EqualFold(node.ActiveState, "active") {
+			return gopherGatewayUnitName, nil
+		}
+		if strings.EqualFold(node.ActiveState, "active") && !strings.EqualFold(gateway.ActiveState, "active") {
+			return gopherNodeUnitName, nil
+		}
+		return gopherGatewayUnitName, nil
+	default:
+		return "", fmt.Errorf("no gopher service installed (checked %s and %s)", gopherGatewayUnitName, gopherNodeUnitName)
 	}
 }
 

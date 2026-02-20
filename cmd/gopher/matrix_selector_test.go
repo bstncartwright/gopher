@@ -202,3 +202,86 @@ func TestMatrixMentionAgentSelectorIgnoresInvalidTargetActorID(t *testing.T) {
 		t.Fatalf("did not expect selection for invalid target_actor_id")
 	}
 }
+
+func TestMatrixMentionAgentSelectorRoutesAgentSenderToOtherParticipants(t *testing.T) {
+	fallback := &stubUntaggedRouter{selected: []sessionrt.ActorID{"planner"}}
+	selector := matrixMentionAgentSelector(agentMatrixIdentitySet{
+		ActorByUserID: map[string]sessionrt.ActorID{
+			"@planner:example.com": "planner",
+			"@writer:example.com":  "writer",
+		},
+	}, fallback)
+	session := &sessionrt.Session{
+		Participants: map[sessionrt.ActorID]sessionrt.Participant{
+			"planner": {ID: "planner", Type: sessionrt.ActorAgent},
+			"writer":  {ID: "writer", Type: sessionrt.ActorAgent},
+		},
+	}
+	actorIDs, ok := selector(session, sessionrt.Event{
+		From: "writer",
+		Type: sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "can someone review this?",
+		},
+	})
+	if !ok {
+		t.Fatalf("expected selection for agent-authored message")
+	}
+	if len(actorIDs) != 1 || actorIDs[0] != "planner" {
+		t.Fatalf("actor ids = %v, want [planner]", actorIDs)
+	}
+	if fallback.called != 0 {
+		t.Fatalf("fallback called %d times, want 0", fallback.called)
+	}
+}
+
+func TestMatrixMentionAgentSelectorAgentSenderMentionDoesNotSelectSelf(t *testing.T) {
+	selector := matrixMentionAgentSelector(agentMatrixIdentitySet{
+		ActorByUserID: map[string]sessionrt.ActorID{
+			"@planner:example.com": "planner",
+			"@writer:example.com":  "writer",
+		},
+	}, nil)
+	session := &sessionrt.Session{
+		Participants: map[sessionrt.ActorID]sessionrt.Participant{
+			"planner": {ID: "planner", Type: sessionrt.ActorAgent},
+			"writer":  {ID: "writer", Type: sessionrt.ActorAgent},
+		},
+	}
+	actorIDs, ok := selector(session, sessionrt.Event{
+		From: "writer",
+		Type: sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "@writer:example.com this is mine",
+		},
+	})
+	if !ok {
+		t.Fatalf("expected selection for agent-authored message")
+	}
+	if len(actorIDs) != 1 || actorIDs[0] != "planner" {
+		t.Fatalf("actor ids = %v, want [planner]", actorIDs)
+	}
+}
+
+func TestMatrixMentionAgentSelectorAgentSenderSelfTargetIgnored(t *testing.T) {
+	selector := matrixMentionAgentSelector(agentMatrixIdentitySet{}, nil)
+	session := &sessionrt.Session{
+		Participants: map[sessionrt.ActorID]sessionrt.Participant{
+			"planner": {ID: "planner", Type: sessionrt.ActorAgent},
+			"writer":  {ID: "writer", Type: sessionrt.ActorAgent},
+		},
+	}
+	if _, ok := selector(session, sessionrt.Event{
+		From: "writer",
+		Type: sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:          sessionrt.RoleUser,
+			Content:       "echo?",
+			TargetActorID: "writer",
+		},
+	}); ok {
+		t.Fatalf("did not expect selection when sender targets itself")
+	}
+}

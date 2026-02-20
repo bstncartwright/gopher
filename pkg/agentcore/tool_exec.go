@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -161,6 +162,7 @@ func (t *execTool) runForeground(ctx context.Context, command string, workdir st
 
 	if exitCode != 0 {
 		result["error"] = runErr.Error()
+		appendOpencodeTroubleshooting(result, command)
 		return ToolOutput{Status: ToolStatusError, Result: result}, fmt.Errorf("exec failed: %w", runErr)
 	}
 
@@ -212,5 +214,19 @@ func parseEnvMap(v any) (map[string]string, error) {
 		return out, nil
 	default:
 		return nil, fmt.Errorf("env must be an object mapping strings to strings")
+	}
+}
+
+func appendOpencodeTroubleshooting(result map[string]any, command string) {
+	if result == nil || !strings.EqualFold(extractCommandBinary(command), "opencode") {
+		return
+	}
+	result["opencode_troubleshooting"] = map[string]any{
+		"summary": "opencode command failed; verify local auth and model/provider availability.",
+		"checks": []string{
+			"Run `opencode auth list` and confirm a valid provider login is configured.",
+			"If needed, run `opencode auth login` for the provider used by your command.",
+			"Verify model/provider settings (for example `opencode models`) and retry.",
+		},
 	}
 }

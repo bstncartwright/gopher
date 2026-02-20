@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	osExec "os/exec"
 	"path/filepath"
 	"strings"
 
@@ -199,6 +200,7 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		if err != nil {
 			return nil, err
 		}
+		bin := extractCommandBinary(command)
 		if len(r.agent.Policies.ShellAllowlist) > 0 {
 			segments, err := splitAllowlistSegments(command)
 			if err != nil {
@@ -208,8 +210,8 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 				)
 				return nil, &PolicyError{Message: fmt.Sprintf("exec denied: %s", err.Error())}
 			}
-			for _, segment := range segments {
-				bin, err := extractCommandBinaryFromSegment(segment)
+			for idx, segment := range segments {
+				segmentBin, err := extractCommandBinaryFromSegment(segment)
 				if err != nil {
 					slog.Warn("tool_runner: exec denied - unable to resolve binary in segment",
 						"segment", segment,
@@ -217,15 +219,23 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 					)
 					return nil, &PolicyError{Message: "exec denied: unable to resolve executable from command segment"}
 				}
-				if !isInAllowlist(bin, r.agent.Policies.ShellAllowlist) {
+				if idx == 0 {
+					bin = segmentBin
+				}
+				if !isInAllowlist(segmentBin, r.agent.Policies.ShellAllowlist) {
 					slog.Warn("tool_runner: exec denied - binary not in allowlist",
-						"binary", bin,
+						"binary", segmentBin,
 						"segment", segment,
 						"allowlist", r.agent.Policies.ShellAllowlist,
 					)
-					return nil, &PolicyError{Message: fmt.Sprintf("exec denied: command %q is not in shell_allowlist", bin)}
+					return nil, &PolicyError{Message: fmt.Sprintf("exec denied: command %q is not in shell_allowlist", segmentBin)}
 				}
-				slog.Debug("tool_runner: exec segment allowed via allowlist", "binary", bin, "segment", segment)
+				slog.Debug("tool_runner: exec segment allowed via allowlist", "binary", segmentBin, "segment", segment)
+			}
+		}
+		if strings.EqualFold(bin, "opencode") {
+			if err := enforceOpencodeExecPolicy(command, out); err != nil {
+				return nil, err
 			}
 		}
 		workdir := r.agent.Workspace
@@ -352,6 +362,20 @@ func isInAllowlist(command string, allowlist []string) bool {
 		}
 	}
 	return false
+}
+
+func extractCommandBinary(command string) string {
+	args, err := splitShellArgs(command)
+	if err != nil {
+		return strings.TrimSpace(command)
+	}
+	for _, arg := range args {
+		if isShellEnvAssignment(arg) {
+			continue
+		}
+		return filepath.Base(arg)
+	}
+	return strings.TrimSpace(command)
 }
 
 func splitAllowlistSegments(command string) ([]string, error) {
@@ -594,6 +618,123 @@ func isShellEnvAssignment(token string) bool {
 		}
 	}
 	return true
+}
+
+func enforceOpencodeExecPolicy(command string, args map[string]any) error {
+	shellArgs, err := splitShellArgs(command)
+	if err != nil {
+		return &PolicyError{Message: fmt.Sprintf("exec denied: malformed opencode command: %s", err.Error())}
+	}
+	if len(shellArgs) == 0 {
+		return &PolicyError{Message: "exec denied: opencode command is empty"}
+	}
+
+	background, _ := args["background"].(bool)
+	if background {
+		return &PolicyError{Message: "exec denied: opencode does not support background=true; use a foreground one-shot run"}
+	}
+
+	execIdx := 0
+	for execIdx < len(shellArgs) && isShellEnvAssignment(shellArgs[execIdx]) {
+		execIdx++
+	}
+	if execIdx >= len(shellArgs) {
+		return &PolicyError{Message: "exec denied: opencode command is empty"}
+	}
+	if _, err := osExec.LookPath(shellArgs[execIdx]); err != nil {
+		return &PolicyError{Message: "exec denied: opencode binary not found in PATH; install opencode and verify with `opencode --help`"}
+	}
+
+	commandArgs := shellArgs[execIdx+1:]
+	subcommand, subcommandIdx := parseOpencodeSubcommand(commandArgs)
+	if !strings.EqualFold(subcommand, "run") {
+		return &PolicyError{Message: "exec denied: opencode must use the `run` subcommand for automation"}
+	}
+
+	if hasAnyFlag(commandArgs, "--continue", "-c", "--session", "-s", "--fork", "--attach") {
+		return &PolicyError{Message: "exec denied: interactive opencode session flags are not allowed (`--continue`, `--session`, `--fork`, `--attach`)"}
+	}
+	if hasAnyFlag(commandArgs, "--dir") {
+		return &PolicyError{Message: "exec denied: opencode `--dir` is not allowed; use the exec tool `workdir` field instead"}
+	}
+
+	runArgs := commandArgs[subcommandIdx+1:]
+	if !flagHasValue(runArgs, "--format", "json") {
+		return &PolicyError{Message: "exec denied: opencode one-shot automation requires `opencode run --format json ...`"}
+	}
+
+	return nil
+}
+
+func parseOpencodeSubcommand(args []string) (string, int) {
+	valueFlags := map[string]struct{}{
+		"--log-level": {},
+		"--port":      {},
+		"--hostname":  {},
+		"--cors":      {},
+		"--model":     {},
+		"-m":          {},
+		"--session":   {},
+		"-s":          {},
+		"--prompt":    {},
+		"--agent":     {},
+		"--command":   {},
+		"--format":    {},
+		"--file":      {},
+		"-f":          {},
+		"--title":     {},
+		"--attach":    {},
+		"--dir":       {},
+		"--variant":   {},
+	}
+
+	for idx := 0; idx < len(args); idx++ {
+		token := strings.TrimSpace(args[idx])
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			if strings.Contains(token, "=") {
+				continue
+			}
+			if _, hasValue := valueFlags[token]; hasValue {
+				idx++
+			}
+			continue
+		}
+		return token, idx
+	}
+	return "", -1
+}
+
+func hasAnyFlag(args []string, names ...string) bool {
+	for _, candidate := range args {
+		for _, name := range names {
+			if candidate == name || strings.HasPrefix(candidate, name+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func flagHasValue(args []string, name string, expected string) bool {
+	expect := strings.ToLower(strings.Trim(strings.TrimSpace(expected), `"'`))
+	for idx, candidate := range args {
+		if candidate == name {
+			if idx+1 >= len(args) {
+				return false
+			}
+			next := strings.ToLower(strings.Trim(strings.TrimSpace(args[idx+1]), `"'`))
+			return next == expect
+		}
+		if strings.HasPrefix(candidate, name+"=") {
+			value := strings.TrimPrefix(candidate, name+"=")
+			value = strings.ToLower(strings.Trim(strings.TrimSpace(value), `"'`))
+			return value == expect
+		}
+	}
+	return false
 }
 
 func domainAllowed(target string, allowDomains []string) bool {

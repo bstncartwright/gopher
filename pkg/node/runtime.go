@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type ExecutionRequest struct {
 	SessionID sessionrt.SessionID `json:"session_id"`
 	ActorID   sessionrt.ActorID   `json:"actor_id"`
 	History   []sessionrt.Event   `json:"history"`
+	AuthEnv   map[string]string   `json:"auth_env,omitempty"`
 }
 
 type ExecutionResponse struct {
@@ -61,6 +63,7 @@ type Runtime struct {
 	now          func() time.Time
 
 	mu      sync.Mutex
+	envMu   sync.Mutex
 	running bool
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -240,13 +243,14 @@ func (r *Runtime) handleControlMessage(ctx context.Context, message fabricts.Mes
 		"session_id", request.SessionID,
 		"actor_id", request.ActorID,
 		"history_count", len(request.History),
+		"auth_env_count", len(request.AuthEnv),
 	)
 
-	output, err := r.executor.Step(r.ctx, sessionrt.AgentInput{
+	output, err := r.stepWithAuthEnv(r.ctx, sessionrt.AgentInput{
 		SessionID: request.SessionID,
 		ActorID:   request.ActorID,
 		History:   request.History,
-	})
+	}, request.AuthEnv)
 	if err != nil {
 		slog.Error("node_runtime: execution failed",
 			"node_id", r.nodeID,
@@ -275,4 +279,87 @@ func (r *Runtime) respond(ctx context.Context, reply string, response ExecutionR
 		return
 	}
 	_ = r.fabric.Publish(ctx, fabricts.Message{Subject: reply, Data: blob})
+}
+
+func (r *Runtime) stepWithAuthEnv(
+	ctx context.Context,
+	input sessionrt.AgentInput,
+	authEnv map[string]string,
+) (sessionrt.AgentOutput, error) {
+	normalized := normalizeAuthEnv(authEnv)
+	if len(normalized) == 0 {
+		return r.executor.Step(ctx, input)
+	}
+
+	r.envMu.Lock()
+	defer r.envMu.Unlock()
+
+	previous := make(map[string]*string, len(normalized))
+	applied := make([]string, 0, len(normalized))
+	for key, value := range normalized {
+		current, ok := os.LookupEnv(key)
+		if ok {
+			copyValue := current
+			previous[key] = &copyValue
+		} else {
+			previous[key] = nil
+		}
+		if err := os.Setenv(key, value); err != nil {
+			_ = restoreAuthEnv(previous, applied)
+			return sessionrt.AgentOutput{}, fmt.Errorf("set auth env %s: %w", key, err)
+		}
+		applied = append(applied, key)
+	}
+
+	output, execErr := r.executor.Step(ctx, input)
+	restoreErr := restoreAuthEnv(previous, applied)
+	if execErr != nil {
+		if restoreErr != nil {
+			return sessionrt.AgentOutput{}, fmt.Errorf("%w (restore auth env: %v)", execErr, restoreErr)
+		}
+		return sessionrt.AgentOutput{}, execErr
+	}
+	if restoreErr != nil {
+		return sessionrt.AgentOutput{}, fmt.Errorf("restore auth env: %w", restoreErr)
+	}
+	return output, nil
+}
+
+func normalizeAuthEnv(authEnv map[string]string) map[string]string {
+	if len(authEnv) == 0 {
+		return nil
+	}
+	normalized := make(map[string]string, len(authEnv))
+	for key, value := range authEnv {
+		envKey := strings.TrimSpace(key)
+		envValue := strings.TrimSpace(value)
+		if envKey == "" || envValue == "" {
+			continue
+		}
+		normalized[envKey] = envValue
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func restoreAuthEnv(previous map[string]*string, keys []string) error {
+	var firstErr error
+	for _, key := range keys {
+		prev, ok := previous[key]
+		if !ok {
+			continue
+		}
+		var err error
+		if prev == nil {
+			err = os.Unsetenv(key)
+		} else {
+			err = os.Setenv(key, *prev)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	return firstErr
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -351,6 +352,220 @@ func TestSendMessageCallsHomeserverAPI(t *testing.T) {
 	}
 	if requestCount < 1 {
 		t.Fatalf("homeserver request count = %d, want >= 1", requestCount)
+	}
+}
+
+func TestSendMessageReplaysTransientDroppedAfterHealthySend(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		attempts  = map[string]int{}
+		delivered []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.Contains(request.URL.Path, "/send/m.room.message/") {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		var payload outboundMessagePayload
+		body, _ := io.ReadAll(request.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error: %v", err)
+		}
+
+		mu.Lock()
+		attempts[payload.Body]++
+		attempt := attempts[payload.Body]
+		if payload.Body == "first" && attempt <= 2 {
+			mu.Unlock()
+			writer.WriteHeader(http.StatusInternalServerError)
+			_, _ = writer.Write([]byte(`{"errcode":"M_UNKNOWN","error":"temporary"}`))
+			return
+		}
+		delivered = append(delivered, payload.Body)
+		mu.Unlock()
+
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+		ListenAddr:    "127.0.0.1:0",
+		MaxAttempts:   1,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = instance.Start(ctx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	if err := instance.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "first",
+	}); err != nil {
+		t.Fatalf("SendMessage(first) error: %v", err)
+	}
+
+	dropDeadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(dropDeadline) {
+		stats := instance.snapshotMetrics()
+		if stats.OutboundDropped >= 1 && stats.OutboundReplayPending >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stats := instance.snapshotMetrics()
+	if stats.OutboundDropped < 1 || stats.OutboundReplayPending < 1 {
+		t.Fatalf("expected dropped+pending replay stats, got %#v", stats)
+	}
+
+	if err := instance.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "second",
+	}); err != nil {
+		t.Fatalf("SendMessage(second) error: %v", err)
+	}
+
+	drainDeadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(drainDeadline) {
+		mu.Lock()
+		secondDelivered := false
+		firstDelivered := false
+		for _, body := range delivered {
+			if body == "second" {
+				secondDelivered = true
+			}
+			if body == "first" {
+				firstDelivered = true
+			}
+		}
+		mu.Unlock()
+		if secondDelivered && firstDelivered {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	firstAttempts := attempts["first"]
+	secondAttempts := attempts["second"]
+	firstDelivered := false
+	secondDelivered := false
+	for _, body := range delivered {
+		if body == "first" {
+			firstDelivered = true
+		}
+		if body == "second" {
+			secondDelivered = true
+		}
+	}
+	mu.Unlock()
+	if firstAttempts != 3 {
+		t.Fatalf("first attempts = %d, want 3 (2 failed + 1 replay)", firstAttempts)
+	}
+	if secondAttempts < 1 {
+		t.Fatalf("second attempts = %d, want >= 1", secondAttempts)
+	}
+	if !firstDelivered || !secondDelivered {
+		t.Fatalf("delivered = %#v, want first+second delivered", delivered)
+	}
+	finalStats := instance.snapshotMetrics()
+	if finalStats.OutboundReplayPending != 0 {
+		t.Fatalf("replay pending = %d, want 0", finalStats.OutboundReplayPending)
+	}
+}
+
+func TestSendMessageDoesNotReplayPermanentDropped(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		attempts = map[string]int{}
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.Contains(request.URL.Path, "/send/m.room.message/") {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		var payload outboundMessagePayload
+		body, _ := io.ReadAll(request.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error: %v", err)
+		}
+
+		mu.Lock()
+		attempts[payload.Body]++
+		mu.Unlock()
+
+		if payload.Body == "bad" {
+			writer.WriteHeader(http.StatusBadRequest)
+			_, _ = writer.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"forbidden"}`))
+			return
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+		ListenAddr:    "127.0.0.1:0",
+		MaxAttempts:   1,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = instance.Start(ctx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	if err := instance.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "bad",
+	}); err != nil {
+		t.Fatalf("SendMessage(bad) error: %v", err)
+	}
+	if err := instance.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "good",
+	}); err != nil {
+		t.Fatalf("SendMessage(good) error: %v", err)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		bad := attempts["bad"]
+		good := attempts["good"]
+		mu.Unlock()
+		if bad >= 1 && good >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	badAttempts := attempts["bad"]
+	goodAttempts := attempts["good"]
+	mu.Unlock()
+	if badAttempts != 1 {
+		t.Fatalf("bad attempts = %d, want 1 (no replay for permanent failure)", badAttempts)
+	}
+	if goodAttempts < 1 {
+		t.Fatalf("good attempts = %d, want >= 1", goodAttempts)
+	}
+	stats := instance.snapshotMetrics()
+	if stats.OutboundReplayPending != 0 {
+		t.Fatalf("replay pending = %d, want 0", stats.OutboundReplayPending)
 	}
 }
 

@@ -201,6 +201,7 @@ type matrixRuntimeMetrics struct {
 	QueueDepth             int    `json:"queue_depth"`
 	OutboundRetries        uint64 `json:"outbound_retries"`
 	OutboundDropped        uint64 `json:"outbound_dropped"`
+	OutboundReplayPending  int    `json:"outbound_replay_pending"`
 	OutboundTransientErrs  uint64 `json:"outbound_transient_errors"`
 	OutboundPermanentErrs  uint64 `json:"outbound_permanent_errors"`
 	DuplicateTxnSeen       uint64 `json:"duplicate_txn_seen"`
@@ -237,10 +238,11 @@ func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
 		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: unable to decode metrics (%v)", err)
 	}
 	line = fmt.Sprintf(
-		"matrix bridge:   healthy (queue=%d retries=%d dropped=%d inbound_failures=%d presence=%s)",
+		"matrix bridge:   healthy (queue=%d retries=%d dropped=%d replay_pending=%d inbound_failures=%d presence=%s)",
 		metrics.QueueDepth,
 		metrics.OutboundRetries,
 		metrics.OutboundDropped,
+		metrics.OutboundReplayPending,
 		metrics.InboundFailures,
 		matrixPresenceSummary(metrics),
 	)

@@ -145,6 +145,13 @@ func startMatrixDMBridgeWithRuntime(
 		return nil, fmt.Errorf("create matrix transport: %w", err)
 	}
 
+	var tracePublisher gateway.TracePublisher
+	var traceProvisioner gateway.TraceConversationProvisioner
+	if cfg.Matrix.TraceEnabled {
+		tracePublisher = gateway.NewMatrixTracePublisher(matrixBridge)
+		traceProvisioner = newMatrixTraceConversationProvisioner(matrixBridge, logger)
+	}
+
 	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
 		Manager:          manager,
 		Transport:        matrixBridge,
@@ -153,6 +160,8 @@ func startMatrixDMBridgeWithRuntime(
 		RecipientByAgent: identities.UserByActorID,
 		Conversations:    gateway.NewConversationSessionMap(),
 		Bindings:         bindingStore,
+		TracePublisher:   tracePublisher,
+		TraceProvisioner: traceProvisioner,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create matrix dm pipeline: %w", err)
@@ -527,6 +536,69 @@ func matrixLocalpartFromActorID(actorID sessionrt.ActorID) (string, error) {
 		return "", fmt.Errorf("agent id %q cannot be mapped to matrix localpart", actorID)
 	}
 	return value, nil
+}
+
+type matrixTraceConversationProvisioner struct {
+	transport *matrixtransport.Transport
+	logger    *log.Logger
+}
+
+func newMatrixTraceConversationProvisioner(transport *matrixtransport.Transport, logger *log.Logger) *matrixTraceConversationProvisioner {
+	return &matrixTraceConversationProvisioner{
+		transport: transport,
+		logger:    logger,
+	}
+}
+
+func (p *matrixTraceConversationProvisioner) CreateTraceConversation(ctx context.Context, req gateway.TraceConversationRequest) (gateway.TraceConversationBinding, error) {
+	if p == nil || p.transport == nil {
+		return gateway.TraceConversationBinding{}, fmt.Errorf("matrix trace provisioner is unavailable")
+	}
+	creatorUserID := strings.TrimSpace(req.RecipientID)
+	if creatorUserID == "" {
+		return gateway.TraceConversationBinding{}, fmt.Errorf("trace room creator user is required")
+	}
+	traceRoomName := traceRoomNameFromSessionID(req.SessionID)
+	traceRoomTopic := fmt.Sprintf("Trace stream for session %s", strings.TrimSpace(string(req.SessionID)))
+	invitees := make([]string, 0, 1)
+	if sender := strings.TrimSpace(req.SenderID); sender != "" && !strings.EqualFold(sender, creatorUserID) {
+		invitees = append(invitees, sender)
+	}
+	roomID, err := p.transport.CreatePrivateRoom(ctx, matrixtransport.CreatePrivateRoomOptions{
+		Name:          traceRoomName,
+		Topic:         traceRoomTopic,
+		CreatorUserID: creatorUserID,
+		InviteUserIDs: invitees,
+	})
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Printf("matrix trace room creation failed session=%s conversation=%s err=%v", req.SessionID, req.ConversationID, err)
+		}
+		return gateway.TraceConversationBinding{}, err
+	}
+	p.transport.RecordTraceRoomCreated()
+	return gateway.TraceConversationBinding{
+		ConversationID:   roomID,
+		ConversationName: traceRoomName,
+		Mode:             gateway.TraceModeReadOnly,
+		Render:           gateway.TraceRenderCards,
+	}, nil
+}
+
+func traceRoomNameFromSessionID(sessionID sessionrt.SessionID) string {
+	raw := strings.TrimSpace(string(sessionID))
+	if raw == "" {
+		return "trace-session"
+	}
+	short := raw
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	short = strings.ToLower(short)
+	short = strings.ReplaceAll(short, ":", "-")
+	short = strings.ReplaceAll(short, "_", "-")
+	short = strings.ReplaceAll(short, " ", "-")
+	return "trace-" + short
 }
 
 type gatewayCronToolService struct {

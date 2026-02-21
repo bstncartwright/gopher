@@ -2,7 +2,8 @@ package agentcore
 
 import (
 	"context"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -21,6 +22,12 @@ func TestExecPolicyEnforcement(t *testing.T) {
 	}
 	runner := NewToolRunner(agent)
 	session := agent.NewSession()
+	fakeBinDir := t.TempDir()
+	fakeOpencodePath := filepath.Join(fakeBinDir, "opencode")
+	if err := os.WriteFile(fakeOpencodePath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("failed to create fake opencode binary: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	t.Run("denied_when_can_shell_false", func(t *testing.T) {
 		agent.Policies.CanShell = false
@@ -282,9 +289,6 @@ func TestExecPolicyEnforcement(t *testing.T) {
 	})
 
 	t.Run("opencode_allows_valid_one_shot_json_command", func(t *testing.T) {
-		if _, lookPathErr := exec.LookPath("opencode"); lookPathErr != nil {
-			t.Skip("opencode not installed")
-		}
 		agent.Policies.ShellAllowlist = []string{"opencode"}
 		sanitized, err := runner.enforcePolicy("exec", map[string]any{
 			"command": "opencode run --format json \"write code\"",

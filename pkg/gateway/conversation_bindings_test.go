@@ -14,13 +14,17 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 		t.Fatalf("NewFileConversationBindingStore() error: %v", err)
 	}
 	err = store.Set(ConversationBinding{
-		ConversationID:   "!dm:one",
-		ConversationName: "Writer Room",
-		SessionID:        "sess-1",
-		AgentID:          "agent:a",
-		RecipientID:      "@agent:local",
-		LastInboundEvent: "$evt-99",
-		Mode:             ConversationModeDM,
+		ConversationID:        "!dm:one",
+		ConversationName:      "Writer Room",
+		SessionID:             "sess-1",
+		AgentID:               "agent:a",
+		RecipientID:           "@agent:local",
+		TraceConversationID:   "!trace:sess-1",
+		TraceConversationName: "trace-sess-1",
+		TraceMode:             TraceModeReadOnly,
+		TraceRender:           TraceRenderCards,
+		LastInboundEvent:      "$evt-99",
+		Mode:                  ConversationModeDM,
 	})
 	if err != nil {
 		t.Fatalf("Set() error: %v", err)
@@ -45,6 +49,15 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 	}
 	if got.LastInboundEvent != "$evt-99" {
 		t.Fatalf("last inbound event = %q, want $evt-99", got.LastInboundEvent)
+	}
+	if got.TraceConversationID != "!trace:sess-1" {
+		t.Fatalf("trace conversation id = %q, want !trace:sess-1", got.TraceConversationID)
+	}
+	if got.TraceMode != TraceModeReadOnly {
+		t.Fatalf("trace mode = %q, want %q", got.TraceMode, TraceModeReadOnly)
+	}
+	if got.TraceRender != TraceRenderCards {
+		t.Fatalf("trace render = %q, want %q", got.TraceRender, TraceRenderCards)
 	}
 }
 
@@ -76,5 +89,61 @@ func TestInMemoryConversationBindingStoreMaintainsOneToOnePairs(t *testing.T) {
 	}
 	if got.Mode != ConversationModeDelegation {
 		t.Fatalf("mode = %q, want delegation", got.Mode)
+	}
+}
+
+func TestInMemoryConversationBindingStoreKeepsTraceFieldsForSameSession(t *testing.T) {
+	store := NewInMemoryConversationBindingStore()
+	if err := store.Set(ConversationBinding{
+		ConversationID:      "!room:a",
+		SessionID:           "sess-1",
+		TraceConversationID: "!trace:one",
+		TraceMode:           TraceModeReadOnly,
+		TraceRender:         TraceRenderCards,
+		Mode:                ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("first Set() error: %v", err)
+	}
+	if err := store.Set(ConversationBinding{
+		ConversationID: "!room:a",
+		SessionID:      "sess-1",
+		Mode:           ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("second Set() error: %v", err)
+	}
+	got, ok := store.GetByConversation("!room:a")
+	if !ok {
+		t.Fatalf("expected conversation binding")
+	}
+	if got.TraceConversationID != "!trace:one" {
+		t.Fatalf("trace conversation id = %q, want !trace:one", got.TraceConversationID)
+	}
+}
+
+func TestInMemoryConversationBindingStoreClearsTraceFieldsWhenSessionChanges(t *testing.T) {
+	store := NewInMemoryConversationBindingStore()
+	if err := store.Set(ConversationBinding{
+		ConversationID:      "!room:a",
+		SessionID:           "sess-1",
+		TraceConversationID: "!trace:one",
+		TraceMode:           TraceModeReadOnly,
+		TraceRender:         TraceRenderCards,
+		Mode:                ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("first Set() error: %v", err)
+	}
+	if err := store.Set(ConversationBinding{
+		ConversationID: "!room:a",
+		SessionID:      "sess-2",
+		Mode:           ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("second Set() error: %v", err)
+	}
+	got, ok := store.GetByConversation("!room:a")
+	if !ok {
+		t.Fatalf("expected conversation binding")
+	}
+	if got.TraceConversationID != "" {
+		t.Fatalf("trace conversation id = %q, want empty", got.TraceConversationID)
 	}
 }

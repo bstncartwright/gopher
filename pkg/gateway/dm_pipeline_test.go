@@ -52,11 +52,12 @@ func (m *sendEventFailManager) SendEvent(context.Context, sessionrt.Event) error
 }
 
 type fakeTransport struct {
-	mu      sync.Mutex
-	handler transport.InboundHandler
-	sent    []transport.OutboundMessage
-	typing  []typingSignal
-	managed map[string][]string
+	mu                  sync.Mutex
+	handler             transport.InboundHandler
+	sent                []transport.OutboundMessage
+	typing              []typingSignal
+	managed             map[string][]string
+	traceInboundIgnored int
 }
 
 type typingSignal struct {
@@ -124,6 +125,18 @@ func (f *fakeTransport) ManagedUsersForConversation(conversationID string) []str
 	return out
 }
 
+func (f *fakeTransport) RecordTraceInboundIgnored() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.traceInboundIgnored++
+}
+
+func (f *fakeTransport) traceInboundIgnoredCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.traceInboundIgnored
+}
+
 type dmStaticExecutor struct {
 	text string
 }
@@ -186,6 +199,40 @@ func (e *dmPromptExecutor) Step(_ context.Context, input sessionrt.AgentInput) (
 	}, nil
 }
 
+type dmTraceExecutor struct{}
+
+func (e *dmTraceExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventToolCall,
+				Payload: map[string]any{
+					"name": "exec",
+					"args": map[string]any{"command": "echo hi"},
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventToolResult,
+				Payload: map[string]any{
+					"name":   "exec",
+					"status": "ok",
+					"result": map[string]any{"stdout": "hi"},
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: "ack",
+				},
+			},
+		},
+	}, nil
+}
+
 func latestUserContent(history []sessionrt.Event) string {
 	for i := len(history) - 1; i >= 0; i-- {
 		event := history[i]
@@ -233,6 +280,60 @@ func (e *dmFailThenSucceedExecutor) Step(_ context.Context, input sessionrt.Agen
 			},
 		},
 	}, nil
+}
+
+type fakeTracePublisher struct {
+	mu     sync.Mutex
+	events []sessionrt.Event
+	rooms  []string
+}
+
+func (p *fakeTracePublisher) PublishEvent(_ context.Context, traceConversationID string, event sessionrt.Event) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rooms = append(p.rooms, strings.TrimSpace(traceConversationID))
+	p.events = append(p.events, event)
+	return nil
+}
+
+func (p *fakeTracePublisher) publishedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.events)
+}
+
+func (p *fakeTracePublisher) lastRoom() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.rooms) == 0 {
+		return ""
+	}
+	return p.rooms[len(p.rooms)-1]
+}
+
+type fakeTraceProvisioner struct {
+	mu      sync.Mutex
+	calls   int
+	lastReq TraceConversationRequest
+	result  TraceConversationBinding
+	err     error
+}
+
+func (p *fakeTraceProvisioner) CreateTraceConversation(_ context.Context, req TraceConversationRequest) (TraceConversationBinding, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	p.lastReq = req
+	if p.err != nil {
+		return TraceConversationBinding{}, p.err
+	}
+	return p.result, nil
+}
+
+func (p *fakeTraceProvisioner) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
 }
 
 func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
@@ -307,6 +408,205 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	last := signals[len(signals)-1]
 	if last.ConversationID != "!dm:one" || last.Typing {
 		t.Fatalf("last typing signal = %#v, want typing=false for !dm:one", last)
+	}
+}
+
+func TestDMPipelineCreatesTraceConversationAndPublishesTraceEvents(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmTraceExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	tracePublisher := &fakeTracePublisher{}
+	traceProvisioner := &fakeTraceProvisioner{
+		result: TraceConversationBinding{
+			ConversationID:   "!trace:one",
+			ConversationName: "trace-sess",
+			Mode:             TraceModeReadOnly,
+			Render:           TraceRenderCards,
+		},
+	}
+	bindings := NewInMemoryConversationBindingStore()
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:          manager,
+		Transport:        fake,
+		AgentID:          "agent:a",
+		Bindings:         bindings,
+		TracePublisher:   tracePublisher,
+		TraceProvisioner: traceProvisioner,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:one",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		return tracePublisher.publishedCount() >= 3
+	})
+
+	if traceProvisioner.callCount() != 1 {
+		t.Fatalf("trace provisioner call count = %d, want 1", traceProvisioner.callCount())
+	}
+	binding, ok := bindings.GetByConversation("!dm:one")
+	if !ok {
+		t.Fatalf("expected binding for dm conversation")
+	}
+	if binding.TraceConversationID != "!trace:one" {
+		t.Fatalf("trace conversation id = %q, want !trace:one", binding.TraceConversationID)
+	}
+	if binding.TraceMode != TraceModeReadOnly {
+		t.Fatalf("trace mode = %q, want %q", binding.TraceMode, TraceModeReadOnly)
+	}
+	if binding.TraceRender != TraceRenderCards {
+		t.Fatalf("trace render = %q, want %q", binding.TraceRender, TraceRenderCards)
+	}
+	if tracePublisher.lastRoom() != "!trace:one" {
+		t.Fatalf("last trace room = %q, want !trace:one", tracePublisher.lastRoom())
+	}
+}
+
+func TestDMPipelineIgnoresTraceRoomInboundMessages(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	bindings := NewInMemoryConversationBindingStore()
+	if err := bindings.Set(ConversationBinding{
+		ConversationID:      "!dm:one",
+		SessionID:           created.ID,
+		TraceConversationID: "!trace:one",
+		TraceMode:           TraceModeReadOnly,
+		TraceRender:         TraceRenderCards,
+		Mode:                ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("bindings.Set() error: %v", err)
+	}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		Bindings:  bindings,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "!trace:one",
+		SenderID:       "@user:hs",
+		Text:           "debug this",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+
+	events, err := store.List(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("store.List() error: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("event count = %d, want 1 (session created only)", len(events))
+	}
+	if fake.sentCount() != 0 {
+		t.Fatalf("dm outbound count = %d, want 0", fake.sentCount())
+	}
+	if fake.traceInboundIgnoredCount() != 1 {
+		t.Fatalf("trace inbound ignored count = %d, want 1", fake.traceInboundIgnoredCount())
+	}
+}
+
+func TestDMPipelineTraceProvisionerDoesNotRetryWithinSession(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	traceProvisioner := &fakeTraceProvisioner{
+		err: fmt.Errorf("trace room unavailable"),
+	}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:          manager,
+		Transport:        fake,
+		AgentID:          "agent:a",
+		TraceProvisioner: traceProvisioner,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:one",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound(first) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:one",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		Text:           "next",
+	}); err != nil {
+		t.Fatalf("HandleInbound(second) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 2
+	})
+	if traceProvisioner.callCount() != 1 {
+		t.Fatalf("trace provisioner call count = %d, want 1", traceProvisioner.callCount())
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:one",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		Text:           "/clear",
+	}); err != nil {
+		t.Fatalf("HandleInbound(clear) error: %v", err)
+	}
+	if traceProvisioner.callCount() != 2 {
+		t.Fatalf("trace provisioner call count = %d after clear, want 2", traceProvisioner.callCount())
 	}
 }
 
@@ -495,6 +795,91 @@ func TestDMPipelineAcceptsManagedSenderInDelegationRoom(t *testing.T) {
 	got := fake.lastSent()
 	if got.Text != "delegation-ack" {
 		t.Fatalf("last outbound text = %q, want delegation-ack", got.Text)
+	}
+}
+
+func TestDMPipelineDelegationSupportsTraceChannel(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmTraceExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	tracePublisher := &fakeTracePublisher{}
+	traceProvisioner := &fakeTraceProvisioner{
+		result: TraceConversationBinding{
+			ConversationID:   "!trace:delegation",
+			ConversationName: "trace-delegation",
+			Mode:             TraceModeReadOnly,
+			Render:           TraceRenderCards,
+		},
+	}
+	bindings := NewInMemoryConversationBindingStore()
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:          manager,
+		Transport:        fake,
+		AgentID:          "writer",
+		AgentByRecipient: map[string]sessionrt.ActorID{"@writer:hs": "writer"},
+		RecipientByAgent: map[sessionrt.ActorID]string{"writer": "@writer:hs"},
+		Bindings:         bindings,
+		TracePublisher:   tracePublisher,
+		TraceProvisioner: traceProvisioner,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "writer", Type: sessionrt.ActorAgent},
+			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!room:delegate", created.ID, "writer", "@writer:hs", ConversationModeDelegation); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+	pipeline.EnsureTraceConversation(context.Background(), TraceConversationRequest{
+		ConversationID: "!room:delegate",
+		SessionID:      created.ID,
+		AgentID:        "writer",
+		SenderID:       "@user:hs",
+		RecipientID:    "@writer:hs",
+	})
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "!room:delegate",
+		SenderID:       "@writer:hs",
+		SenderManaged:  true,
+		RecipientID:    "@writer:hs",
+		Text:           "@writer:hs continue",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		return tracePublisher.publishedCount() >= 3
+	})
+
+	if traceProvisioner.callCount() != 1 {
+		t.Fatalf("trace provisioner call count = %d, want 1", traceProvisioner.callCount())
+	}
+	binding, ok := bindings.GetByConversation("!room:delegate")
+	if !ok {
+		t.Fatalf("expected binding for delegation room")
+	}
+	if binding.TraceConversationID != "!trace:delegation" {
+		t.Fatalf("trace conversation id = %q, want !trace:delegation", binding.TraceConversationID)
+	}
+	if tracePublisher.lastRoom() != "!trace:delegation" {
+		t.Fatalf("trace publish room = %q, want !trace:delegation", tracePublisher.lastRoom())
 	}
 }
 

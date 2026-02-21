@@ -53,6 +53,9 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if cfg.Matrix.PresenceStatusMsg != "" {
 		t.Fatalf("matrix presence status = %q, want empty", cfg.Matrix.PresenceStatusMsg)
 	}
+	if !cfg.Matrix.TraceEnabled {
+		t.Fatalf("matrix trace enabled = false, want true")
+	}
 	if cfg.Panel.ListenAddr != "127.0.0.1:29329" {
 		t.Fatalf("panel listen addr = %q, want 127.0.0.1:29329", cfg.Panel.ListenAddr)
 	}
@@ -188,6 +191,7 @@ as_token = "as-file"
 hs_token = "hs-file"
 listen_addr = "127.0.0.1:29328"
 bot_user_id = "@gopher:local"
+trace_enabled = false
 rich_text_enabled = false
 presence_enabled = false
 presence_interval = "45s"
@@ -198,6 +202,7 @@ presence_status_msg = "file-status"
 	overrideHS := "http://example.test:8008"
 	overrideAS := "override-as"
 	overrideHSSecret := "override-hs"
+	overrideTraceEnabled := true
 	overrideRichText := true
 	overridePresenceEnabled := true
 	overridePresenceInterval := 30 * time.Second
@@ -205,6 +210,7 @@ presence_status_msg = "file-status"
 	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
 		Env: map[string]string{
+			"GOPHER_GATEWAY_MATRIX_TRACE_ENABLED":       "false",
 			"GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED":   "false",
 			"GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED":    "false",
 			"GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL":   "20s",
@@ -215,6 +221,7 @@ presence_status_msg = "file-status"
 			MatrixHomeserver:        &overrideHS,
 			MatrixASToken:           &overrideAS,
 			MatrixHSToken:           &overrideHSSecret,
+			MatrixTraceEnabled:      &overrideTraceEnabled,
 			MatrixRichTextEnabled:   &overrideRichText,
 			MatrixPresenceEnabled:   &overridePresenceEnabled,
 			MatrixPresenceInterval:  &overridePresenceInterval,
@@ -232,6 +239,9 @@ presence_status_msg = "file-status"
 	}
 	if cfg.Matrix.ASToken != overrideAS || cfg.Matrix.HSToken != overrideHSSecret {
 		t.Fatalf("matrix tokens not overridden as expected")
+	}
+	if !cfg.Matrix.TraceEnabled {
+		t.Fatalf("matrix trace enabled = false, want true")
 	}
 	if !cfg.Matrix.RichTextEnabled {
 		t.Fatalf("matrix rich text enabled = false, want true")

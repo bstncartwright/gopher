@@ -124,6 +124,10 @@ type matrixStats struct {
 	DuplicateTxnSeen       uint64    `json:"duplicate_txn_seen"`
 	DuplicateEventsSkipped uint64    `json:"duplicate_events_skipped"`
 	ReplayEventsProcessed  uint64    `json:"replay_events_processed"`
+	TraceRoomsCreated      uint64    `json:"trace_rooms_created_total"`
+	TracePublishSuccess    uint64    `json:"trace_publish_success_total"`
+	TracePublishFailure    uint64    `json:"trace_publish_failure_total"`
+	TraceInboundIgnored    uint64    `json:"trace_events_ignored_inbound_total"`
 	PresenceEnabled        bool      `json:"presence_enabled"`
 	PresenceState          string    `json:"presence_state"`
 	PresenceFailures       uint64    `json:"presence_failures"`
@@ -143,6 +147,10 @@ type matrixStatsSnapshot struct {
 	DuplicateTxnSeen       uint64
 	DuplicateEventsSkipped uint64
 	ReplayEventsProcessed  uint64
+	TraceRoomsCreated      uint64
+	TracePublishSuccess    uint64
+	TracePublishFailure    uint64
+	TraceInboundIgnored    uint64
 	PresenceEnabled        bool
 	PresenceState          string
 	PresenceFailures       uint64
@@ -847,23 +855,27 @@ func (t *Transport) handleMetrics(writer http.ResponseWriter, request *http.Requ
 	stats := t.snapshotMetrics()
 	writer.Header().Set("content-type", "application/json")
 	_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-		"last_inbound_txn_at":       formatTime(stats.LastInboundTxnAt),
-		"last_outbound_success_at":  formatTime(stats.LastOutboundSuccessAt),
-		"presence_enabled":          stats.PresenceEnabled,
-		"presence_state":            stats.PresenceState,
-		"presence_last_success_at":  formatTime(stats.PresenceLastSuccessAt),
-		"presence_failures":         stats.PresenceFailures,
-		"presence_last_error":       stats.PresenceLastError,
-		"queue_depth":               stats.QueueDepth,
-		"outbound_retries":          stats.OutboundRetries,
-		"outbound_dropped":          stats.OutboundDropped,
-		"outbound_replay_pending":   stats.OutboundReplayPending,
-		"outbound_transient_errors": stats.OutboundTransientErrs,
-		"outbound_permanent_errors": stats.OutboundPermanentErrs,
-		"duplicate_txn_seen":        stats.DuplicateTxnSeen,
-		"duplicate_events_skipped":  stats.DuplicateEventsSkipped,
-		"replay_events_processed":   stats.ReplayEventsProcessed,
-		"inbound_failures":          t.inboundFailures.Load(),
+		"last_inbound_txn_at":                formatTime(stats.LastInboundTxnAt),
+		"last_outbound_success_at":           formatTime(stats.LastOutboundSuccessAt),
+		"presence_enabled":                   stats.PresenceEnabled,
+		"presence_state":                     stats.PresenceState,
+		"presence_last_success_at":           formatTime(stats.PresenceLastSuccessAt),
+		"presence_failures":                  stats.PresenceFailures,
+		"presence_last_error":                stats.PresenceLastError,
+		"queue_depth":                        stats.QueueDepth,
+		"outbound_retries":                   stats.OutboundRetries,
+		"outbound_dropped":                   stats.OutboundDropped,
+		"outbound_replay_pending":            stats.OutboundReplayPending,
+		"outbound_transient_errors":          stats.OutboundTransientErrs,
+		"outbound_permanent_errors":          stats.OutboundPermanentErrs,
+		"duplicate_txn_seen":                 stats.DuplicateTxnSeen,
+		"duplicate_events_skipped":           stats.DuplicateEventsSkipped,
+		"replay_events_processed":            stats.ReplayEventsProcessed,
+		"trace_rooms_created_total":          stats.TraceRoomsCreated,
+		"trace_publish_success_total":        stats.TracePublishSuccess,
+		"trace_publish_failure_total":        stats.TracePublishFailure,
+		"trace_events_ignored_inbound_total": stats.TraceInboundIgnored,
+		"inbound_failures":                   t.inboundFailures.Load(),
 	})
 }
 
@@ -1463,6 +1475,30 @@ func (t *Transport) incrementReplayEvents() {
 	t.stats.ReplayEventsProcessed++
 }
 
+func (t *Transport) RecordTraceRoomCreated() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.TraceRoomsCreated++
+}
+
+func (t *Transport) RecordTracePublishSuccess() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.TracePublishSuccess++
+}
+
+func (t *Transport) RecordTracePublishFailure() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.TracePublishFailure++
+}
+
+func (t *Transport) RecordTraceInboundIgnored() {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.TraceInboundIgnored++
+}
+
 func (t *Transport) snapshotMetrics() matrixStatsSnapshot {
 	t.stats.mu.RLock()
 	defer t.stats.mu.RUnlock()
@@ -1479,6 +1515,10 @@ func (t *Transport) snapshotMetrics() matrixStatsSnapshot {
 		DuplicateTxnSeen:       t.stats.DuplicateTxnSeen,
 		DuplicateEventsSkipped: t.stats.DuplicateEventsSkipped,
 		ReplayEventsProcessed:  t.stats.ReplayEventsProcessed,
+		TraceRoomsCreated:      t.stats.TraceRoomsCreated,
+		TracePublishSuccess:    t.stats.TracePublishSuccess,
+		TracePublishFailure:    t.stats.TracePublishFailure,
+		TraceInboundIgnored:    t.stats.TraceInboundIgnored,
 		PresenceEnabled:        t.stats.PresenceEnabled,
 		PresenceState:          t.stats.PresenceState,
 		PresenceFailures:       t.stats.PresenceFailures,

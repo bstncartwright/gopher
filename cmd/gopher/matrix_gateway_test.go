@@ -140,3 +140,10 @@ func TestSelectCatchupReplayEventsReturnsOnlyNewerEventsChronologically(t *testi
 		t.Fatalf("replay order = [%s,%s], want [$4,$5]", got[0].EventID, got[1].EventID)
 	}
 }
+
+func TestTraceRoomNameFromSessionIDUsesPrefixAndTruncation(t *testing.T) {
+	name := traceRoomNameFromSessionID("sess-1234567890abcdef")
+	if name != "trace-sess-1234567" {
+		t.Fatalf("trace room name = %q, want trace-sess-1234567", name)
+	}
+}

@@ -22,6 +22,44 @@ type CreatePublicRoomOptions struct {
 }
 
 func (t *Transport) CreatePublicRoom(ctx context.Context, opts CreatePublicRoomOptions) (string, error) {
+	return t.createRoom(ctx, createRoomOptions{
+		Name:          opts.Name,
+		Topic:         opts.Topic,
+		CreatorUserID: opts.CreatorUserID,
+		InviteUserIDs: opts.InviteUserIDs,
+		Visibility:    "public",
+		Preset:        "public_chat",
+	})
+}
+
+type CreatePrivateRoomOptions struct {
+	Name          string
+	Topic         string
+	CreatorUserID string
+	InviteUserIDs []string
+}
+
+func (t *Transport) CreatePrivateRoom(ctx context.Context, opts CreatePrivateRoomOptions) (string, error) {
+	return t.createRoom(ctx, createRoomOptions{
+		Name:          opts.Name,
+		Topic:         opts.Topic,
+		CreatorUserID: opts.CreatorUserID,
+		InviteUserIDs: opts.InviteUserIDs,
+		Visibility:    "private",
+		Preset:        "private_chat",
+	})
+}
+
+type createRoomOptions struct {
+	Name          string
+	Topic         string
+	CreatorUserID string
+	InviteUserIDs []string
+	Visibility    string
+	Preset        string
+}
+
+func (t *Transport) createRoom(ctx context.Context, opts createRoomOptions) (string, error) {
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/createRoom?access_token=%s",
 		t.homeserverURL,
 		url.QueryEscape(t.asToken),
@@ -32,8 +70,8 @@ func (t *Transport) CreatePublicRoom(ctx context.Context, opts CreatePublicRoomO
 	}
 	invitees := normalizedUniqueUserIDs(opts.InviteUserIDs, creatorUserID)
 	payload := map[string]any{
-		"visibility": "public",
-		"preset":     "public_chat",
+		"visibility": strings.TrimSpace(opts.Visibility),
+		"preset":     strings.TrimSpace(opts.Preset),
 		"is_direct":  false,
 	}
 	if name := strings.TrimSpace(opts.Name); name != "" {

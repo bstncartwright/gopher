@@ -207,6 +207,10 @@ type matrixRuntimeMetrics struct {
 	DuplicateTxnSeen       uint64 `json:"duplicate_txn_seen"`
 	DuplicateEventsSkipped uint64 `json:"duplicate_events_skipped"`
 	ReplayEventsProcessed  uint64 `json:"replay_events_processed"`
+	TraceRoomsCreated      uint64 `json:"trace_rooms_created_total"`
+	TracePublishSuccess    uint64 `json:"trace_publish_success_total"`
+	TracePublishFailure    uint64 `json:"trace_publish_failure_total"`
+	TraceInboundIgnored    uint64 `json:"trace_events_ignored_inbound_total"`
 	InboundFailures        uint64 `json:"inbound_failures"`
 }
 

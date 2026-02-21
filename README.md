@@ -466,6 +466,22 @@ env overrides:
 
 optional. when enabled, nodes advertise capabilities, the gateway schedules work across nodes, and agents can run remotely. the gateway remains authoritative. if nodes disappear, sessions requiring unavailable capabilities fail with an explicit scheduler error; agents without required capabilities continue locally.
 
+gateway automatically forwards provider auth env vars to the selected worker node for each remote execution request, so you do not need to configure model auth on every node. supported keys by default:
+
+- `OPENAI_API_KEY`
+- `ZAI_API_KEY`
+- `KIMI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `OLLAMA_API_KEY`
+- `OPENAI_CODEX_API_KEY`
+- `OPENAI_CODEX_TOKEN`
+- `OPENAI_CODEX_REFRESH_TOKEN`
+- `OPENAI_CODEX_TOKEN_EXPIRES`
+
+optional controls:
+- disable forwarding: `GOPHER_GATEWAY_SHARE_AUTH_ENV=false`
+- override forwarded key list: `GOPHER_GATEWAY_SHARED_AUTH_ENV_KEYS=OPENAI_API_KEY,ZAI_API_KEY`
+
 ## safety philosophy
 
 gopher prioritizes durability, observability, simplicity, and personal control over multi-tenant isolation, enterprise security models, and automatic autonomy.

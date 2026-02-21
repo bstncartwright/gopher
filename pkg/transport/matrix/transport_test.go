@@ -647,6 +647,50 @@ func TestCreatePublicRoomCallsHomeserverAPI(t *testing.T) {
 	}
 }
 
+func TestCreatePrivateRoomCallsHomeserverAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", request.Method)
+		}
+		if request.URL.Path != "/_matrix/client/v3/createRoom" {
+			t.Fatalf("path = %q, want createRoom", request.URL.Path)
+		}
+		body, _ := io.ReadAll(request.Body)
+		if !bytes.Contains(body, []byte(`"visibility":"private"`)) {
+			t.Fatalf("expected private visibility payload: %s", string(body))
+		}
+		if !bytes.Contains(body, []byte(`"preset":"private_chat"`)) {
+			t.Fatalf("expected private preset payload: %s", string(body))
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"room_id":"!trace:local"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	roomID, err := instance.CreatePrivateRoom(context.Background(), CreatePrivateRoomOptions{
+		Name:          "trace-session",
+		Topic:         "trace topic",
+		CreatorUserID: "@milo:local",
+		InviteUserIDs: []string{"@user:local"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePrivateRoom() error: %v", err)
+	}
+	if roomID != "!trace:local" {
+		t.Fatalf("room_id = %q, want !trace:local", roomID)
+	}
+}
+
 func TestInviteToRoomCallsHomeserverAPI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
@@ -680,6 +724,37 @@ func TestInviteToRoomCallsHomeserverAPI(t *testing.T) {
 
 	if err := instance.InviteToRoom(context.Background(), "!new:local", "@writer:local", "@planner:local"); err != nil {
 		t.Fatalf("InviteToRoom() error: %v", err)
+	}
+}
+
+func TestTraceMetricCountersAreExposedInSnapshot(t *testing.T) {
+	instance, err := New(Options{
+		HomeserverURL: "http://localhost:8008",
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	instance.RecordTraceRoomCreated()
+	instance.RecordTracePublishSuccess()
+	instance.RecordTracePublishFailure()
+	instance.RecordTraceInboundIgnored()
+
+	metrics := instance.snapshotMetrics()
+	if metrics.TraceRoomsCreated != 1 {
+		t.Fatalf("trace_rooms_created_total = %d, want 1", metrics.TraceRoomsCreated)
+	}
+	if metrics.TracePublishSuccess != 1 {
+		t.Fatalf("trace_publish_success_total = %d, want 1", metrics.TracePublishSuccess)
+	}
+	if metrics.TracePublishFailure != 1 {
+		t.Fatalf("trace_publish_failure_total = %d, want 1", metrics.TracePublishFailure)
+	}
+	if metrics.TraceInboundIgnored != 1 {
+		t.Fatalf("trace_events_ignored_inbound_total = %d, want 1", metrics.TraceInboundIgnored)
 	}
 }
 

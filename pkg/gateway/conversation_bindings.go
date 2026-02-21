@@ -20,16 +20,25 @@ const (
 	ConversationModeDelegation ConversationMode = "delegation"
 )
 
+const (
+	TraceModeReadOnly = "read_only"
+	TraceRenderCards  = "cards"
+)
+
 type ConversationBinding struct {
-	ConversationID   string              `json:"conversation_id"`
-	ConversationName string              `json:"conversation_name,omitempty"`
-	SessionID        sessionrt.SessionID `json:"session_id"`
-	AgentID          sessionrt.ActorID   `json:"agent_id,omitempty"`
-	RecipientID      string              `json:"recipient_id,omitempty"`
-	LastInboundEvent string              `json:"last_inbound_event,omitempty"`
-	Mode             ConversationMode    `json:"mode"`
-	CreatedAt        time.Time           `json:"created_at"`
-	UpdatedAt        time.Time           `json:"updated_at"`
+	ConversationID        string              `json:"conversation_id"`
+	ConversationName      string              `json:"conversation_name,omitempty"`
+	SessionID             sessionrt.SessionID `json:"session_id"`
+	AgentID               sessionrt.ActorID   `json:"agent_id,omitempty"`
+	RecipientID           string              `json:"recipient_id,omitempty"`
+	TraceConversationID   string              `json:"trace_conversation_id,omitempty"`
+	TraceConversationName string              `json:"trace_conversation_name,omitempty"`
+	TraceMode             string              `json:"trace_mode,omitempty"`
+	TraceRender           string              `json:"trace_render,omitempty"`
+	LastInboundEvent      string              `json:"last_inbound_event,omitempty"`
+	Mode                  ConversationMode    `json:"mode"`
+	CreatedAt             time.Time           `json:"created_at"`
+	UpdatedAt             time.Time           `json:"updated_at"`
 }
 
 type ConversationBindingStore interface {
@@ -104,6 +113,20 @@ func (s *FileConversationBindingStore) Set(binding ConversationBinding) error {
 		normalized.CreatedAt = existing.CreatedAt
 		if normalized.ConversationName == "" {
 			normalized.ConversationName = existing.ConversationName
+		}
+		if normalized.SessionID == existing.SessionID {
+			if normalized.TraceConversationID == "" {
+				normalized.TraceConversationID = existing.TraceConversationID
+			}
+			if normalized.TraceConversationName == "" {
+				normalized.TraceConversationName = existing.TraceConversationName
+			}
+			if normalized.TraceMode == "" {
+				normalized.TraceMode = existing.TraceMode
+			}
+			if normalized.TraceRender == "" {
+				normalized.TraceRender = existing.TraceRender
+			}
 		}
 	}
 	for conversationID, existing := range s.items {
@@ -235,6 +258,20 @@ func (s *InMemoryConversationBindingStore) Set(binding ConversationBinding) erro
 		if normalized.ConversationName == "" {
 			normalized.ConversationName = existing.ConversationName
 		}
+		if normalized.SessionID == existing.SessionID {
+			if normalized.TraceConversationID == "" {
+				normalized.TraceConversationID = existing.TraceConversationID
+			}
+			if normalized.TraceConversationName == "" {
+				normalized.TraceConversationName = existing.TraceConversationName
+			}
+			if normalized.TraceMode == "" {
+				normalized.TraceMode = existing.TraceMode
+			}
+			if normalized.TraceRender == "" {
+				normalized.TraceRender = existing.TraceRender
+			}
+		}
 	}
 	for conversationID, existing := range s.items {
 		if conversationID == normalized.ConversationID {
@@ -273,6 +310,10 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 	}
 	agentID := sessionrt.ActorID(strings.TrimSpace(string(binding.AgentID)))
 	recipientID := strings.TrimSpace(binding.RecipientID)
+	traceConversationID := strings.TrimSpace(binding.TraceConversationID)
+	traceConversationName := strings.TrimSpace(binding.TraceConversationName)
+	traceMode := normalizeTraceMode(binding.TraceMode)
+	traceRender := normalizeTraceRender(binding.TraceRender)
 	lastInboundEvent := strings.TrimSpace(binding.LastInboundEvent)
 	mode := normalizeConversationMode(binding.Mode)
 
@@ -286,15 +327,19 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 		updatedAt = now
 	}
 	return ConversationBinding{
-		ConversationID:   conversationID,
-		ConversationName: conversationName,
-		SessionID:        sessionID,
-		AgentID:          agentID,
-		RecipientID:      recipientID,
-		LastInboundEvent: lastInboundEvent,
-		Mode:             mode,
-		CreatedAt:        createdAt,
-		UpdatedAt:        updatedAt,
+		ConversationID:        conversationID,
+		ConversationName:      conversationName,
+		SessionID:             sessionID,
+		AgentID:               agentID,
+		RecipientID:           recipientID,
+		TraceConversationID:   traceConversationID,
+		TraceConversationName: traceConversationName,
+		TraceMode:             traceMode,
+		TraceRender:           traceRender,
+		LastInboundEvent:      lastInboundEvent,
+		Mode:                  mode,
+		CreatedAt:             createdAt,
+		UpdatedAt:             updatedAt,
 	}, nil
 }
 
@@ -314,9 +359,35 @@ func cloneConversationBinding(in ConversationBinding) ConversationBinding {
 	out.SessionID = sessionrt.SessionID(strings.TrimSpace(string(out.SessionID)))
 	out.AgentID = sessionrt.ActorID(strings.TrimSpace(string(out.AgentID)))
 	out.RecipientID = strings.TrimSpace(out.RecipientID)
+	out.TraceConversationID = strings.TrimSpace(out.TraceConversationID)
+	out.TraceConversationName = strings.TrimSpace(out.TraceConversationName)
+	out.TraceMode = normalizeTraceMode(out.TraceMode)
+	out.TraceRender = normalizeTraceRender(out.TraceRender)
 	out.LastInboundEvent = strings.TrimSpace(out.LastInboundEvent)
 	out.Mode = normalizeConversationMode(out.Mode)
 	out.CreatedAt = out.CreatedAt.UTC()
 	out.UpdatedAt = out.UpdatedAt.UTC()
 	return out
+}
+
+func normalizeTraceMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
+	case TraceModeReadOnly:
+		return TraceModeReadOnly
+	default:
+		return ""
+	}
+}
+
+func normalizeTraceRender(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
+	case TraceRenderCards:
+		return TraceRenderCards
+	default:
+		return ""
+	}
 }

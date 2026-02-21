@@ -21,6 +21,8 @@ type DMPipelineOptions struct {
 	RecipientByAgent map[sessionrt.ActorID]string
 	Conversations    *ConversationSessionMap
 	Bindings         ConversationBindingStore
+	TracePublisher   TracePublisher
+	TraceProvisioner TraceConversationProvisioner
 }
 
 type conversationRoute struct {
@@ -34,6 +36,26 @@ type HeartbeatTarget struct {
 	SessionID      sessionrt.SessionID
 }
 
+type TraceConversationRequest struct {
+	ConversationID   string
+	ConversationName string
+	SessionID        sessionrt.SessionID
+	AgentID          sessionrt.ActorID
+	SenderID         string
+	RecipientID      string
+}
+
+type TraceConversationBinding struct {
+	ConversationID   string
+	ConversationName string
+	Mode             string
+	Render           string
+}
+
+type TraceConversationProvisioner interface {
+	CreateTraceConversation(ctx context.Context, req TraceConversationRequest) (TraceConversationBinding, error)
+}
+
 type DMPipeline struct {
 	manager       sessionrt.SessionManager
 	transport     transport.Transport
@@ -43,19 +65,26 @@ type DMPipeline struct {
 	conversations *ConversationSessionMap
 	bindings      ConversationBindingStore
 
-	setupMu      sync.Mutex
-	subscribedMu sync.Mutex
-	subscribed   map[sessionrt.SessionID]struct{}
-	fallbackMu   sync.Mutex
-	lastFallback map[string]time.Time
-	processingMu sync.Mutex
-	processing   map[string]int
-	typingMu     sync.Mutex
-	typingCancel map[string]context.CancelFunc
-	routeMu      sync.RWMutex
-	routes       map[string]conversationRoute
-	heartbeatMu  sync.Mutex
-	heartbeats   map[string]heartbeatState
+	setupMu          sync.Mutex
+	subscribedMu     sync.Mutex
+	subscribed       map[sessionrt.SessionID]struct{}
+	fallbackMu       sync.Mutex
+	lastFallback     map[string]time.Time
+	processingMu     sync.Mutex
+	processing       map[string]int
+	typingMu         sync.Mutex
+	typingCancel     map[string]context.CancelFunc
+	routeMu          sync.RWMutex
+	routes           map[string]conversationRoute
+	traceRouteMu     sync.RWMutex
+	traceByDM        map[string]string
+	dmByTrace        map[string]string
+	traceSetupMu     sync.Mutex
+	traceSetup       map[sessionrt.SessionID]struct{}
+	heartbeatMu      sync.Mutex
+	heartbeats       map[string]heartbeatState
+	tracePublisher   TracePublisher
+	traceProvisioner TraceConversationProvisioner
 }
 
 type heartbeatState struct {
@@ -131,23 +160,29 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		"agents_by_recipient_count", len(agentByRecip),
 	)
 	pipeline := &DMPipeline{
-		manager:       opts.Manager,
-		transport:     opts.Transport,
-		agentID:       opts.AgentID,
-		agentByRecip:  agentByRecip,
-		recipByAgent:  recipByAgent,
-		conversations: conversations,
-		bindings:      bindings,
-		subscribed:    map[sessionrt.SessionID]struct{}{},
-		lastFallback:  map[string]time.Time{},
-		processing:    map[string]int{},
-		typingCancel:  map[string]context.CancelFunc{},
-		routes:        map[string]conversationRoute{},
-		heartbeats:    map[string]heartbeatState{},
+		manager:          opts.Manager,
+		transport:        opts.Transport,
+		agentID:          opts.AgentID,
+		agentByRecip:     agentByRecip,
+		recipByAgent:     recipByAgent,
+		conversations:    conversations,
+		bindings:         bindings,
+		subscribed:       map[sessionrt.SessionID]struct{}{},
+		lastFallback:     map[string]time.Time{},
+		processing:       map[string]int{},
+		typingCancel:     map[string]context.CancelFunc{},
+		routes:           map[string]conversationRoute{},
+		traceByDM:        map[string]string{},
+		dmByTrace:        map[string]string{},
+		traceSetup:       map[sessionrt.SessionID]struct{}{},
+		heartbeats:       map[string]heartbeatState{},
+		tracePublisher:   opts.TracePublisher,
+		traceProvisioner: opts.TraceProvisioner,
 	}
 	for _, binding := range bindings.List() {
 		pipeline.conversations.Set(binding.ConversationID, binding.SessionID)
 		pipeline.setConversationRoute(binding.ConversationID, binding.AgentID, binding.RecipientID, binding.Mode)
+		pipeline.setTraceConversationRoute(binding.ConversationID, binding.TraceConversationID)
 	}
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
 	slog.Info("dm_pipeline: pipeline created", "agent_id", opts.AgentID)
@@ -157,6 +192,10 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.InboundMessage) error {
 	conversationID := strings.TrimSpace(inbound.ConversationID)
 	if conversationID == "" {
+		return nil
+	}
+	if p.isTraceConversation(conversationID) {
+		p.recordTraceInboundIgnored()
 		return nil
 	}
 	slog.Debug("dm_pipeline: handling inbound",
@@ -404,6 +443,14 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		_ = p.manager.CancelSession(context.Background(), created.ID)
 		return "", err
 	}
+	p.ensureTraceConversation(ctx, TraceConversationRequest{
+		ConversationID:   conversationID,
+		ConversationName: conversationName,
+		SessionID:        created.ID,
+		AgentID:          desiredAgentID,
+		SenderID:         senderID,
+		RecipientID:      recipientID,
+	})
 	slog.Info("dm_pipeline: session created",
 		"conversation_id", conversationID,
 		"session_id", created.ID,
@@ -456,6 +503,14 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 		for event := range stream {
 			if !p.isCurrentConversationSession(conversationID, sessionID) {
 				continue
+			}
+			if err := p.publishTraceEvent(conversationID, event); err != nil {
+				slog.Warn("dm_pipeline: publish trace event failed",
+					"conversation_id", conversationID,
+					"session_id", sessionID,
+					"event_type", event.Type,
+					"error", err,
+				)
 			}
 			if event.Type == sessionrt.EventError {
 				p.finishProcessing(conversationID)
@@ -664,6 +719,7 @@ func (p *DMPipeline) lookupConversationSession(conversationID string) (sessionrt
 	}
 	p.conversations.Set(conversationID, binding.SessionID)
 	p.setConversationRoute(conversationID, binding.AgentID, binding.RecipientID, binding.Mode)
+	p.setTraceConversationRoute(conversationID, binding.TraceConversationID)
 	return binding.SessionID, true
 }
 
@@ -692,6 +748,11 @@ func (p *DMPipeline) bindConversation(conversationID string, sessionID sessionrt
 		}); err != nil {
 			return err
 		}
+		if stored, ok := p.bindings.GetByConversation(conversationID); ok {
+			p.setTraceConversationRoute(conversationID, stored.TraceConversationID)
+		}
+	} else {
+		p.setTraceConversationRoute(conversationID, "")
 	}
 	p.conversations.Set(conversationID, sessionID)
 	p.setConversationRoute(conversationID, agentID, recipientID, mode)
@@ -732,6 +793,14 @@ func (p *DMPipeline) BindConversation(conversationID string, sessionID sessionrt
 		return err
 	}
 	return p.ensureSubscription(conversationID, sessionID)
+}
+
+func (p *DMPipeline) EnsureTraceConversation(ctx context.Context, req TraceConversationRequest) {
+	p.ensureTraceConversation(ctx, req)
+}
+
+func (p *DMPipeline) TraceConversationFor(conversationID string) (string, bool) {
+	return p.traceConversationFor(conversationID)
 }
 
 func (p *DMPipeline) ConversationForSession(sessionID sessionrt.SessionID) (string, bool) {
@@ -1121,6 +1190,157 @@ func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) 
 			"error", err,
 		)
 	}
+}
+
+func (p *DMPipeline) ensureTraceConversation(ctx context.Context, req TraceConversationRequest) {
+	if p == nil || p.traceProvisioner == nil {
+		return
+	}
+	req.ConversationID = strings.TrimSpace(req.ConversationID)
+	req.ConversationName = strings.TrimSpace(req.ConversationName)
+	req.SessionID = sessionrt.SessionID(strings.TrimSpace(string(req.SessionID)))
+	req.AgentID = sessionrt.ActorID(strings.TrimSpace(string(req.AgentID)))
+	req.SenderID = strings.TrimSpace(req.SenderID)
+	req.RecipientID = strings.TrimSpace(req.RecipientID)
+	if req.ConversationID == "" || strings.TrimSpace(string(req.SessionID)) == "" {
+		return
+	}
+
+	p.traceSetupMu.Lock()
+	if _, exists := p.traceSetup[req.SessionID]; exists {
+		p.traceSetupMu.Unlock()
+		return
+	}
+	p.traceSetup[req.SessionID] = struct{}{}
+	p.traceSetupMu.Unlock()
+
+	created, err := p.traceProvisioner.CreateTraceConversation(ctx, req)
+	if err != nil {
+		slog.Warn("dm_pipeline: failed to create trace conversation",
+			"conversation_id", req.ConversationID,
+			"session_id", req.SessionID,
+			"error", err,
+		)
+		return
+	}
+	if strings.TrimSpace(created.ConversationID) == "" {
+		return
+	}
+	if err := p.setConversationTraceBinding(req.ConversationID, created); err != nil {
+		slog.Warn("dm_pipeline: failed to persist trace conversation",
+			"conversation_id", req.ConversationID,
+			"session_id", req.SessionID,
+			"trace_conversation_id", created.ConversationID,
+			"error", err,
+		)
+	}
+}
+
+func (p *DMPipeline) setConversationTraceBinding(conversationID string, trace TraceConversationBinding) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return fmt.Errorf("conversation id is required")
+	}
+	traceID := strings.TrimSpace(trace.ConversationID)
+	traceName := strings.TrimSpace(trace.ConversationName)
+	traceMode := normalizeTraceMode(trace.Mode)
+	traceRender := normalizeTraceRender(trace.Render)
+	if traceID != "" {
+		if traceMode == "" {
+			traceMode = TraceModeReadOnly
+		}
+		if traceRender == "" {
+			traceRender = TraceRenderCards
+		}
+	}
+
+	if p.bindings == nil {
+		p.setTraceConversationRoute(conversationID, traceID)
+		return nil
+	}
+	binding, ok := p.bindings.GetByConversation(conversationID)
+	if !ok {
+		return fmt.Errorf("conversation binding not found")
+	}
+	binding.TraceConversationID = traceID
+	binding.TraceConversationName = traceName
+	binding.TraceMode = traceMode
+	binding.TraceRender = traceRender
+	if err := p.bindings.Set(binding); err != nil {
+		return err
+	}
+	p.setTraceConversationRoute(conversationID, traceID)
+	return nil
+}
+
+func (p *DMPipeline) publishTraceEvent(conversationID string, event sessionrt.Event) error {
+	if p == nil || p.tracePublisher == nil {
+		return nil
+	}
+	traceConversationID, ok := p.traceConversationFor(conversationID)
+	if !ok {
+		return nil
+	}
+	return p.tracePublisher.PublishEvent(context.Background(), traceConversationID, event)
+}
+
+func (p *DMPipeline) setTraceConversationRoute(conversationID, traceConversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	traceConversationID = strings.TrimSpace(traceConversationID)
+	p.traceRouteMu.Lock()
+	defer p.traceRouteMu.Unlock()
+	if existingTrace, ok := p.traceByDM[conversationID]; ok && existingTrace != "" {
+		delete(p.dmByTrace, existingTrace)
+	}
+	if traceConversationID == "" {
+		delete(p.traceByDM, conversationID)
+		return
+	}
+	p.traceByDM[conversationID] = traceConversationID
+	p.dmByTrace[traceConversationID] = conversationID
+}
+
+func (p *DMPipeline) traceConversationFor(conversationID string) (string, bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", false
+	}
+	p.traceRouteMu.RLock()
+	defer p.traceRouteMu.RUnlock()
+	traceConversationID, ok := p.traceByDM[conversationID]
+	if !ok || strings.TrimSpace(traceConversationID) == "" {
+		return "", false
+	}
+	return traceConversationID, true
+}
+
+func (p *DMPipeline) isTraceConversation(conversationID string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	p.traceRouteMu.RLock()
+	defer p.traceRouteMu.RUnlock()
+	_, ok := p.dmByTrace[conversationID]
+	return ok
+}
+
+type traceInboundIgnoredRecorder interface {
+	RecordTraceInboundIgnored()
+}
+
+func (p *DMPipeline) recordTraceInboundIgnored() {
+	if p == nil || p.transport == nil {
+		return
+	}
+	recorder, ok := p.transport.(traceInboundIgnoredRecorder)
+	if !ok {
+		return
+	}
+	recorder.RecordTraceInboundIgnored()
 }
 
 func matrixActorID(sender string) sessionrt.ActorID {

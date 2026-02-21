@@ -73,6 +73,9 @@ type Transport struct {
 	queueCapacity   int
 	maxAttempts     int
 	dedupeTTL       time.Duration
+	droppedMu       sync.Mutex
+	droppedReplay   []queuedOutbound
+	droppedCapacity int
 	avatarProvider  ManagedAvatarProvider
 	stats           matrixStats
 	inboundFailures atomic.Uint64
@@ -115,6 +118,7 @@ type matrixStats struct {
 	QueueDepth             int       `json:"queue_depth"`
 	OutboundRetries        uint64    `json:"outbound_retries"`
 	OutboundDropped        uint64    `json:"outbound_dropped"`
+	OutboundReplayPending  int       `json:"outbound_replay_pending"`
 	OutboundTransientErrs  uint64    `json:"outbound_transient_errors"`
 	OutboundPermanentErrs  uint64    `json:"outbound_permanent_errors"`
 	DuplicateTxnSeen       uint64    `json:"duplicate_txn_seen"`
@@ -137,6 +141,7 @@ type matrixStatsSnapshot struct {
 	QueueDepth             int
 	OutboundRetries        uint64
 	OutboundDropped        uint64
+	OutboundReplayPending  int
 	OutboundTransientErrs  uint64
 	OutboundPermanentErrs  uint64
 	DuplicateTxnSeen       uint64
@@ -247,6 +252,7 @@ func New(opts Options) (*Transport, error) {
 		queueCapacity:     queueCapacity,
 		maxAttempts:       maxAttempts,
 		dedupeTTL:         dedupeTTL,
+		droppedCapacity:   droppedReplayCapacity(queueCapacity),
 		avatarProvider:    opts.AvatarProvider,
 		stats: matrixStats{
 			PresenceEnabled: presenceEnabled,
@@ -394,6 +400,7 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 		return nil
 	default:
 		t.incrementDropped()
+		t.enqueueDroppedForReplay(item)
 		return fmt.Errorf("matrix outbound queue is full")
 	}
 }
@@ -595,6 +602,7 @@ func (t *Transport) applyPresenceUpdate(parent context.Context, state string, al
 		}
 		return
 	}
+	t.maybeReplayDroppedOutbound()
 	if recovered {
 		log.Printf("matrix presence recovered state=%s", state)
 	}
@@ -653,6 +661,7 @@ func (t *Transport) processOutbound(item queuedOutbound) {
 		}
 		if err == nil {
 			t.recordOutboundSuccess()
+			t.maybeReplayDroppedOutbound()
 			if strings.TrimSpace(item.eventID) != "" {
 				t.markEventState(item.eventID, deliveryStatusDelivered)
 			}
@@ -681,6 +690,9 @@ func (t *Transport) processOutbound(item queuedOutbound) {
 		if transient && strings.TrimSpace(item.eventID) != "" {
 			t.markEventState(item.eventID, deliveryStatusRetryable)
 		}
+		if transient {
+			t.enqueueDroppedForReplay(item)
+		}
 		return
 	}
 }
@@ -690,6 +702,7 @@ func (t *Transport) processTyping(item queuedOutbound) {
 		err := t.sendTypingNow(t.workerCtx, item.typingConversationID, item.typingUserID, item.typing)
 		if err == nil {
 			t.recordOutboundSuccess()
+			t.maybeReplayDroppedOutbound()
 			return
 		}
 		transient := isTransientSendError(err)
@@ -723,6 +736,17 @@ func typingQueueCapacity(messageQueueCapacity int) int {
 	capacity := messageQueueCapacity / 4
 	if capacity < 8 {
 		return 8
+	}
+	return capacity
+}
+
+func droppedReplayCapacity(messageQueueCapacity int) int {
+	if messageQueueCapacity <= 0 {
+		return 64
+	}
+	capacity := messageQueueCapacity * 4
+	if capacity < 64 {
+		return 64
 	}
 	return capacity
 }
@@ -841,6 +865,7 @@ func (t *Transport) handleMetrics(writer http.ResponseWriter, request *http.Requ
 		"queue_depth":                        stats.QueueDepth,
 		"outbound_retries":                   stats.OutboundRetries,
 		"outbound_dropped":                   stats.OutboundDropped,
+		"outbound_replay_pending":            stats.OutboundReplayPending,
 		"outbound_transient_errors":          stats.OutboundTransientErrs,
 		"outbound_permanent_errors":          stats.OutboundPermanentErrs,
 		"duplicate_txn_seen":                 stats.DuplicateTxnSeen,
@@ -1414,6 +1439,12 @@ func (t *Transport) incrementDropped() {
 	t.stats.OutboundDropped++
 }
 
+func (t *Transport) recordReplayPending(pending int) {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.OutboundReplayPending = pending
+}
+
 func (t *Transport) incrementTransientError() {
 	t.stats.mu.Lock()
 	defer t.stats.mu.Unlock()
@@ -1478,6 +1509,7 @@ func (t *Transport) snapshotMetrics() matrixStatsSnapshot {
 		QueueDepth:             t.stats.QueueDepth,
 		OutboundRetries:        t.stats.OutboundRetries,
 		OutboundDropped:        t.stats.OutboundDropped,
+		OutboundReplayPending:  t.stats.OutboundReplayPending,
 		OutboundTransientErrs:  t.stats.OutboundTransientErrs,
 		OutboundPermanentErrs:  t.stats.OutboundPermanentErrs,
 		DuplicateTxnSeen:       t.stats.DuplicateTxnSeen,
@@ -1498,4 +1530,81 @@ func (t *Transport) getHandler() transport.InboundHandler {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.handler
+}
+
+func (t *Transport) enqueueDroppedForReplay(item queuedOutbound) {
+	if item.kind != outboundKindMessage {
+		return
+	}
+	item.attempt = 0
+	t.droppedMu.Lock()
+	if t.droppedCapacity <= 0 || len(t.droppedReplay) >= t.droppedCapacity {
+		pending := len(t.droppedReplay)
+		t.droppedMu.Unlock()
+		t.recordReplayPending(pending)
+		return
+	}
+	t.droppedReplay = append(t.droppedReplay, item)
+	pending := len(t.droppedReplay)
+	t.droppedMu.Unlock()
+	t.recordReplayPending(pending)
+}
+
+func (t *Transport) dequeueDroppedForReplay() (queuedOutbound, bool) {
+	t.droppedMu.Lock()
+	if len(t.droppedReplay) == 0 {
+		t.droppedMu.Unlock()
+		return queuedOutbound{}, false
+	}
+	item := t.droppedReplay[0]
+	t.droppedReplay = t.droppedReplay[1:]
+	pending := len(t.droppedReplay)
+	t.droppedMu.Unlock()
+	t.recordReplayPending(pending)
+	item.attempt = 0
+	return item, true
+}
+
+func (t *Transport) requeueDroppedFront(item queuedOutbound) {
+	if item.kind != outboundKindMessage {
+		return
+	}
+	item.attempt = 0
+	t.droppedMu.Lock()
+	if t.droppedCapacity <= 0 {
+		pending := len(t.droppedReplay)
+		t.droppedMu.Unlock()
+		t.recordReplayPending(pending)
+		return
+	}
+	if len(t.droppedReplay) >= t.droppedCapacity {
+		t.droppedReplay = t.droppedReplay[:t.droppedCapacity-1]
+	}
+	t.droppedReplay = append(t.droppedReplay, queuedOutbound{})
+	copy(t.droppedReplay[1:], t.droppedReplay[:len(t.droppedReplay)-1])
+	t.droppedReplay[0] = item
+	pending := len(t.droppedReplay)
+	t.droppedMu.Unlock()
+	t.recordReplayPending(pending)
+}
+
+func (t *Transport) maybeReplayDroppedOutbound() {
+	item, ok := t.dequeueDroppedForReplay()
+	if !ok {
+		return
+	}
+	t.mu.RLock()
+	started := t.started
+	queue := t.outboundQueue
+	t.mu.RUnlock()
+	if !started || queue == nil {
+		t.requeueDroppedFront(item)
+		return
+	}
+	select {
+	case queue <- item:
+		t.recordQueueDepth(len(queue))
+	default:
+		t.requeueDroppedFront(item)
+	}
 }

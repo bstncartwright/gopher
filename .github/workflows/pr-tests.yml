@@ -67,7 +67,11 @@ jobs:
         run: |
           base_ref="${GITHUB_BASE_REF:-main}"
           git fetch --no-tags --depth=1 origin "${base_ref}"
-          changed_files="$(git diff --name-only "origin/${base_ref}...HEAD" -- '*.go')"
+          if ! changed_files="$(git diff --name-only "origin/${base_ref}...HEAD" -- '*.go')"; then
+            echo "unable to diff against origin/${base_ref}; running staticcheck on all packages"
+            staticcheck ./...
+            exit 0
+          fi
           if [ -z "${changed_files}" ]; then
             echo "no go file changes; skipping staticcheck"
             exit 0

@@ -11,14 +11,16 @@ type eventEmitter struct {
 	agentID   string
 	sessionID string
 	logger    EventLogger
+	onEmit    func(Event) error
 	events    []Event
 }
 
-func newEventEmitter(agentID, sessionID string, logger EventLogger) *eventEmitter {
+func newEventEmitter(agentID, sessionID string, logger EventLogger, onEmit func(Event) error) *eventEmitter {
 	return &eventEmitter{
 		agentID:   agentID,
 		sessionID: sessionID,
 		logger:    logger,
+		onEmit:    onEmit,
 		events:    make([]Event, 0, 16),
 	}
 }
@@ -34,6 +36,11 @@ func (e *eventEmitter) Emit(eventType EventType, payload any) error {
 	if e.logger != nil {
 		if err := e.logger.Append(event); err != nil {
 			return fmt.Errorf("append event log: %w", err)
+		}
+	}
+	if e.onEmit != nil {
+		if err := e.onEmit(event); err != nil {
+			return err
 		}
 	}
 	e.events = append(e.events, event)

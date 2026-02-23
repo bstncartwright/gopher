@@ -24,6 +24,7 @@ type DMPipelineOptions struct {
 	Bindings         ConversationBindingStore
 	TracePublisher   TracePublisher
 	TraceProvisioner TraceConversationProvisioner
+	ProgressUpdates  bool
 }
 
 type conversationRoute struct {
@@ -84,8 +85,11 @@ type DMPipeline struct {
 	traceSetup       map[sessionrt.SessionID]struct{}
 	heartbeatMu      sync.Mutex
 	heartbeats       map[string]heartbeatState
+	progressMu       sync.Mutex
+	progress         map[string]progressState
 	tracePublisher   TracePublisher
 	traceProvisioner TraceConversationProvisioner
+	progressUpdates  bool
 }
 
 type heartbeatState struct {
@@ -93,10 +97,15 @@ type heartbeatState struct {
 	ackMaxChars int
 }
 
+type progressState struct {
+	announced bool
+}
+
 const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmContextClearedReply    = "Context cleared. Started a fresh session for this chat."
+	dmProgressDeltaMaxChars  = 220
 	dmFallbackMinInterval    = 5 * time.Second
 	dmFallbackDetailMaxChars = 120
 	dmTypingTimeout          = 3 * time.Second
@@ -177,8 +186,10 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		dmByTrace:        map[string]string{},
 		traceSetup:       map[sessionrt.SessionID]struct{}{},
 		heartbeats:       map[string]heartbeatState{},
+		progress:         map[string]progressState{},
 		tracePublisher:   opts.TracePublisher,
 		traceProvisioner: opts.TraceProvisioner,
+		progressUpdates:  opts.ProgressUpdates,
 	}
 	for _, binding := range bindings.List() {
 		pipeline.conversations.Set(binding.ConversationID, binding.SessionID)
@@ -529,6 +540,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 					"error", err,
 				)
 			}
+			p.maybeSendProgressUpdate(conversationID, event)
 			if event.Type == sessionrt.EventError {
 				p.finishProcessing(conversationID)
 				p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), errorTextFromPayload(event.Payload))
@@ -599,6 +611,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldEnable {
+		p.resetProgressState(conversationID)
 		p.sendTyping(conversationID, true)
 		p.startTypingKeepalive(conversationID)
 	}
@@ -626,6 +639,7 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldDisable {
+		p.clearProgressState(conversationID)
 		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
 	}
@@ -1048,6 +1062,114 @@ func (p *DMPipeline) IsConversationProcessing(conversationID string) bool {
 	p.processingMu.Lock()
 	defer p.processingMu.Unlock()
 	return p.processing[conversationID] > 0
+}
+
+func (p *DMPipeline) maybeSendProgressUpdate(conversationID string, event sessionrt.Event) {
+	if p == nil || !p.progressUpdates {
+		return
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" || !p.IsConversationProcessing(conversationID) || p.hasPendingHeartbeat(conversationID) {
+		return
+	}
+
+	var text string
+	switch event.Type {
+	case sessionrt.EventAgentDelta:
+		if !p.markProgressAnnounced(conversationID) {
+			return
+		}
+		delta := strings.TrimSpace(tracePayloadString(tracePayloadMap(event.Payload), "delta"))
+		text = formatProgressDelta(delta)
+	case sessionrt.EventToolCall:
+		p.markProgressAnnounced(conversationID)
+		name := strings.TrimSpace(tracePayloadString(tracePayloadMap(event.Payload), "name"))
+		if name == "" {
+			name = "tool"
+		}
+		text = fmt.Sprintf("Update: running `%s`.", name)
+	case sessionrt.EventToolResult:
+		p.markProgressAnnounced(conversationID)
+		payload := tracePayloadMap(event.Payload)
+		name := strings.TrimSpace(tracePayloadString(payload, "name"))
+		status := strings.TrimSpace(tracePayloadString(payload, "status"))
+		if name == "" {
+			name = "tool"
+		}
+		if status == "" {
+			status = "done"
+		}
+		text = fmt.Sprintf("Update: `%s` completed (%s).", name, status)
+	default:
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: conversationID,
+		SenderID:       p.senderForConversationEvent(conversationID, event.From),
+		Text:           text,
+	}); err != nil {
+		slog.Warn("dm_pipeline: send progress update failed",
+			"conversation_id", conversationID,
+			"event_type", event.Type,
+			"error", err,
+		)
+	}
+}
+
+func (p *DMPipeline) resetProgressState(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.progressMu.Lock()
+	defer p.progressMu.Unlock()
+	delete(p.progress, conversationID)
+}
+
+func (p *DMPipeline) clearProgressState(conversationID string) {
+	p.resetProgressState(conversationID)
+}
+
+func (p *DMPipeline) markProgressAnnounced(conversationID string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	p.progressMu.Lock()
+	defer p.progressMu.Unlock()
+	state := p.progress[conversationID]
+	if state.announced {
+		return false
+	}
+	state.announced = true
+	p.progress[conversationID] = state
+	return true
+}
+
+func (p *DMPipeline) hasPendingHeartbeat(conversationID string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	p.heartbeatMu.Lock()
+	defer p.heartbeatMu.Unlock()
+	state, ok := p.heartbeats[conversationID]
+	return ok && state.pending > 0
+}
+
+func formatProgressDelta(delta string) string {
+	delta = strings.Join(strings.Fields(strings.TrimSpace(delta)), " ")
+	if delta == "" {
+		return "Working on it now. I will post updates as tools run."
+	}
+	runes := []rune(delta)
+	if len(runes) > dmProgressDeltaMaxChars {
+		delta = strings.TrimSpace(string(runes[:dmProgressDeltaMaxChars])) + "..."
+	}
+	return "Update: " + delta
 }
 
 func (p *DMPipeline) consumeHeartbeatReply(conversationID, text string) (bool, string) {

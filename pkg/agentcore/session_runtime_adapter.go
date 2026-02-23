@@ -21,6 +21,8 @@ type SessionRuntimeAdapterOptions struct {
 	CaptureThinking bool
 }
 
+var _ sessionrt.StreamingAgentExecutor = (*SessionRuntimeAdapter)(nil)
+
 var sessionRuntimeTurnTimeout = 5 * time.Minute
 
 func NewSessionRuntimeAdapter(agent *Agent) *SessionRuntimeAdapter {
@@ -63,51 +65,50 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 
 	out := make([]sessionrt.Event, 0, len(result.Events))
 	for _, event := range result.Events {
-		switch event.Type {
-		case EventTypeAgentDelta:
-			if !a.opts.CaptureDeltas {
-				continue
-			}
-			delta, _ := stringPayloadField(event.Payload, "delta")
-			out = append(out, sessionrt.Event{
-				Type:    sessionrt.EventAgentDelta,
-				Payload: map[string]any{"delta": delta},
-			})
-		case EventTypeAgentThinkingDelta:
-			if !a.opts.CaptureThinking {
-				continue
-			}
-			delta, _ := stringPayloadField(event.Payload, "delta")
-			out = append(out, sessionrt.Event{
-				Type:    sessionrt.EventAgentThinkingDelta,
-				Payload: map[string]any{"delta": delta},
-			})
-		case EventTypeAgentMsg:
-			text, _ := stringPayloadField(event.Payload, "text")
-			out = append(out, sessionrt.Event{
-				Type:    sessionrt.EventMessage,
-				Payload: sessionrt.Message{Role: sessionrt.RoleAgent, Content: text},
-			})
-		case EventTypeToolCall:
-			out = append(out, sessionrt.Event{
-				Type:    sessionrt.EventToolCall,
-				Payload: clonePayloadMap(event.Payload),
-			})
-		case EventTypeToolResult:
-			out = append(out, sessionrt.Event{
-				Type:    sessionrt.EventToolResult,
-				Payload: clonePayloadMap(event.Payload),
-			})
-		case EventTypeError:
-			message, _ := stringPayloadField(event.Payload, "message")
-			out = append(out, sessionrt.Event{
-				Type:    sessionrt.EventError,
-				Payload: sessionrt.ErrorPayload{Message: message},
-			})
+		mapped, ok := a.mapEvent(event)
+		if !ok {
+			continue
 		}
+		out = append(out, mapped)
 	}
 
 	return sessionrt.AgentOutput{Events: out}, nil
+}
+
+func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.AgentInput, emit sessionrt.AgentEventEmitter) error {
+	userMsg, ok := latestUserMessage(input.History)
+	if !ok {
+		return nil
+	}
+
+	a.mu.Lock()
+	sessionData, exists := a.sessions[input.SessionID]
+	if !exists {
+		sessionData = a.agent.NewSession()
+		sessionData.ID = string(input.SessionID)
+		a.sessions[input.SessionID] = sessionData
+	}
+	a.mu.Unlock()
+
+	turnCtx, cancel := withTurnTimeout(ctx)
+	defer cancel()
+
+	emitFn := emit
+	if emitFn == nil {
+		emitFn = func(sessionrt.Event) error { return nil }
+	}
+
+	_, err := a.agent.RunTurnWithEventHandler(turnCtx, sessionData, TurnInput{
+		UserMessage: userMsg.Content,
+		PromptMode:  PromptModeFull,
+	}, func(event Event) error {
+		mapped, ok := a.mapEvent(event)
+		if !ok {
+			return nil
+		}
+		return emitFn(mapped)
+	})
+	return err
 }
 
 func withTurnTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -171,4 +172,51 @@ func clonePayloadMap(payload any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func (a *SessionRuntimeAdapter) mapEvent(event Event) (sessionrt.Event, bool) {
+	switch event.Type {
+	case EventTypeAgentDelta:
+		if !a.opts.CaptureDeltas {
+			return sessionrt.Event{}, false
+		}
+		delta, _ := stringPayloadField(event.Payload, "delta")
+		return sessionrt.Event{
+			Type:    sessionrt.EventAgentDelta,
+			Payload: map[string]any{"delta": delta},
+		}, true
+	case EventTypeAgentThinkingDelta:
+		if !a.opts.CaptureThinking {
+			return sessionrt.Event{}, false
+		}
+		delta, _ := stringPayloadField(event.Payload, "delta")
+		return sessionrt.Event{
+			Type:    sessionrt.EventAgentThinkingDelta,
+			Payload: map[string]any{"delta": delta},
+		}, true
+	case EventTypeAgentMsg:
+		text, _ := stringPayloadField(event.Payload, "text")
+		return sessionrt.Event{
+			Type:    sessionrt.EventMessage,
+			Payload: sessionrt.Message{Role: sessionrt.RoleAgent, Content: text},
+		}, true
+	case EventTypeToolCall:
+		return sessionrt.Event{
+			Type:    sessionrt.EventToolCall,
+			Payload: clonePayloadMap(event.Payload),
+		}, true
+	case EventTypeToolResult:
+		return sessionrt.Event{
+			Type:    sessionrt.EventToolResult,
+			Payload: clonePayloadMap(event.Payload),
+		}, true
+	case EventTypeError:
+		message, _ := stringPayloadField(event.Payload, "message")
+		return sessionrt.Event{
+			Type:    sessionrt.EventError,
+			Payload: sessionrt.ErrorPayload{Message: message},
+		}, true
+	default:
+		return sessionrt.Event{}, false
+	}
 }

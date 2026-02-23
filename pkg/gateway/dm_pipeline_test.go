@@ -418,6 +418,56 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}
 }
 
+func TestDMPipelineProgressUpdatesDuringToolExecution(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmTraceExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:         manager,
+		Transport:       fake,
+		AgentID:         "agent:a",
+		ProgressUpdates: true,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:progress",
+		SenderID:       "@user:hs",
+		Text:           "run tool",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 3
+	})
+	messages := fake.sentMessages()
+	joined := ""
+	for _, message := range messages {
+		joined += "\n" + message.Text
+	}
+	if !strings.Contains(joined, "Update: running `exec`.") {
+		t.Fatalf("missing tool start progress update: %q", joined)
+	}
+	if !strings.Contains(joined, "Update: `exec` completed (ok).") {
+		t.Fatalf("missing tool completion progress update: %q", joined)
+	}
+	if !strings.Contains(joined, "ack") {
+		t.Fatalf("missing final response message: %q", joined)
+	}
+}
+
 func TestDMPipelineCreatesTraceConversationAndPublishesTraceEvents(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

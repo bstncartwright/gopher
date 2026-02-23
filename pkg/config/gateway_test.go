@@ -56,6 +56,9 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if !cfg.Matrix.TraceEnabled {
 		t.Fatalf("matrix trace enabled = false, want true")
 	}
+	if !cfg.Matrix.ProgressUpdates {
+		t.Fatalf("matrix progress updates enabled = false, want true")
+	}
 	if cfg.Panel.ListenAddr != "127.0.0.1:29329" {
 		t.Fatalf("panel listen addr = %q, want 127.0.0.1:29329", cfg.Panel.ListenAddr)
 	}
@@ -203,6 +206,7 @@ presence_status_msg = "file-status"
 	overrideAS := "override-as"
 	overrideHSSecret := "override-hs"
 	overrideTraceEnabled := true
+	overrideProgressUpdates := true
 	overrideRichText := true
 	overridePresenceEnabled := true
 	overridePresenceInterval := 30 * time.Second
@@ -210,11 +214,12 @@ presence_status_msg = "file-status"
 	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
 		Env: map[string]string{
-			"GOPHER_GATEWAY_MATRIX_TRACE_ENABLED":       "false",
-			"GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED":   "false",
-			"GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED":    "false",
-			"GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL":   "20s",
-			"GOPHER_GATEWAY_MATRIX_PRESENCE_STATUS_MSG": "env-status",
+			"GOPHER_GATEWAY_MATRIX_TRACE_ENABLED":            "false",
+			"GOPHER_GATEWAY_MATRIX_PROGRESS_UPDATES_ENABLED": "false",
+			"GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED":        "false",
+			"GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED":         "false",
+			"GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL":        "20s",
+			"GOPHER_GATEWAY_MATRIX_PRESENCE_STATUS_MSG":      "env-status",
 		},
 		Overrides: GatewayOverrides{
 			MatrixEnabled:           &overrideEnabled,
@@ -222,6 +227,7 @@ presence_status_msg = "file-status"
 			MatrixASToken:           &overrideAS,
 			MatrixHSToken:           &overrideHSSecret,
 			MatrixTraceEnabled:      &overrideTraceEnabled,
+			MatrixProgressUpdates:   &overrideProgressUpdates,
 			MatrixRichTextEnabled:   &overrideRichText,
 			MatrixPresenceEnabled:   &overridePresenceEnabled,
 			MatrixPresenceInterval:  &overridePresenceInterval,
@@ -242,6 +248,9 @@ presence_status_msg = "file-status"
 	}
 	if !cfg.Matrix.TraceEnabled {
 		t.Fatalf("matrix trace enabled = false, want true")
+	}
+	if !cfg.Matrix.ProgressUpdates {
+		t.Fatalf("matrix progress updates enabled = false, want true")
 	}
 	if !cfg.Matrix.RichTextEnabled {
 		t.Fatalf("matrix rich text enabled = false, want true")

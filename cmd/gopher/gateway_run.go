@@ -149,6 +149,7 @@ func printGatewayUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --matrix-hs-token <token>      override matrix homeserver token")
 	fmt.Fprintln(out, "  --matrix-listen-addr <addr>    override matrix appservice listen address")
 	fmt.Fprintln(out, "  --matrix-bot-user-id <mxid>    override matrix bot user id")
+	fmt.Fprintln(out, "  --matrix-progress-updates-enabled <bool> override matrix dm progress updates")
 	fmt.Fprintln(out, "  --matrix-rich-text-enabled <bool> override matrix markdown/html formatting")
 	fmt.Fprintln(out, "  --matrix-presence-enabled <bool> override matrix presence updates")
 	fmt.Fprintln(out, "  --matrix-presence-interval <dur> override matrix presence keepalive interval")
@@ -174,6 +175,7 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 
 	var rawCaps capabilityFlag
 	var matrixEnabled boolOverrideFlag
+	var matrixProgressUpdates boolOverrideFlag
 	var matrixRichTextEnabled boolOverrideFlag
 	var matrixPresenceEnabled boolOverrideFlag
 	var panelCaptureThinking boolOverrideFlag
@@ -192,6 +194,7 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	matrixHSToken := flags.String("matrix-hs-token", "", "matrix hs token override")
 	matrixListenAddr := flags.String("matrix-listen-addr", "", "matrix listen addr override")
 	matrixBotUserID := flags.String("matrix-bot-user-id", "", "matrix bot user id override")
+	flags.Var(&matrixProgressUpdates, "matrix-progress-updates-enabled", "matrix dm progress updates override")
 	flags.Var(&matrixRichTextEnabled, "matrix-rich-text-enabled", "matrix rich text enabled override")
 	flags.Var(&matrixPresenceEnabled, "matrix-presence-enabled", "matrix presence enabled override")
 	matrixPresenceInterval := flags.Duration("matrix-presence-interval", 0, "matrix presence interval override")
@@ -271,6 +274,10 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	if strings.TrimSpace(*matrixBotUserID) != "" {
 		value := strings.TrimSpace(*matrixBotUserID)
 		inputs.Overrides.MatrixBotUserID = &value
+	}
+	if matrixProgressUpdates.set {
+		value := matrixProgressUpdates.value
+		inputs.Overrides.MatrixProgressUpdates = &value
 	}
 	if matrixRichTextEnabled.set {
 		value := matrixRichTextEnabled.value

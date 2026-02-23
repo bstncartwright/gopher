@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -37,6 +39,9 @@ type serviceLogsOptions struct {
 }
 
 var newServiceRuntime = defaultServiceRuntime
+var shouldPromptSudoForService = isInteractiveTerminal
+var retryWithSudoForService = rerunServiceWithSudo
+var envLookupForService = os.Getenv
 
 func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || wantsHelp(args) {
@@ -45,6 +50,24 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 	}
 	runtimeImpl := newServiceRuntime(stdout, stderr)
 	ctx := context.Background()
+	runWithSudoRetry := func(commandErr error) error {
+		if !isLikelyPermissionError(commandErr) {
+			return commandErr
+		}
+		if envLookupForService("GOPHER_SERVICE_ELEVATED") != "1" && shouldPromptSudoForService() {
+			if stderr != nil {
+				fmt.Fprintln(stderr, "permission denied running service command; retrying with sudo")
+			}
+			if retryErr := retryWithSudoForService(ctx, args, stdout, stderr); retryErr == nil {
+				return nil
+			}
+		}
+		commandName := filepath.Base(os.Args[0])
+		if commandName == "." || commandName == "/" || commandName == "" {
+			commandName = "gopher"
+		}
+		return fmt.Errorf("%w\nhint: service commands may require elevated permissions; retry with:\n  sudo -E %s service %s", commandErr, commandName, strings.Join(args, " "))
+	}
 
 	switch strings.TrimSpace(args[0]) {
 	case "install":
@@ -64,22 +87,40 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		if normalizedRole != "gateway" && normalizedRole != "node" {
 			return fmt.Errorf("invalid --role value: %s (expected gateway or node)", strings.TrimSpace(*role))
 		}
-		return runtimeImpl.Install(ctx, serviceInstallOptions{
+		if err := runtimeImpl.Install(ctx, serviceInstallOptions{
 			ConfigPath: strings.TrimSpace(*configPath),
 			EnvPath:    strings.TrimSpace(*envPath),
 			BinaryPath: strings.TrimSpace(*binaryPath),
 			Role:       normalizedRole,
-		})
+		}); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	case "uninstall":
-		return runtimeImpl.Uninstall(ctx)
+		if err := runtimeImpl.Uninstall(ctx); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	case "status":
-		return runtimeImpl.Status(ctx)
+		if err := runtimeImpl.Status(ctx); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	case "start":
-		return runtimeImpl.Start(ctx)
+		if err := runtimeImpl.Start(ctx); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	case "stop":
-		return runtimeImpl.Stop(ctx)
+		if err := runtimeImpl.Stop(ctx); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	case "restart":
-		return runtimeImpl.Restart(ctx)
+		if err := runtimeImpl.Restart(ctx); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	case "logs":
 		flags := flag.NewFlagSet("service logs", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
@@ -92,13 +133,19 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		if len(flags.Args()) > 0 {
 			return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 		}
-		return runtimeImpl.Logs(ctx, serviceLogsOptions{
+		if err := runtimeImpl.Logs(ctx, serviceLogsOptions{
 			Unit:   strings.TrimSpace(*unit),
 			Lines:  *lines,
 			Follow: *follow,
-		})
+		}); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	case "update":
-		return runServiceUpdateSubcommand(ctx, args[1:], stdout, stderr)
+		if err := runServiceUpdateSubcommand(ctx, args[1:], stdout, stderr); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
 	default:
 		printServiceUsage(stderr)
 		return fmt.Errorf("unknown service command %q", args[0])
@@ -188,4 +235,22 @@ func printServiceUsage(out io.Writer) {
 	fmt.Fprintln(out, "  gopher service logs [--unit gopher-gateway.service] [--lines 200] [--follow]")
 	fmt.Fprintln(out, "  gopher service update check [flags]")
 	fmt.Fprintln(out, "  gopher service update apply [flags]")
+}
+
+func rerunServiceWithSudo(ctx context.Context, serviceArgs []string, stdout, stderr io.Writer) error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve current executable for sudo retry: %w", err)
+	}
+	sudoArgs := []string{"-E", execPath, "service"}
+	sudoArgs = append(sudoArgs, serviceArgs...)
+	cmd := exec.CommandContext(ctx, "sudo", sudoArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = append(os.Environ(), "GOPHER_SERVICE_ELEVATED=1")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run sudo service command: %w", err)
+	}
+	return nil
 }

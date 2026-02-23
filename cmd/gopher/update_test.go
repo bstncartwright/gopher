@@ -253,6 +253,62 @@ func TestRunUpdateSubcommandPermissionErrorRetriesWithSudo(t *testing.T) {
 	}
 }
 
+func TestRunUpdateSubcommandSystemctlPermissionErrorRetriesWithSudo(t *testing.T) {
+	restore := stubUpdateDependencies(t)
+	defer restore()
+
+	binaryVersion = "v1.2.3"
+	latestReleaseForUpdate = func(ctx context.Context, owner, repo, token string) (update.Release, error) {
+		_ = ctx
+		_ = owner
+		_ = repo
+		_ = token
+		return update.Release{
+			TagName: "v1.2.4",
+			Assets: []update.ReleaseAsset{
+				{Name: "gopher-" + runtime.GOOS + "-" + runtime.GOARCH, URL: "https://example.test/asset"},
+			},
+		}, nil
+	}
+	executablePathForUpdate = func() (string, error) {
+		return "/usr/local/bin/gopher", nil
+	}
+	shouldPromptSudoForUpdate = func() bool { return true }
+	envLookupForUpdate = func(key string) string {
+		_ = key
+		return ""
+	}
+	applyReleaseForUpdate = func(ctx context.Context, opts update.ApplyOptions) error {
+		_ = ctx
+		_ = opts
+		return fmt.Errorf("systemctl restart gopher-gateway.service failed: exit status 1: Interactive authentication required.")
+	}
+
+	retried := false
+	retryWithSudoForUpdate = func(ctx context.Context, updateArgs []string, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = stdout
+		_ = stderr
+		retried = true
+		if len(updateArgs) != 2 || updateArgs[0] != "--github-token" || updateArgs[1] != "token" {
+			t.Fatalf("unexpected sudo retry args: %#v", updateArgs)
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	if err := runUpdateSubcommand([]string{"--github-token", "token"}, &out, &errOut); err != nil {
+		t.Fatalf("runUpdateSubcommand() error: %v", err)
+	}
+	if !retried {
+		t.Fatalf("expected sudo retry")
+	}
+	if !strings.Contains(errOut.String(), "retrying with sudo") {
+		t.Fatalf("expected retry notice, got: %q", errOut.String())
+	}
+}
+
 func stubUpdateDependencies(t *testing.T) func() {
 	t.Helper()
 

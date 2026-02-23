@@ -389,9 +389,6 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 				"session_id", existing,
 			)
 		} else {
-			if err := p.ensureSubscription(conversationID, existing); err != nil {
-				return "", err
-			}
 			route, routeExists := p.currentRoute(conversationID)
 			if !routeExists {
 				p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
@@ -401,10 +398,21 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 					Mode:        ConversationModeDM,
 				}
 			}
-			if err := p.maybeUpdateConversationName(conversationID, existing, route, conversationName); err != nil {
-				return "", err
+			if !p.sessionHasAgentParticipant(ctx, existing, route.AgentID) {
+				slog.Warn("dm_pipeline: conversation has mismatched agent session; creating replacement",
+					"conversation_id", conversationID,
+					"session_id", existing,
+					"expected_agent_id", route.AgentID,
+				)
+			} else {
+				if err := p.ensureSubscription(conversationID, existing); err != nil {
+					return "", err
+				}
+				if err := p.maybeUpdateConversationName(conversationID, existing, route, conversationName); err != nil {
+					return "", err
+				}
+				return existing, nil
 			}
-			return existing, nil
 		}
 	}
 
@@ -418,9 +426,6 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 				"session_id", existing,
 			)
 		} else {
-			if err := p.ensureSubscription(conversationID, existing); err != nil {
-				return "", err
-			}
 			route, routeExists := p.currentRoute(conversationID)
 			if !routeExists {
 				p.setConversationRoute(conversationID, desiredAgentID, recipientID, ConversationModeDM)
@@ -430,10 +435,21 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 					Mode:        ConversationModeDM,
 				}
 			}
-			if err := p.maybeUpdateConversationName(conversationID, existing, route, conversationName); err != nil {
-				return "", err
+			if !p.sessionHasAgentParticipant(ctx, existing, route.AgentID) {
+				slog.Warn("dm_pipeline: conversation has mismatched agent session after lock; creating replacement",
+					"conversation_id", conversationID,
+					"session_id", existing,
+					"expected_agent_id", route.AgentID,
+				)
+			} else {
+				if err := p.ensureSubscription(conversationID, existing); err != nil {
+					return "", err
+				}
+				if err := p.maybeUpdateConversationName(conversationID, existing, route, conversationName); err != nil {
+					return "", err
+				}
+				return existing, nil
 			}
-			return existing, nil
 		}
 	}
 	if route, ok := p.currentRoute(conversationID); ok {
@@ -484,6 +500,22 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		"session_id", created.ID,
 	)
 	return created.ID, nil
+}
+
+func (p *DMPipeline) sessionHasAgentParticipant(ctx context.Context, sessionID sessionrt.SessionID, expectedAgentID sessionrt.ActorID) bool {
+	expectedAgentID = sessionrt.ActorID(strings.TrimSpace(string(expectedAgentID)))
+	if strings.TrimSpace(string(expectedAgentID)) == "" {
+		return true
+	}
+	session, err := p.manager.GetSession(ctx, sessionID)
+	if err != nil || session == nil {
+		return false
+	}
+	participant, ok := session.Participants[expectedAgentID]
+	if !ok {
+		return false
+	}
+	return participant.Type == sessionrt.ActorAgent
 }
 
 func (p *DMPipeline) maybeUpdateConversationName(conversationID string, sessionID sessionrt.SessionID, route conversationRoute, conversationName string) error {

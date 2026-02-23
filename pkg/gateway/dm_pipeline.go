@@ -363,6 +363,14 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 	if strings.TrimSpace(string(desiredAgentID)) == "" {
 		desiredAgentID = p.agentID
 	}
+	if route, ok := p.currentRoute(conversationID); ok {
+		if strings.TrimSpace(string(route.AgentID)) != "" {
+			desiredAgentID = route.AgentID
+		}
+		if strings.TrimSpace(route.RecipientID) != "" {
+			recipientID = route.RecipientID
+		}
+	}
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
 		if !p.isSessionActive(ctx, existing) {
 			slog.Debug("dm_pipeline: conversation has inactive session; creating replacement",
@@ -415,6 +423,14 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 				return "", err
 			}
 			return existing, nil
+		}
+	}
+	if route, ok := p.currentRoute(conversationID); ok {
+		if strings.TrimSpace(string(route.AgentID)) != "" {
+			desiredAgentID = route.AgentID
+		}
+		if strings.TrimSpace(route.RecipientID) != "" {
+			recipientID = route.RecipientID
 		}
 	}
 

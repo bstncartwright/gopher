@@ -1368,6 +1368,100 @@ func TestDMPipelineRebindsConversationWhenExistingSessionIsInactive(t *testing.T
 	}
 }
 
+func TestDMPipelineRebindInactiveSessionPreservesBoundRoute(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	stale, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := manager.CancelSession(context.Background(), stale.ID); err != nil {
+		t.Fatalf("CancelSession() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "gateway-agent",
+		AgentByRecipient: map[string]sessionrt.ActorID{
+			"@gateway-agent:hs": "gateway-agent",
+			"@milo:hs":          "milo",
+		},
+		RecipientByAgent: map[sessionrt.ActorID]string{
+			"gateway-agent": "@gateway-agent:hs",
+			"milo":          "@milo:hs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!dm:milo", stale.ID, "milo", "@milo:hs", ConversationModeDM); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:milo",
+		SenderID:       "@user:hs",
+		RecipientID:    "@gateway-agent:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	if got := fake.lastSent(); got.SenderID != "@milo:hs" {
+		t.Fatalf("sender id = %q, want @milo:hs", got.SenderID)
+	}
+
+	currentSessionID, ok := pipeline.conversations.Get("!dm:milo")
+	if !ok {
+		t.Fatalf("expected conversation mapping")
+	}
+	if currentSessionID == stale.ID {
+		t.Fatalf("expected stale session to be replaced")
+	}
+	createdSession, err := manager.GetSession(context.Background(), currentSessionID)
+	if err != nil {
+		t.Fatalf("GetSession() error: %v", err)
+	}
+	if createdSession == nil {
+		t.Fatalf("expected created session")
+	}
+	if _, exists := createdSession.Participants["milo"]; !exists {
+		t.Fatalf("expected replacement session to keep milo participant")
+	}
+	if _, exists := createdSession.Participants["gateway-agent"]; exists {
+		t.Fatalf("replacement session unexpectedly switched to gateway-agent")
+	}
+
+	binding, ok := pipeline.bindings.GetByConversation("!dm:milo")
+	if !ok {
+		t.Fatalf("expected stored binding")
+	}
+	if binding.AgentID != "milo" {
+		t.Fatalf("binding agent_id = %q, want milo", binding.AgentID)
+	}
+	if binding.RecipientID != "@milo:hs" {
+		t.Fatalf("binding recipient_id = %q, want @milo:hs", binding.RecipientID)
+	}
+}
+
 func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

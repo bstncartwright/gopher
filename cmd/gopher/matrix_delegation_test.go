@@ -13,16 +13,6 @@ func TestBuildDelegationKickoffMessagePrefixesTargetMention(t *testing.T) {
 	}
 }
 
-func TestBuildDelegationTraceReadyMessage(t *testing.T) {
-	got := buildDelegationTraceReadyMessage("!trace:example.com")
-	if got != "Trace room ready (read-only): !trace:example.com" {
-		t.Fatalf("trace message = %q", got)
-	}
-	if empty := buildDelegationTraceReadyMessage("   "); empty != "" {
-		t.Fatalf("empty trace message = %q, want empty", empty)
-	}
-}
-
 func TestFirstHumanMatrixParticipantFindsMatrixActor(t *testing.T) {
 	session := &sessionrt.Session{
 		Participants: map[sessionrt.ActorID]sessionrt.Participant{

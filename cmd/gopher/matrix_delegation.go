@@ -117,16 +117,6 @@ func (s *gatewayDelegationToolService) CreateDelegationSession(ctx context.Conte
 		SenderID:         humanUserID,
 		RecipientID:      targetUserID,
 	})
-	if traceConversationID, ok := s.pipeline.TraceConversationFor(roomID); ok {
-		traceNotice := buildDelegationTraceReadyMessage(traceConversationID)
-		if strings.TrimSpace(traceNotice) != "" {
-			if err := s.transport.SendMessageAs(ctx, roomID, sourceUserID, traceNotice); err != nil {
-				if s.logger != nil {
-					s.logger.Printf("delegation trace notice failed source=%s target=%s session=%s room=%s trace_room=%s err=%v", sourceAgentID, targetAgentID, createdSession.ID, roomID, traceConversationID, err)
-				}
-			}
-		}
-	}
 
 	kickoff := buildDelegationKickoffMessage(targetUserID, message)
 	if err := s.transport.SendMessageAs(ctx, roomID, sourceUserID, kickoff); err != nil {
@@ -200,12 +190,4 @@ func buildDelegationKickoffMessage(targetUserID, message string) string {
 		return message
 	}
 	return strings.TrimSpace(targetUserID + " " + message)
-}
-
-func buildDelegationTraceReadyMessage(traceRoomID string) string {
-	traceRoomID = strings.TrimSpace(traceRoomID)
-	if traceRoomID == "" {
-		return ""
-	}
-	return fmt.Sprintf("Trace room ready (read-only): %s", traceRoomID)
 }

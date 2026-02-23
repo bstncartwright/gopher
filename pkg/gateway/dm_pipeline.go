@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -1233,7 +1234,9 @@ func (p *DMPipeline) ensureTraceConversation(ctx context.Context, req TraceConve
 			"trace_conversation_id", created.ConversationID,
 			"error", err,
 		)
+		return
 	}
+	p.sendTraceConversationReadyNotice(req.ConversationID, created.ConversationID)
 }
 
 func (p *DMPipeline) setConversationTraceBinding(conversationID string, trace TraceConversationBinding) error {
@@ -1341,6 +1344,42 @@ func (p *DMPipeline) recordTraceInboundIgnored() {
 		return
 	}
 	recorder.RecordTraceInboundIgnored()
+}
+
+func (p *DMPipeline) sendTraceConversationReadyNotice(conversationID, traceConversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	traceConversationID = strings.TrimSpace(traceConversationID)
+	if conversationID == "" || traceConversationID == "" {
+		return
+	}
+	if p == nil || p.transport == nil {
+		return
+	}
+	senderID := p.recipientForConversation(conversationID)
+	message := traceConversationReadyMessage(traceConversationID)
+	if strings.TrimSpace(message) == "" {
+		return
+	}
+	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: conversationID,
+		SenderID:       senderID,
+		Text:           message,
+	}); err != nil {
+		slog.Warn("dm_pipeline: failed to send trace conversation notice",
+			"conversation_id", conversationID,
+			"trace_conversation_id", traceConversationID,
+			"error", err,
+		)
+	}
+}
+
+func traceConversationReadyMessage(traceConversationID string) string {
+	traceConversationID = strings.TrimSpace(traceConversationID)
+	if traceConversationID == "" {
+		return ""
+	}
+	link := "https://matrix.to/#/" + url.PathEscape(traceConversationID)
+	return "Trace channel (read-only): " + link
 }
 
 func matrixActorID(sender string) sessionrt.ActorID {

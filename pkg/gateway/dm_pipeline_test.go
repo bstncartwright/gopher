@@ -105,6 +105,13 @@ func (f *fakeTransport) lastSent() transport.OutboundMessage {
 	}
 	return f.sent[len(f.sent)-1]
 }
+func (f *fakeTransport) sentMessages() []transport.OutboundMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]transport.OutboundMessage, len(f.sent))
+	copy(out, f.sent)
+	return out
+}
 func (f *fakeTransport) typingSignals() []typingSignal {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -455,7 +462,7 @@ func TestDMPipelineCreatesTraceConversationAndPublishesTraceEvents(t *testing.T)
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() == 1
+		return fake.sentCount() >= 2
 	})
 	waitFor(t, 2*time.Second, func() bool {
 		return tracePublisher.publishedCount() >= 3
@@ -479,6 +486,16 @@ func TestDMPipelineCreatesTraceConversationAndPublishesTraceEvents(t *testing.T)
 	}
 	if tracePublisher.lastRoom() != "!trace:one" {
 		t.Fatalf("last trace room = %q, want !trace:one", tracePublisher.lastRoom())
+	}
+	foundTraceNotice := false
+	for _, message := range fake.sentMessages() {
+		if strings.Contains(message.Text, "Trace channel (read-only): https://matrix.to/#/") {
+			foundTraceNotice = true
+			break
+		}
+	}
+	if !foundTraceNotice {
+		t.Fatalf("expected trace channel notice in outbound messages")
 	}
 }
 
@@ -862,7 +879,7 @@ func TestDMPipelineDelegationSupportsTraceChannel(t *testing.T) {
 		t.Fatalf("HandleInbound() error: %v", err)
 	}
 	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() == 1
+		return fake.sentCount() >= 2
 	})
 	waitFor(t, 2*time.Second, func() bool {
 		return tracePublisher.publishedCount() >= 3
@@ -880,6 +897,16 @@ func TestDMPipelineDelegationSupportsTraceChannel(t *testing.T) {
 	}
 	if tracePublisher.lastRoom() != "!trace:delegation" {
 		t.Fatalf("trace publish room = %q, want !trace:delegation", tracePublisher.lastRoom())
+	}
+	foundTraceNotice := false
+	for _, message := range fake.sentMessages() {
+		if strings.Contains(message.Text, "Trace channel (read-only): https://matrix.to/#/") {
+			foundTraceNotice = true
+			break
+		}
+	}
+	if !foundTraceNotice {
+		t.Fatalf("expected trace channel notice in delegation outbound messages")
 	}
 }
 
@@ -1798,6 +1825,19 @@ func TestFallbackReplyForErrorSanitizesSensitiveDetails(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(reply), "sk-test-123") {
 		t.Fatalf("expected bearer secret to be redacted, got %q", reply)
+	}
+}
+
+func TestTraceConversationReadyMessageContainsMatrixToLink(t *testing.T) {
+	got := traceConversationReadyMessage("!trace:example.com")
+	if !strings.Contains(got, "Trace channel (read-only): https://matrix.to/#/") {
+		t.Fatalf("trace notice = %q", got)
+	}
+	if !strings.Contains(got, "%21trace:example.com") {
+		t.Fatalf("trace notice missing escaped room id: %q", got)
+	}
+	if empty := traceConversationReadyMessage("   "); empty != "" {
+		t.Fatalf("empty trace notice = %q, want empty", empty)
 	}
 }
 

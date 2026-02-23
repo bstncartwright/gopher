@@ -560,15 +560,11 @@ func (p *matrixTraceConversationProvisioner) CreateTraceConversation(ctx context
 	}
 	traceRoomName := traceRoomNameFromSessionID(req.SessionID)
 	traceRoomTopic := fmt.Sprintf("Trace stream for session %s", strings.TrimSpace(string(req.SessionID)))
-	invitees := make([]string, 0, 1)
-	if sender := strings.TrimSpace(req.SenderID); sender != "" && !strings.EqualFold(sender, creatorUserID) {
-		invitees = append(invitees, sender)
-	}
-	roomID, err := p.transport.CreatePrivateRoom(ctx, matrixtransport.CreatePrivateRoomOptions{
+	roomID, err := p.transport.CreatePublicRoom(ctx, matrixtransport.CreatePublicRoomOptions{
 		Name:          traceRoomName,
 		Topic:         traceRoomTopic,
 		CreatorUserID: creatorUserID,
-		InviteUserIDs: invitees,
+		InviteUserIDs: nil,
 	})
 	if err != nil {
 		if p.logger != nil {

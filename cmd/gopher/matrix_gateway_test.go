@@ -1,13 +1,21 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
+	"github.com/bstncartwright/gopher/pkg/gateway"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
+	matrixtransport "github.com/bstncartwright/gopher/pkg/transport/matrix"
 )
 
 func TestBuildAgentMatrixIdentitySetUsesAgentIDsAsLocalparts(t *testing.T) {
@@ -145,5 +153,61 @@ func TestTraceRoomNameFromSessionIDUsesPrefixAndTruncation(t *testing.T) {
 	name := traceRoomNameFromSessionID("sess-1234567890abcdef")
 	if name != "trace-sess-1234567" {
 		t.Fatalf("trace room name = %q, want trace-sess-1234567", name)
+	}
+}
+
+func TestMatrixTraceConversationProvisionerCreatesPublicTraceRoom(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", request.Method)
+		}
+		if request.URL.Path != "/_matrix/client/v3/createRoom" {
+			t.Fatalf("path = %q, want createRoom", request.URL.Path)
+		}
+		body, _ := io.ReadAll(request.Body)
+		if !bytes.Contains(body, []byte(`"visibility":"public"`)) {
+			t.Fatalf("expected public visibility payload: %s", string(body))
+		}
+		if !bytes.Contains(body, []byte(`"preset":"public_chat"`)) {
+			t.Fatalf("expected public preset payload: %s", string(body))
+		}
+		if bytes.Contains(body, []byte(`"invite"`)) {
+			t.Fatalf("did not expect invite list for trace room: %s", string(body))
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"room_id":"!trace:local"}`))
+	}))
+	defer server.Close()
+
+	transport, err := matrixtransport.New(matrixtransport.Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("matrix transport New() error: %v", err)
+	}
+	provisioner := newMatrixTraceConversationProvisioner(transport, nil)
+
+	result, err := provisioner.CreateTraceConversation(context.Background(), gateway.TraceConversationRequest{
+		ConversationID: "!dm:one",
+		SessionID:      "sess-1234567890abcdef",
+		RecipientID:    "@milo:local",
+	})
+	if err != nil {
+		t.Fatalf("CreateTraceConversation() error: %v", err)
+	}
+	if result.ConversationID != "!trace:local" {
+		t.Fatalf("trace room id = %q, want !trace:local", result.ConversationID)
+	}
+	if !strings.HasPrefix(result.ConversationName, "trace-") {
+		t.Fatalf("trace conversation name = %q, want trace-*", result.ConversationName)
+	}
+	if result.Mode != gateway.TraceModeReadOnly {
+		t.Fatalf("trace mode = %q, want %q", result.Mode, gateway.TraceModeReadOnly)
+	}
+	if result.Render != gateway.TraceRenderCards {
+		t.Fatalf("trace render = %q, want %q", result.Render, gateway.TraceRenderCards)
 	}
 }

@@ -3,7 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -34,7 +34,6 @@ type HeartbeatRunnerOptions struct {
 	Schedules    []HeartbeatSchedule
 	Now          func() time.Time
 	PollInterval time.Duration
-	Logger       *log.Logger
 }
 
 type HeartbeatRunner struct {
@@ -43,7 +42,6 @@ type HeartbeatRunner struct {
 	schedules    []HeartbeatSchedule
 	now          func() time.Time
 	pollInterval time.Duration
-	logger       *log.Logger
 	nextRun      map[sessionrt.ActorID]time.Time
 
 	mu      sync.Mutex
@@ -53,9 +51,11 @@ type HeartbeatRunner struct {
 
 func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
 	if opts.Manager == nil {
+		slog.Error("heartbeat_runner: session manager is required")
 		return nil, fmt.Errorf("session manager is required")
 	}
 	if opts.Pipeline == nil {
+		slog.Error("heartbeat_runner: dm pipeline is required")
 		return nil, fmt.Errorf("dm pipeline is required")
 	}
 	nowFn := opts.Now
@@ -70,11 +70,13 @@ func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
 	normalized := make([]HeartbeatSchedule, 0, len(opts.Schedules))
 	seen := map[sessionrt.ActorID]struct{}{}
 	for _, schedule := range opts.Schedules {
-		validated, err := normalizeHeartbeatSchedule(schedule, opts.Logger)
+		validated, err := normalizeHeartbeatSchedule(schedule)
 		if err != nil {
+			slog.Error("heartbeat_runner: invalid schedule", "agent_id", schedule.AgentID, "error", err)
 			return nil, err
 		}
 		if _, exists := seen[validated.AgentID]; exists {
+			slog.Error("heartbeat_runner: duplicate schedule", "agent_id", validated.AgentID)
 			return nil, fmt.Errorf("duplicate heartbeat schedule for agent %q", validated.AgentID)
 		}
 		seen[validated.AgentID] = struct{}{}
@@ -84,18 +86,18 @@ func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
 		return string(normalized[i].AgentID) < string(normalized[j].AgentID)
 	})
 
+	slog.Info("heartbeat_runner: created", "schedules_count", len(normalized), "poll_interval", pollInterval)
 	return &HeartbeatRunner{
 		manager:      opts.Manager,
 		pipeline:     opts.Pipeline,
 		schedules:    normalized,
 		now:          nowFn,
 		pollInterval: pollInterval,
-		logger:       opts.Logger,
 		nextRun:      map[sessionrt.ActorID]time.Time{},
 	}, nil
 }
 
-func normalizeHeartbeatSchedule(schedule HeartbeatSchedule, logger *log.Logger) (HeartbeatSchedule, error) {
+func normalizeHeartbeatSchedule(schedule HeartbeatSchedule) (HeartbeatSchedule, error) {
 	agentID := sessionrt.ActorID(strings.TrimSpace(string(schedule.AgentID)))
 	if strings.TrimSpace(string(agentID)) == "" {
 		return HeartbeatSchedule{}, fmt.Errorf("heartbeat schedule agent id is required")
@@ -116,9 +118,7 @@ func normalizeHeartbeatSchedule(schedule HeartbeatSchedule, logger *log.Logger) 
 	if schedule.Timezone != "" {
 		location, err := time.LoadLocation(schedule.Timezone)
 		if err != nil {
-			if logger != nil {
-				logger.Printf("heartbeat schedule timezone ignored agent=%s timezone=%q err=%v", agentID, schedule.Timezone, err)
-			}
+			slog.Warn("heartbeat_runner: invalid timezone ignored", "agent_id", agentID, "timezone", schedule.Timezone, "error", err)
 			schedule.Timezone = ""
 		} else {
 			schedule.location = location
@@ -128,8 +128,9 @@ func normalizeHeartbeatSchedule(schedule HeartbeatSchedule, logger *log.Logger) 
 }
 
 func (r *HeartbeatRunner) UpsertSchedule(schedule HeartbeatSchedule) error {
-	normalized, err := normalizeHeartbeatSchedule(schedule, r.logger)
+	normalized, err := normalizeHeartbeatSchedule(schedule)
 	if err != nil {
+		slog.Error("heartbeat_runner: upsert schedule failed validation", "agent_id", schedule.AgentID, "error", err)
 		return err
 	}
 	r.mu.Lock()
@@ -150,6 +151,7 @@ func (r *HeartbeatRunner) UpsertSchedule(schedule HeartbeatSchedule) error {
 		return string(r.schedules[i].AgentID) < string(r.schedules[j].AgentID)
 	})
 	r.nextRun[normalized.AgentID] = now.Add(normalized.Every)
+	slog.Info("heartbeat_runner: schedule upserted", "agent_id", normalized.AgentID, "every", normalized.Every, "replaced", replaced)
 	return nil
 }
 
@@ -169,10 +171,12 @@ func (r *HeartbeatRunner) RemoveSchedule(agentID sessionrt.ActorID) bool {
 	}
 	if index == -1 {
 		delete(r.nextRun, target)
+		slog.Debug("heartbeat_runner: schedule not found for removal", "agent_id", target)
 		return false
 	}
 	r.schedules = append(r.schedules[:index], r.schedules[index+1:]...)
 	delete(r.nextRun, target)
+	slog.Info("heartbeat_runner: schedule removed", "agent_id", target)
 	return true
 }
 
@@ -210,6 +214,7 @@ func (r *HeartbeatRunner) Start(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.running {
+		slog.Debug("heartbeat_runner: already running")
 		return nil
 	}
 	if ctx == nil {
@@ -223,6 +228,7 @@ func (r *HeartbeatRunner) Start(ctx context.Context) error {
 	}
 	go r.loop(loopCtx)
 	r.running = true
+	slog.Info("heartbeat_runner: started", "schedules_count", len(r.schedules), "poll_interval", r.pollInterval)
 	return nil
 }
 
@@ -236,6 +242,7 @@ func (r *HeartbeatRunner) Stop() {
 		r.cancel()
 	}
 	r.running = false
+	slog.Info("heartbeat_runner: stopped")
 }
 
 func (r *HeartbeatRunner) loop(ctx context.Context) {
@@ -257,6 +264,7 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 	sessionCache := map[sessionrt.SessionID]*sessionrt.Session{}
 	sessionErrs := map[sessionrt.SessionID]error{}
 	schedules := r.schedulesSnapshot()
+	slog.Debug("heartbeat_runner: processing due schedules", "schedules_count", len(schedules), "targets_count", len(targets))
 
 	for _, schedule := range schedules {
 		next := r.nextRunFor(schedule.AgentID, now)
@@ -264,37 +272,27 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 			continue
 		}
 		if isWithinHeartbeatSleepWindow(now, schedule.location) {
-			if r.logger != nil {
-				r.logger.Printf("heartbeat skip reason=sleep-hours agent=%s timezone=%s local_hour=%d", schedule.AgentID, schedule.Timezone, now.In(schedule.location).Hour())
-			}
+			slog.Debug("heartbeat_runner: skip sleep hours", "agent_id", schedule.AgentID, "timezone", schedule.Timezone, "local_hour", now.In(schedule.location).Hour())
 			r.setNextRun(schedule.AgentID, now.Add(schedule.Every))
 			continue
 		}
 
 		for _, target := range targets {
 			if r.pipeline.IsConversationProcessing(target.ConversationID) {
-				if r.logger != nil {
-					r.logger.Printf("heartbeat skip reason=conversation-processing agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
-				}
+				slog.Debug("heartbeat_runner: skip conversation processing", "agent_id", schedule.AgentID, "conversation_id", target.ConversationID, "session_id", target.SessionID)
 				continue
 			}
 			session, err := r.loadSession(ctx, target.SessionID, sessionCache, sessionErrs)
 			if err != nil {
-				if r.logger != nil {
-					r.logger.Printf("heartbeat skip reason=session-load-failed agent=%s conversation=%s session=%s err=%v", schedule.AgentID, target.ConversationID, target.SessionID, err)
-				}
+				slog.Warn("heartbeat_runner: skip session load failed", "agent_id", schedule.AgentID, "conversation_id", target.ConversationID, "session_id", target.SessionID, "error", err)
 				continue
 			}
 			if !heartbeatHasAgentParticipant(session, schedule.AgentID) {
-				if r.logger != nil {
-					r.logger.Printf("heartbeat skip reason=not-participant agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
-				}
+				slog.Debug("heartbeat_runner: skip not participant", "agent_id", schedule.AgentID, "conversation_id", target.ConversationID, "session_id", target.SessionID)
 				continue
 			}
 			if !r.pipeline.CanDispatchHeartbeat(target.ConversationID, schedule.AgentID) {
-				if r.logger != nil {
-					r.logger.Printf("heartbeat skip reason=not-in-room agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
-				}
+				slog.Debug("heartbeat_runner: skip not in room", "agent_id", schedule.AgentID, "conversation_id", target.ConversationID, "session_id", target.SessionID)
 				continue
 			}
 			r.pipeline.MarkHeartbeatPending(target.ConversationID, schedule.AckMaxChars)
@@ -310,14 +308,10 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 			})
 			if sendErr != nil {
 				r.pipeline.UnmarkHeartbeatPending(target.ConversationID)
-				if r.logger != nil {
-					r.logger.Printf("heartbeat dispatch failed reason=send-failed agent=%s conversation=%s session=%s err=%v", schedule.AgentID, target.ConversationID, target.SessionID, sendErr)
-				}
+				slog.Error("heartbeat_runner: dispatch failed", "agent_id", schedule.AgentID, "conversation_id", target.ConversationID, "session_id", target.SessionID, "error", sendErr)
 				continue
 			}
-			if r.logger != nil {
-				r.logger.Printf("heartbeat dispatched agent=%s conversation=%s session=%s", schedule.AgentID, target.ConversationID, target.SessionID)
-			}
+			slog.Info("heartbeat_runner: dispatched", "agent_id", schedule.AgentID, "conversation_id", target.ConversationID, "session_id", target.SessionID)
 		}
 
 		r.setNextRun(schedule.AgentID, now.Add(schedule.Every))

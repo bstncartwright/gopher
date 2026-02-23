@@ -9,7 +9,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"sort"
@@ -45,7 +45,6 @@ type SessionMetadataResolver func(sessionID sessionrt.SessionID) (SessionMetadat
 
 type ServerOptions struct {
 	ListenAddr      string
-	Logger          *log.Logger
 	Store           SessionStore
 	SessionMetadata SessionMetadataResolver
 	NodeSnapshot    func() []scheduler.NodeInfo
@@ -53,7 +52,6 @@ type ServerOptions struct {
 
 type Server struct {
 	listenAddr      string
-	logger          *log.Logger
 	store           SessionStore
 	sessionMetadata SessionMetadataResolver
 	nodeSnapshot    func() []scheduler.NodeInfo
@@ -116,23 +114,26 @@ type eventRow struct {
 func NewServer(opts ServerOptions) (*Server, error) {
 	listenAddr := strings.TrimSpace(opts.ListenAddr)
 	if listenAddr == "" {
+		slog.Error("panel_server: listen address is required")
 		return nil, fmt.Errorf("listen address is required")
 	}
 	tpl, err := template.New("panel").ParseFS(panelFiles, "templates/*.html")
 	if err != nil {
+		slog.Error("panel_server: failed to parse templates", "error", err)
 		return nil, fmt.Errorf("parse panel templates: %w", err)
 	}
 	assetsFS, err := fs.Sub(panelFiles, "assets")
 	if err != nil {
+		slog.Error("panel_server: failed to open assets", "error", err)
 		return nil, fmt.Errorf("open panel assets: %w", err)
 	}
 	nodeSnapshot := opts.NodeSnapshot
 	if nodeSnapshot == nil {
 		nodeSnapshot = func() []scheduler.NodeInfo { return nil }
 	}
+	slog.Info("panel_server: created", "listen_addr", listenAddr, "has_store", opts.Store != nil)
 	return &Server{
 		listenAddr:      listenAddr,
-		logger:          opts.Logger,
 		store:           opts.Store,
 		sessionMetadata: opts.SessionMetadata,
 		nodeSnapshot:    nodeSnapshot,
@@ -154,7 +155,7 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 
 		listener, err := net.Listen("tcp", s.listenAddr)
 		if err != nil {
-			s.logf("panel listen failed addr=%s err=%v retry_in=%s", s.listenAddr, err, backoff)
+			slog.Warn("panel_server: listen failed, retrying", "addr", s.listenAddr, "error", err, "retry_in", backoff)
 			if !sleepWithContext(ctx, backoff) {
 				return nil
 			}
@@ -165,7 +166,7 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 		mux := s.newMux()
 		httpServer := &http.Server{Addr: s.listenAddr, Handler: mux}
 		errCh := make(chan error, 1)
-		s.logf("panel listening addr=%s", s.listenAddr)
+		slog.Info("panel_server: listening", "addr", s.listenAddr)
 		backoff = defaultRetryBackoff
 
 		go func() {
@@ -190,7 +191,7 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 				backoff = nextBackoff(backoff)
 				continue
 			}
-			s.logf("panel serve error addr=%s err=%v retry_in=%s", s.listenAddr, err, backoff)
+			slog.Warn("panel_server: serve error, retrying", "addr", s.listenAddr, "error", err, "retry_in", backoff)
 			if !sleepWithContext(ctx, backoff) {
 				return nil
 			}
@@ -414,15 +415,9 @@ func (s *Server) handleCSS(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("content-type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
+		slog.Error("panel_server: template render failed", "template", name, "error", err)
 		http.Error(w, fmt.Sprintf("template error: %v", err), http.StatusInternalServerError)
 	}
-}
-
-func (s *Server) logf(format string, args ...any) {
-	if s.logger == nil {
-		return
-	}
-	s.logger.Printf(format, args...)
 }
 
 func (s *Server) lookupSessionMetadata(sessionID sessionrt.SessionID) SessionMetadata {

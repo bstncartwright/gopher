@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +19,6 @@ import (
 type gatewayHeartbeatToolService struct {
 	agents map[sessionrt.ActorID]*agentcore.Agent
 	runner *gateway.HeartbeatRunner
-	logger *log.Logger
 
 	mu sync.Mutex
 }
@@ -27,12 +26,10 @@ type gatewayHeartbeatToolService struct {
 func newGatewayHeartbeatToolService(
 	agents map[sessionrt.ActorID]*agentcore.Agent,
 	runner *gateway.HeartbeatRunner,
-	logger *log.Logger,
 ) *gatewayHeartbeatToolService {
 	return &gatewayHeartbeatToolService{
 		agents: agents,
 		runner: runner,
-		logger: logger,
 	}
 }
 
@@ -41,32 +38,41 @@ func (s *gatewayHeartbeatToolService) GetHeartbeat(_ context.Context, agentID st
 	defer s.mu.Unlock()
 	_, agent, err := s.resolveAgent(agentID)
 	if err != nil {
+		slog.Warn("gateway_heartbeat_tool: get heartbeat failed", "agent_id", agentID, "error", err)
 		return agentcore.HeartbeatState{}, err
 	}
-	return heartbeatStateFromAgent(agent), nil
+	state := heartbeatStateFromAgent(agent)
+	slog.Debug("gateway_heartbeat_tool: get heartbeat", "agent_id", agentID, "enabled", state.Enabled, "every", state.Every)
+	return state, nil
 }
 
 func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentcore.HeartbeatSetRequest) (agentcore.HeartbeatState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	slog.Debug("gateway_heartbeat_tool: set heartbeat request", "agent_id", req.AgentID, "every", req.Every)
 	if s.runner == nil {
+		slog.Warn("gateway_heartbeat_tool: heartbeat runner unavailable")
 		return agentcore.HeartbeatState{}, fmt.Errorf("heartbeat runner is unavailable")
 	}
 	actorID, agent, err := s.resolveAgent(req.AgentID)
 	if err != nil {
+		slog.Warn("gateway_heartbeat_tool: resolve agent failed", "agent_id", req.AgentID, "error", err)
 		return agentcore.HeartbeatState{}, err
 	}
 	every := strings.TrimSpace(req.Every)
 	if every == "" {
+		slog.Warn("gateway_heartbeat_tool: every is required", "agent_id", actorID)
 		return agentcore.HeartbeatState{}, fmt.Errorf("every is required")
 	}
 	if req.AckMaxChars != nil && *req.AckMaxChars <= 0 {
+		slog.Warn("gateway_heartbeat_tool: invalid ack_max_chars", "agent_id", actorID, "ack_max_chars", *req.AckMaxChars)
 		return agentcore.HeartbeatState{}, fmt.Errorf("ack_max_chars must be > 0")
 	}
 	if req.UserTimezone != nil {
 		timezone := strings.TrimSpace(*req.UserTimezone)
 		if timezone != "" {
 			if _, err := time.LoadLocation(timezone); err != nil {
+				slog.Warn("gateway_heartbeat_tool: invalid timezone", "agent_id", actorID, "timezone", timezone, "error", err)
 				return agentcore.HeartbeatState{}, fmt.Errorf("invalid user_timezone %q: %w", timezone, err)
 			}
 		}
@@ -75,6 +81,7 @@ func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentc
 	configPath := filepath.Join(agent.Workspace, "config.json")
 	doc, err := readJSONDocument(configPath)
 	if err != nil {
+		slog.Error("gateway_heartbeat_tool: read config failed", "agent_id", actorID, "path", configPath, "error", err)
 		return agentcore.HeartbeatState{}, err
 	}
 	heartbeatDoc := map[string]any{
@@ -100,6 +107,7 @@ func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentc
 	}
 	updatedConfig, updatedHeartbeat, err := s.persistConfigAndHydrateAgent(configPath, doc)
 	if err != nil {
+		slog.Error("gateway_heartbeat_tool: persist config failed", "agent_id", actorID, "error", err)
 		return agentcore.HeartbeatState{}, err
 	}
 	agent.Config = updatedConfig
@@ -112,46 +120,48 @@ func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentc
 			AckMaxChars: updatedHeartbeat.AckMaxChars,
 			Timezone:    strings.TrimSpace(updatedConfig.UserTimezone),
 		}); err != nil {
+			slog.Error("gateway_heartbeat_tool: upsert schedule failed", "agent_id", actorID, "error", err)
 			return agentcore.HeartbeatState{}, err
 		}
 	} else {
 		s.runner.RemoveSchedule(actorID)
 	}
 	state := heartbeatStateFromAgent(agent)
-	if s.logger != nil {
-		s.logger.Printf("heartbeat config updated agent=%s enabled=%t every=%s timezone=%s", actorID, state.Enabled, state.Every, state.UserTimezone)
-	}
+	slog.Info("gateway_heartbeat_tool: heartbeat config updated", "agent_id", actorID, "enabled", state.Enabled, "every", state.Every, "timezone", state.UserTimezone)
 	return state, nil
 }
 
 func (s *gatewayHeartbeatToolService) DisableHeartbeat(_ context.Context, agentID string) (agentcore.HeartbeatState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	slog.Debug("gateway_heartbeat_tool: disable heartbeat request", "agent_id", agentID)
 	if s.runner == nil {
+		slog.Warn("gateway_heartbeat_tool: heartbeat runner unavailable for disable")
 		return agentcore.HeartbeatState{}, fmt.Errorf("heartbeat runner is unavailable")
 	}
 	actorID, agent, err := s.resolveAgent(agentID)
 	if err != nil {
+		slog.Warn("gateway_heartbeat_tool: resolve agent failed for disable", "agent_id", agentID, "error", err)
 		return agentcore.HeartbeatState{}, err
 	}
 
 	configPath := filepath.Join(agent.Workspace, "config.json")
 	doc, err := readJSONDocument(configPath)
 	if err != nil {
+		slog.Error("gateway_heartbeat_tool: read config failed for disable", "agent_id", actorID, "path", configPath, "error", err)
 		return agentcore.HeartbeatState{}, err
 	}
 	delete(doc, "heartbeat")
 	updatedConfig, updatedHeartbeat, err := s.persistConfigAndHydrateAgent(configPath, doc)
 	if err != nil {
+		slog.Error("gateway_heartbeat_tool: persist config failed for disable", "agent_id", actorID, "error", err)
 		return agentcore.HeartbeatState{}, err
 	}
 	agent.Config = updatedConfig
 	agent.Heartbeat = updatedHeartbeat
 	s.runner.RemoveSchedule(actorID)
 	state := heartbeatStateFromAgent(agent)
-	if s.logger != nil {
-		s.logger.Printf("heartbeat config disabled agent=%s", actorID)
-	}
+	slog.Info("gateway_heartbeat_tool: heartbeat config disabled", "agent_id", actorID)
 	return state, nil
 }
 

@@ -66,7 +66,7 @@ func TestGatewayHeartbeatToolServiceSetAndDisable(t *testing.T) {
 	}
 	service := newGatewayHeartbeatToolService(map[sessionrt.ActorID]*agentcore.Agent{
 		"writer": agent,
-	}, runner, nil)
+	}, runner)
 
 	prompt := "heartbeat check"
 	ackMaxChars := 120
@@ -145,7 +145,7 @@ func TestGatewayHeartbeatToolServiceRejectsInvalidTimezone(t *testing.T) {
 	}
 	service := newGatewayHeartbeatToolService(map[sessionrt.ActorID]*agentcore.Agent{
 		"writer": agent,
-	}, runner, nil)
+	}, runner)
 
 	timezone := "Not/A_Timezone"
 	_, err = service.SetHeartbeat(context.Background(), agentcore.HeartbeatSetRequest{

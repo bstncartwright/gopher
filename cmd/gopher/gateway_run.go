@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -323,6 +324,7 @@ func wantsHelp(args []string) bool {
 func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, sources []string, stderr io.Writer) error {
 	logger := log.New(stderr, "", log.LstdFlags)
 
+	slog.Info("gateway_run: starting gateway", "node_id", cfg.NodeID, "gateway_id", cfg.GatewayNodeID)
 	client, err := fabricts.NewClient(fabricts.ClientOptions{
 		URL:            cfg.NATSURL,
 		Name:           "gopher-gateway-" + cfg.NodeID,
@@ -330,12 +332,15 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		ReconnectWait:  cfg.ReconnectWait,
 	})
 	if err != nil {
+		slog.Error("gateway_run: failed to create nats client", "error", err)
 		return fmt.Errorf("create nats client: %w", err)
 	}
 	defer client.Close()
+	slog.Debug("gateway_run: nats client created", "url", cfg.NATSURL)
 
 	workspace, err := os.Getwd()
 	if err != nil {
+		slog.Error("gateway_run: failed to resolve workspace", "error", err)
 		return fmt.Errorf("resolve workspace directory: %w", err)
 	}
 	agentRuntime, err := loadGatewayAgentRuntimeWithOptions(workspace, agentRuntimeOptions{
@@ -343,26 +348,34 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		CaptureThinking: cfg.Panel.CaptureThinking,
 	})
 	if err != nil {
+		slog.Error("gateway_run: failed to load agent runtime", "workspace", workspace, "error", err)
 		return err
 	}
+	slog.Info("gateway_run: agent runtime loaded", "agents_count", len(agentRuntime.Agents), "default_agent_id", agentRuntime.DefaultActorID)
 	capabilityResolver, err := buildRequiredCapabilityResolver(agentRuntime)
 	if err != nil {
+		slog.Error("gateway_run: failed to build capability resolver", "error", err)
 		return err
 	}
 
 	process, err := startGatewayProcessWithCapabilityResolver(ctx, cfg, client, agentRuntime.Executor, capabilityResolver, logger)
 	if err != nil {
+		slog.Error("gateway_run: failed to start gateway process", "error", err)
 		return err
 	}
 	defer process.Stop()
 
 	var matrixBridge *matrixDMBridge
 	if cfg.Matrix.Enabled {
+		slog.Info("gateway_run: matrix enabled, starting dm bridge")
 		matrixBridge, err = startMatrixDMBridgeWithRuntime(ctx, cfg, workspace, agentRuntime, process.executor, logger)
 		if err != nil {
+			slog.Error("gateway_run: failed to start matrix dm bridge", "error", err)
 			return err
 		}
 		defer matrixBridge.Stop()
+	} else {
+		slog.Info("gateway_run: matrix disabled")
 	}
 
 	var panelStore panel.SessionStore
@@ -384,20 +397,21 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		}
 	}
 	if err := startGatewayPanel(ctx, cfg, process, panelStore, panelSessionMetadata, logger); err != nil {
+		slog.Error("gateway_run: failed to start panel server", "error", err)
 		return err
 	}
 
-	logger.Printf("gateway running node_id=%s gateway_id=%s nats_url=%q heartbeat_interval=%s prune_interval=%s capabilities=%s config_sources=%s",
-		cfg.NodeID,
-		cfg.GatewayNodeID,
-		cfg.NATSURL,
-		cfg.HeartbeatInterval.String(),
-		cfg.PruneInterval.String(),
-		mustJSON(cfg.Capabilities),
-		strings.Join(sources, ","),
+	slog.Info("gateway_run: gateway running",
+		"node_id", cfg.NodeID,
+		"gateway_id", cfg.GatewayNodeID,
+		"nats_url", cfg.NATSURL,
+		"heartbeat_interval", cfg.HeartbeatInterval.String(),
+		"prune_interval", cfg.PruneInterval.String(),
+		"capabilities", mustJSON(cfg.Capabilities),
+		"config_sources", strings.Join(sources, ","),
 	)
 	<-ctx.Done()
-	logger.Printf("gateway shutting down: %v", ctx.Err())
+	slog.Info("gateway_run: gateway shutting down", "reason", ctx.Err())
 	return nil
 }
 
@@ -535,11 +549,11 @@ func startGatewayPanel(
 	logger *log.Logger,
 ) error {
 	if process == nil || process.registry == nil {
+		slog.Error("gateway_run: gateway process is not initialized for panel")
 		return fmt.Errorf("create observability panel server: gateway process is not initialized")
 	}
 	panelServer, err := newGatewayPanel(panel.ServerOptions{
 		ListenAddr:      cfg.Panel.ListenAddr,
-		Logger:          logger,
 		Store:           store,
 		SessionMetadata: sessionMetadata,
 		NodeSnapshot: func() []scheduler.NodeInfo {

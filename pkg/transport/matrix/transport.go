@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -598,13 +598,13 @@ func (t *Transport) applyPresenceUpdate(parent context.Context, state string, al
 	failureTransition, recovered := t.recordPresenceResult(state, err)
 	if err != nil {
 		if alwaysLogFailure || failureTransition {
-			log.Printf("matrix presence update failed state=%s err=%v", state, err)
+			slog.Warn("matrix_transport: presence update failed", "state", state, "error", err)
 		}
 		return
 	}
 	t.maybeReplayDroppedOutbound()
 	if recovered {
-		log.Printf("matrix presence recovered state=%s", state)
+		slog.Info("matrix_transport: presence recovered", "state", state)
 	}
 }
 
@@ -925,10 +925,7 @@ func (t *Transport) handleTransaction(writer http.ResponseWriter, request *http.
 		eventCtx, cancelEvent := context.WithTimeout(context.Background(), inboundEventTimeout)
 		if inviteeUserID, ok := t.invitedManagedUser(event); ok {
 			if err := t.joinRoomAs(eventCtx, event.RoomID, inviteeUserID); err != nil {
-				log.Printf("matrix inbound invite handling failed room_id=%q event_id=%q err=%v", event.RoomID, strings.TrimSpace(event.EventID), err)
-				// Do not fail the entire transaction on invite join errors.
-				// A single persistent join failure can wedge appservice retries
-				// and block unrelated DM events in the same delivery stream.
+				slog.Warn("matrix_transport: inbound invite handling failed", "room_id", event.RoomID, "event_id", strings.TrimSpace(event.EventID), "error", err)
 				t.markEventState(event.EventID, deliveryStatusDelivered)
 				cancelEvent()
 				continue
@@ -951,7 +948,7 @@ func (t *Transport) handleTransaction(writer http.ResponseWriter, request *http.
 		}
 		if err := handler(eventCtx, inbound); err != nil {
 			t.inboundFailures.Add(1)
-			log.Printf("matrix inbound handler failed event_id=%q room_id=%q sender=%q err=%v", strings.TrimSpace(event.EventID), inbound.ConversationID, inbound.SenderID, err)
+			slog.Error("matrix_transport: inbound handler failed", "event_id", strings.TrimSpace(event.EventID), "room_id", inbound.ConversationID, "sender", inbound.SenderID, "error", err)
 			t.markEventState(event.EventID, deliveryStatusRetryable)
 			hadFailure = true
 			cancelEvent()
@@ -1088,11 +1085,10 @@ func (t *Transport) ensureManagedUser(ctx context.Context, userID string) error 
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
-	// synapse-like behavior may return M_USER_IN_USE for existing users.
 	if (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusConflict) &&
 		strings.Contains(string(body), "M_USER_IN_USE") {
 		if err := t.ensureManagedUserProfile(ctx, userID); err != nil {
-			log.Printf("matrix managed user profile sync failed user_id=%q err=%v", userID, err)
+			slog.Warn("matrix_transport: managed user profile sync failed", "user_id", userID, "error", err)
 		}
 		return nil
 	}
@@ -1100,7 +1096,7 @@ func (t *Transport) ensureManagedUser(ctx context.Context, userID string) error 
 		return fmt.Errorf("matrix bot register status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
 	}
 	if err := t.ensureManagedUserProfile(ctx, userID); err != nil {
-		log.Printf("matrix managed user profile sync failed user_id=%q err=%v", userID, err)
+		slog.Warn("matrix_transport: managed user profile sync failed", "user_id", userID, "error", err)
 	}
 	return nil
 }

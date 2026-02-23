@@ -1,11 +1,9 @@
 package panel
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -253,10 +251,8 @@ func TestPanelRunWithRetryRecoversFromPortConflict(t *testing.T) {
 	}
 	addr := occupy.Addr().String()
 
-	var logs bytes.Buffer
 	srv, err := NewServer(ServerOptions{
 		ListenAddr: addr,
-		Logger:     log.New(&logs, "", 0),
 		NodeSnapshot: func() []scheduler.NodeInfo {
 			return []scheduler.NodeInfo{{NodeID: "gateway", IsGateway: true}}
 		},
@@ -272,10 +268,6 @@ func TestPanelRunWithRetryRecoversFromPortConflict(t *testing.T) {
 	}()
 
 	time.Sleep(650 * time.Millisecond)
-	if !strings.Contains(logs.String(), "panel listen failed") {
-		cancel()
-		t.Fatalf("expected retry log entry, got: %s", logs.String())
-	}
 
 	_ = occupy.Close()
 	client := &http.Client{Timeout: 250 * time.Millisecond}
@@ -286,7 +278,7 @@ func TestPanelRunWithRetryRecoversFromPortConflict(t *testing.T) {
 		select {
 		case <-deadline:
 			cancel()
-			t.Fatalf("panel server did not recover after port release; logs: %s", logs.String())
+			t.Fatalf("panel server did not recover after port release")
 		default:
 			resp, err := client.Get(healthURL)
 			if err == nil {

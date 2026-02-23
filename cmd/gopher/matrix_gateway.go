@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -54,16 +55,20 @@ func startMatrixDMBridgeWithRuntime(
 	logger *log.Logger,
 ) (*matrixDMBridge, error) {
 	var err error
+	slog.Info("matrix_gateway: starting dm bridge", "workspace", workspace)
 	if agentRuntime == nil {
 		agentRuntime, err = loadGatewayAgentRuntime(workspace)
 		if err != nil {
+			slog.Error("matrix_gateway: failed to load agents", "workspace", workspace, "error", err)
 			return nil, fmt.Errorf("load gateway agents: %w", err)
 		}
 	}
 	identities, err := buildAgentMatrixIdentitySet(agentRuntime, cfg.Matrix.BotUserID)
 	if err != nil {
+		slog.Error("matrix_gateway: failed to build matrix identities", "error", err)
 		return nil, fmt.Errorf("build matrix identities: %w", err)
 	}
+	slog.Debug("matrix_gateway: built matrix identities", "default_user_id", identities.DefaultUserID, "managed_count", len(identities.ManagedUserIDs))
 	if executor == nil {
 		executor = agentRuntime.Executor
 	}
@@ -71,11 +76,13 @@ func startMatrixDMBridgeWithRuntime(
 	storeDir := filepath.Join(dataDir, "sessions")
 	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: storeDir})
 	if err != nil {
+		slog.Error("matrix_gateway: failed to create session store", "dir", storeDir, "error", err)
 		return nil, fmt.Errorf("create session store: %w", err)
 	}
 	bindingStorePath := filepath.Join(storeDir, "conversation_bindings.json")
 	bindingStore, err := gateway.NewFileConversationBindingStore(bindingStorePath)
 	if err != nil {
+		slog.Error("matrix_gateway: failed to create binding store", "path", bindingStorePath, "error", err)
 		return nil, fmt.Errorf("create conversation binding store: %w", err)
 	}
 
@@ -86,17 +93,22 @@ func startMatrixDMBridgeWithRuntime(
 		RecoverOnStart: true,
 	})
 	if err != nil {
+		slog.Error("matrix_gateway: failed to create session manager", "error", err)
 		return nil, fmt.Errorf("create session manager: %w", err)
 	}
+	slog.Info("matrix_gateway: session manager created")
 	var cronRunner *gateway.CronRunner
 	if cfg.Cron.Enabled {
+		slog.Info("matrix_gateway: cron enabled, initializing", "timezone", cfg.Cron.DefaultTimezone, "poll_interval", cfg.Cron.PollInterval)
 		dispatcher, err := gateway.NewSessionCronDispatcher(manager)
 		if err != nil {
+			slog.Error("matrix_gateway: failed to create cron dispatcher", "error", err)
 			return nil, fmt.Errorf("create cron dispatcher: %w", err)
 		}
 		cronFilePath := filepath.Join(dataDir, "cron", "jobs.json")
 		cronStore, err := gateway.NewFileCronStore(cronFilePath)
 		if err != nil {
+			slog.Error("matrix_gateway: failed to create cron store", "path", cronFilePath, "error", err)
 			return nil, fmt.Errorf("create cron store: %w", err)
 		}
 		cronService, err := gateway.NewCronService(gateway.CronServiceOptions{
@@ -106,6 +118,7 @@ func startMatrixDMBridgeWithRuntime(
 			CatchupOnStartOnce: true,
 		})
 		if err != nil {
+			slog.Error("matrix_gateway: failed to create cron service", "error", err)
 			return nil, fmt.Errorf("create cron service: %w", err)
 		}
 		cronTool := newGatewayCronToolService(cronService)
@@ -117,16 +130,17 @@ func startMatrixDMBridgeWithRuntime(
 			PollInterval: cfg.Cron.PollInterval,
 		})
 		if err != nil {
+			slog.Error("matrix_gateway: failed to create cron runner", "error", err)
 			return nil, fmt.Errorf("create cron runner: %w", err)
 		}
 		if err := cronRunner.Start(ctx); err != nil {
+			slog.Error("matrix_gateway: failed to start cron runner", "error", err)
 			return nil, fmt.Errorf("start cron runner: %w", err)
 		}
-		if logger != nil {
-			logger.Printf("cron runner started timezone=%s poll_interval=%s", cfg.Cron.DefaultTimezone, cfg.Cron.PollInterval.String())
-		}
+		slog.Info("matrix_gateway: cron runner started", "timezone", cfg.Cron.DefaultTimezone, "poll_interval", cfg.Cron.PollInterval.String())
 	}
 
+	slog.Info("matrix_gateway: creating matrix transport", "homeserver_url", cfg.Matrix.HomeserverURL, "listen_addr", cfg.Matrix.ListenAddr)
 	matrixBridge, err := matrixtransport.New(matrixtransport.Options{
 		HomeserverURL:     cfg.Matrix.HomeserverURL,
 		AppserviceID:      cfg.Matrix.AppserviceID,
@@ -142,6 +156,7 @@ func startMatrixDMBridgeWithRuntime(
 		AvatarProvider:    newMatrixManagedAvatarProvider(agentRuntime, identities, logger),
 	})
 	if err != nil {
+		slog.Error("matrix_gateway: failed to create matrix transport", "error", err)
 		return nil, fmt.Errorf("create matrix transport: %w", err)
 	}
 
@@ -164,8 +179,10 @@ func startMatrixDMBridgeWithRuntime(
 		TraceProvisioner: traceProvisioner,
 	})
 	if err != nil {
+		slog.Error("matrix_gateway: failed to create dm pipeline", "error", err)
 		return nil, fmt.Errorf("create matrix dm pipeline: %w", err)
 	}
+	slog.Debug("matrix_gateway: dm pipeline created", "agent_id", agentRuntime.DefaultActorID)
 	delegationTool := newGatewayDelegationToolService(manager, pipeline, matrixBridge, identities, logger)
 	for _, agent := range agentRuntime.Agents {
 		agent.Delegation = delegationTool
@@ -176,7 +193,6 @@ func startMatrixDMBridgeWithRuntime(
 		Manager:   manager,
 		Pipeline:  pipeline,
 		Schedules: heartbeatSchedules,
-		Logger:    logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create heartbeat runner: %w", err)
@@ -184,10 +200,8 @@ func startMatrixDMBridgeWithRuntime(
 	if err := heartbeatRunner.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start heartbeat runner: %w", err)
 	}
-	if logger != nil {
-		logger.Printf("heartbeat runner started agents=%d", len(heartbeatSchedules))
-	}
-	heartbeatTool := newGatewayHeartbeatToolService(agentRuntime.Agents, heartbeatRunner, logger)
+	slog.Info("matrix_gateway: heartbeat runner started", "schedules_count", len(heartbeatSchedules))
+	heartbeatTool := newGatewayHeartbeatToolService(agentRuntime.Agents, heartbeatRunner)
 	for _, agent := range agentRuntime.Agents {
 		agent.HeartbeatService = heartbeatTool
 	}
@@ -204,9 +218,7 @@ func startMatrixDMBridgeWithRuntime(
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge.cancel = cancel
 	go bridge.runSupervisor(bridgeCtx, logger)
-	if logger != nil {
-		logger.Printf("matrix dm bridge started appservice_id=%s listen_addr=%s", cfg.Matrix.AppserviceID, cfg.Matrix.ListenAddr)
-	}
+	slog.Info("matrix_gateway: dm bridge started", "appservice_id", cfg.Matrix.AppserviceID, "listen_addr", cfg.Matrix.ListenAddr)
 	return bridge, nil
 }
 
@@ -405,29 +417,21 @@ func (b *matrixDMBridge) runSupervisor(ctx context.Context, logger *log.Logger) 
 			return
 		}
 		attempt++
-		if logger != nil {
-			logger.Printf("matrix_bridge_starting attempt=%d", attempt)
-		}
+		slog.Debug("matrix_gateway: bridge supervisor starting", "attempt", attempt)
 		err := b.transport.Start(ctx)
 		if err == nil {
-			if logger != nil {
-				logger.Printf("matrix_bridge_ready")
-			}
+			slog.Info("matrix_gateway: bridge ready", "attempt", attempt)
 			if ctx.Err() != nil {
 				return
 			}
 		} else {
-			if logger != nil {
-				logger.Printf("matrix_bridge_degraded err=%v", err)
-			}
+			slog.Warn("matrix_gateway: bridge degraded", "attempt", attempt, "error", err)
 		}
 		if ctx.Err() != nil {
 			return
 		}
 		delay := matrixBridgeRetryDelay(attempt)
-		if logger != nil {
-			logger.Printf("matrix_bridge_retrying attempt=%d next_in=%s", attempt, delay.String())
-		}
+		slog.Debug("matrix_gateway: bridge retry scheduled", "attempt", attempt, "delay", delay.String())
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

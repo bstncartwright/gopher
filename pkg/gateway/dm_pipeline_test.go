@@ -1512,6 +1512,83 @@ func TestDMPipelineRebindInactiveSessionPreservesBoundRoute(t *testing.T) {
 	}
 }
 
+func TestDMPipelineReplacesActiveSessionWhenAgentRouteMismatches(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	active, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "gateway-agent", Type: sessionrt.ActorAgent},
+			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "gateway-agent",
+		AgentByRecipient: map[string]sessionrt.ActorID{
+			"@gateway-agent:hs": "gateway-agent",
+			"@milo:hs":          "milo",
+		},
+		RecipientByAgent: map[sessionrt.ActorID]string{
+			"gateway-agent": "@gateway-agent:hs",
+			"milo":          "@milo:hs",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!dm:milo", active.ID, "milo", "@milo:hs", ConversationModeDM); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:milo",
+		SenderID:       "@user:hs",
+		RecipientID:    "@gateway-agent:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	if got := fake.lastSent(); got.SenderID != "@milo:hs" {
+		t.Fatalf("sender id = %q, want @milo:hs", got.SenderID)
+	}
+
+	currentSessionID, ok := pipeline.conversations.Get("!dm:milo")
+	if !ok {
+		t.Fatalf("expected conversation mapping")
+	}
+	if currentSessionID == active.ID {
+		t.Fatalf("expected active mismatched session to be replaced")
+	}
+	createdSession, err := manager.GetSession(context.Background(), currentSessionID)
+	if err != nil {
+		t.Fatalf("GetSession() error: %v", err)
+	}
+	if createdSession == nil {
+		t.Fatalf("expected created session")
+	}
+	if _, exists := createdSession.Participants["milo"]; !exists {
+		t.Fatalf("expected replacement session to include milo participant")
+	}
+}
+
 func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

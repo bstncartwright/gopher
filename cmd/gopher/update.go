@@ -136,7 +136,7 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 		ChecksumsURL: checksumsAsset.DownloadURL(),
 		Runner:       runner,
 	}); err != nil {
-		if errors.Is(err, fs.ErrPermission) {
+		if isLikelyPermissionError(err) {
 			if envLookupForUpdate("GOPHER_UPDATE_ELEVATED") != "1" && shouldPromptSudoForUpdate() {
 				if stderr != nil {
 					fmt.Fprintln(stderr, "permission denied updating binary; retrying with sudo")
@@ -149,7 +149,10 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 			if commandName == "." || commandName == "/" || commandName == "" {
 				commandName = "gopher"
 			}
-			return fmt.Errorf("%w\nhint: %q is not writable by the current user; retry with elevated permissions:\n  sudo -E %s update", err, targetBinaryPath, commandName)
+			if errors.Is(err, fs.ErrPermission) {
+				return fmt.Errorf("%w\nhint: %q is not writable by the current user; retry with elevated permissions:\n  sudo -E %s update", err, targetBinaryPath, commandName)
+			}
+			return fmt.Errorf("%w\nhint: update operations may require elevated permissions; retry with:\n  sudo -E %s update", err, commandName)
 		}
 		return err
 	}

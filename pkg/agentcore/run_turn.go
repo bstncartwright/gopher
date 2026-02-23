@@ -11,6 +11,14 @@ import (
 )
 
 func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResult, error) {
+	return a.runTurn(ctx, s, in, nil)
+}
+
+func (a *Agent) RunTurnWithEventHandler(ctx context.Context, s *Session, in TurnInput, onEvent func(Event) error) (TurnResult, error) {
+	return a.runTurn(ctx, s, in, onEvent)
+}
+
+func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent func(Event) error) (TurnResult, error) {
 	startTime := time.Now()
 	if ctx == nil {
 		ctx = context.Background()
@@ -58,7 +66,7 @@ func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResu
 		a.persistTurnMemories(ctx, s, in.UserMessage, finalText, toolObservations, turnErr)
 	}()
 
-	emitter := newEventEmitter(a.ID, s.ID, a.Logger)
+	emitter := newEventEmitter(a.ID, s.ID, a.Logger, onEvent)
 	slog.Debug("run_turn: building provider context", "agent_id", a.ID, "session_id", s.ID)
 	conversation, err := a.buildProviderContext(ctx, s, in.UserMessage, in.PromptMode)
 	if err != nil {

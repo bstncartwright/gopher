@@ -208,6 +208,62 @@ func TestSessionRuntimeAdapterDeltaCaptureOptions(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeAdapterStepStreamEmitsMappedEvents(t *testing.T) {
+	config := defaultConfig()
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	agent.CaptureThinkingDeltas = true
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonStop
+	assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "final"}}
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{
+				assistant: assistant,
+				events: []ai.AssistantMessageEvent{
+					{Type: ai.EventTextDelta, Delta: "fi"},
+					{Type: ai.EventTextDelta, Delta: "nal"},
+				},
+			},
+		},
+	}
+
+	adapter := NewSessionRuntimeAdapterWithOptions(agent, SessionRuntimeAdapterOptions{
+		CaptureDeltas: true,
+	})
+
+	input := sessionrt.AgentInput{
+		SessionID: "sess-stream",
+		ActorID:   "agent:test",
+		History: []sessionrt.Event{
+			{
+				Type:    sessionrt.EventMessage,
+				Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "run"},
+			},
+		},
+	}
+
+	events := make([]sessionrt.Event, 0, 4)
+	if err := adapter.StepStream(context.Background(), input, func(event sessionrt.Event) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("StepStream() error: %v", err)
+	}
+
+	if !hasEventType(events, sessionrt.EventAgentDelta) {
+		t.Fatalf("expected streamed agent delta event")
+	}
+	if !hasEventType(events, sessionrt.EventMessage) {
+		t.Fatalf("expected streamed final message event")
+	}
+}
+
 func hasEventType(events []sessionrt.Event, target sessionrt.EventType) bool {
 	for _, event := range events {
 		if event.Type == target {

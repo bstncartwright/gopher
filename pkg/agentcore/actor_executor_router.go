@@ -17,6 +17,7 @@ type ActorExecutorRouter struct {
 }
 
 var _ sessionrt.AgentExecutor = (*ActorExecutorRouter)(nil)
+var _ sessionrt.StreamingAgentExecutor = (*ActorExecutorRouter)(nil)
 
 func NewActorExecutorRouter(defaultActor sessionrt.ActorID, executors map[sessionrt.ActorID]sessionrt.AgentExecutor) (*ActorExecutorRouter, error) {
 	if len(executors) == 0 {
@@ -68,26 +69,38 @@ func NewActorExecutorRouter(defaultActor sessionrt.ActorID, executors map[sessio
 }
 
 func (r *ActorExecutorRouter) Step(ctx context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
-	actorID := normalizeActorID(input.ActorID)
-	if actorID == "" {
-		actorID = r.defaultActor
+	executor, resolvedActor, err := r.resolveExecutor(input.ActorID)
+	if err != nil {
+		return sessionrt.AgentOutput{}, err
 	}
-	if actorID == "" {
-		return sessionrt.AgentOutput{}, fmt.Errorf("actor id is required")
-	}
-
-	resolvedActor := actorID
-	if canonical, ok := r.aliases[actorID]; ok {
-		resolvedActor = canonical
-	}
-
-	executor, ok := r.executors[resolvedActor]
-	if !ok {
-		return sessionrt.AgentOutput{}, fmt.Errorf("unknown actor %q (known: %s)", actorID, strings.Join(r.KnownActors(), ", "))
-	}
-
 	input.ActorID = resolvedActor
 	return executor.Step(ctx, input)
+}
+
+func (r *ActorExecutorRouter) StepStream(ctx context.Context, input sessionrt.AgentInput, emit sessionrt.AgentEventEmitter) error {
+	executor, resolvedActor, err := r.resolveExecutor(input.ActorID)
+	if err != nil {
+		return err
+	}
+	input.ActorID = resolvedActor
+
+	if streaming, ok := executor.(sessionrt.StreamingAgentExecutor); ok {
+		return streaming.StepStream(ctx, input, emit)
+	}
+
+	output, err := executor.Step(ctx, input)
+	if err != nil {
+		return err
+	}
+	if emit == nil {
+		return nil
+	}
+	for _, event := range output.Events {
+		if err := emit(event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *ActorExecutorRouter) KnownActors() []string {
@@ -117,4 +130,25 @@ func alternateActorID(actorID sessionrt.ActorID) sessionrt.ActorID {
 		return sessionrt.ActorID(trimmed)
 	}
 	return sessionrt.ActorID("agent:" + value)
+}
+
+func (r *ActorExecutorRouter) resolveExecutor(actorID sessionrt.ActorID) (sessionrt.AgentExecutor, sessionrt.ActorID, error) {
+	normalizedActorID := normalizeActorID(actorID)
+	if normalizedActorID == "" {
+		normalizedActorID = r.defaultActor
+	}
+	if normalizedActorID == "" {
+		return nil, "", fmt.Errorf("actor id is required")
+	}
+
+	resolvedActor := normalizedActorID
+	if canonical, ok := r.aliases[normalizedActorID]; ok {
+		resolvedActor = canonical
+	}
+
+	executor, ok := r.executors[resolvedActor]
+	if !ok {
+		return nil, "", fmt.Errorf("unknown actor %q (known: %s)", normalizedActorID, strings.Join(r.KnownActors(), ", "))
+	}
+	return executor, resolvedActor, nil
 }

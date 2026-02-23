@@ -50,6 +50,7 @@ type MatrixConfig struct {
 	ListenAddr        string
 	BotUserID         string
 	TraceEnabled      bool
+	ProgressUpdates   bool
 	RichTextEnabled   bool
 	PresenceEnabled   bool
 	PresenceInterval  time.Duration
@@ -91,6 +92,7 @@ type GatewayOverrides struct {
 	MatrixListenAddr        *string
 	MatrixBotUserID         *string
 	MatrixTraceEnabled      *bool
+	MatrixProgressUpdates   *bool
 	MatrixRichTextEnabled   *bool
 	MatrixPresenceEnabled   *bool
 	MatrixPresenceInterval  *time.Duration
@@ -156,6 +158,7 @@ type rawMatrixConfig struct {
 	ListenAddr        *string `toml:"listen_addr"`
 	BotUserID         *string `toml:"bot_user_id"`
 	TraceEnabled      *bool   `toml:"trace_enabled"`
+	ProgressUpdates   *bool   `toml:"progress_updates_enabled"`
 	RichTextEnabled   *bool   `toml:"rich_text_enabled"`
 	PresenceEnabled   *bool   `toml:"presence_enabled"`
 	PresenceInterval  *string `toml:"presence_interval"`
@@ -280,6 +283,7 @@ hs_token = "replace-hs-token"
 listen_addr = "127.0.0.1:29328"
 bot_user_id = "@gopher:localhost"
 trace_enabled = true
+progress_updates_enabled = true
 rich_text_enabled = true
 presence_enabled = true
 presence_interval = "60s"
@@ -349,6 +353,7 @@ func defaultGatewayConfig() GatewayConfig {
 			ListenAddr:        "127.0.0.1:29328",
 			BotUserID:         "",
 			TraceEnabled:      true,
+			ProgressUpdates:   true,
 			RichTextEnabled:   true,
 			PresenceEnabled:   true,
 			PresenceInterval:  60 * time.Second,
@@ -498,6 +503,9 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 		}
 		if gateway.Matrix.TraceEnabled != nil {
 			cfg.Matrix.TraceEnabled = *gateway.Matrix.TraceEnabled
+		}
+		if gateway.Matrix.ProgressUpdates != nil {
+			cfg.Matrix.ProgressUpdates = *gateway.Matrix.ProgressUpdates
 		}
 		if gateway.Matrix.RichTextEnabled != nil {
 			cfg.Matrix.RichTextEnabled = *gateway.Matrix.RichTextEnabled
@@ -651,6 +659,13 @@ func applyGatewayEnv(cfg *GatewayConfig, env map[string]string) error {
 		}
 		cfg.Matrix.TraceEnabled = enabled
 	}
+	if value, ok := env["GOPHER_GATEWAY_MATRIX_PROGRESS_UPDATES_ENABLED"]; ok {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_PROGRESS_UPDATES_ENABLED: %w", err)
+		}
+		cfg.Matrix.ProgressUpdates = enabled
+	}
 	if value, ok := env["GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED"]; ok {
 		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
@@ -773,6 +788,9 @@ func applyGatewayOverrides(cfg *GatewayConfig, overrides GatewayOverrides) error
 	}
 	if overrides.MatrixTraceEnabled != nil {
 		cfg.Matrix.TraceEnabled = *overrides.MatrixTraceEnabled
+	}
+	if overrides.MatrixProgressUpdates != nil {
+		cfg.Matrix.ProgressUpdates = *overrides.MatrixProgressUpdates
 	}
 	if overrides.MatrixRichTextEnabled != nil {
 		cfg.Matrix.RichTextEnabled = *overrides.MatrixRichTextEnabled
@@ -970,6 +988,7 @@ func hasGatewayOverrides(overrides GatewayOverrides) bool {
 		overrides.MatrixListenAddr != nil ||
 		overrides.MatrixBotUserID != nil ||
 		overrides.MatrixTraceEnabled != nil ||
+		overrides.MatrixProgressUpdates != nil ||
 		overrides.MatrixRichTextEnabled != nil ||
 		overrides.MatrixPresenceEnabled != nil ||
 		overrides.MatrixPresenceInterval != nil ||

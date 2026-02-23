@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
-	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -177,6 +177,7 @@ func startMatrixDMBridgeWithRuntime(
 		Bindings:         bindingStore,
 		TracePublisher:   tracePublisher,
 		TraceProvisioner: traceProvisioner,
+		ProgressUpdates:  cfg.Matrix.ProgressUpdates,
 	})
 	if err != nil {
 		slog.Error("matrix_gateway: failed to create dm pipeline", "error", err)

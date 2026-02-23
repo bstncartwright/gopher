@@ -81,6 +81,7 @@ func TestParseGatewayRunFlagsMatrixOverrides(t *testing.T) {
 		"--matrix-hs-token", "hs-token",
 		"--matrix-listen-addr", "127.0.0.1:29328",
 		"--matrix-bot-user-id", "@gopher:local",
+		"--matrix-progress-updates-enabled", "true",
 		"--matrix-rich-text-enabled", "false",
 		"--matrix-presence-enabled", "true",
 		"--matrix-presence-interval", "45s",
@@ -100,6 +101,9 @@ func TestParseGatewayRunFlagsMatrixOverrides(t *testing.T) {
 	}
 	if inputs.Overrides.MatrixHSToken == nil || *inputs.Overrides.MatrixHSToken != "hs-token" {
 		t.Fatalf("matrix hs token override missing")
+	}
+	if inputs.Overrides.MatrixProgressUpdates == nil || !*inputs.Overrides.MatrixProgressUpdates {
+		t.Fatalf("matrix progress updates override missing or incorrect")
 	}
 	if inputs.Overrides.MatrixRichTextEnabled == nil || *inputs.Overrides.MatrixRichTextEnabled {
 		t.Fatalf("matrix rich text override missing or incorrect")

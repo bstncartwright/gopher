@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -34,6 +35,8 @@ type sessionRuntime struct {
 
 	nextSeq uint64
 }
+
+var errStepStreamEmit = errors.New("step stream emit failed")
 
 func newSessionRuntime(session *Session) *sessionRuntime {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,55 +171,63 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 			"actor_id", actorID,
 			"history_count", len(history),
 		)
-		output, err := m.executor.Step(rt.ctx, AgentInput{
+		input := AgentInput{
 			SessionID: rt.sessionID,
 			ActorID:   actorID,
 			History:   history,
-		})
-		if err != nil {
-			slog.Error("session_runtime: agent step failed",
-				"session_id", rt.sessionID,
-				"actor_id", actorID,
-				"error", err,
-			)
-			return m.recordAgentStepError(rt, actorID, err), false
+		}
+		producedCount := 0
+		appendErr := error(nil)
+		appendProduced := func(produced Event) error {
+			if err := m.appendProducedEvent(req.ctx, rt, actorID, produced); err != nil {
+				appendErr = err
+				return errStepStreamEmit
+			}
+			producedCount++
+			return nil
+		}
+
+		if streamingExecutor, ok := m.executor.(StreamingAgentExecutor); ok {
+			err = streamingExecutor.StepStream(rt.ctx, input, appendProduced)
+			if appendErr != nil {
+				return m.failSession(rt, appendErr), true
+			}
+			if err != nil {
+				if errors.Is(err, errStepStreamEmit) {
+					if appendErr != nil {
+						return m.failSession(rt, appendErr), true
+					}
+					return m.failSession(rt, err), true
+				}
+				slog.Error("session_runtime: agent step failed",
+					"session_id", rt.sessionID,
+					"actor_id", actorID,
+					"error", err,
+				)
+				return m.recordAgentStepError(rt, actorID, err), false
+			}
+		} else {
+			output, stepErr := m.executor.Step(rt.ctx, input)
+			if stepErr != nil {
+				slog.Error("session_runtime: agent step failed",
+					"session_id", rt.sessionID,
+					"actor_id", actorID,
+					"error", stepErr,
+				)
+				return m.recordAgentStepError(rt, actorID, stepErr), false
+			}
+			for _, produced := range output.Events {
+				if err := appendProduced(produced); err != nil {
+					return m.failSession(rt, appendErr), true
+				}
+			}
 		}
 
 		slog.Info("session_runtime: agent step complete",
 			"session_id", rt.sessionID,
 			"actor_id", actorID,
-			"output_events_count", len(output.Events),
+			"output_events_count", producedCount,
 		)
-
-		for _, produced := range output.Events {
-			if produced.SessionID != "" && produced.SessionID != rt.sessionID {
-				slog.Error("session_runtime: executor returned wrong session",
-					"session_id", rt.sessionID,
-					"produced_session_id", produced.SessionID,
-				)
-				return m.failSession(rt, fmt.Errorf("%w: executor returned session %q for runtime %q", ErrInvalidEvent, produced.SessionID, rt.sessionID)), true
-			}
-			if strings.TrimSpace(string(produced.From)) == "" {
-				produced.From = actorID
-			}
-			produced.SessionID = rt.sessionID
-
-			canonical, err := m.canonicalizeEvent(rt, produced)
-			if err != nil {
-				slog.Error("session_runtime: failed to canonicalize agent event",
-					"session_id", rt.sessionID,
-					"error", err,
-				)
-				return m.failSession(rt, fmt.Errorf("canonicalize agent event: %w", err)), true
-			}
-			if err := m.appendPersistedEvent(req.ctx, rt, canonical); err != nil {
-				slog.Error("session_runtime: failed to append agent event",
-					"session_id", rt.sessionID,
-					"error", err,
-				)
-				return m.failSession(rt, fmt.Errorf("append agent event: %w", err)), true
-			}
-		}
 	}
 
 	return nil, false
@@ -337,6 +348,25 @@ func (m *Manager) shouldTriggerAgent(event Event) bool {
 		return false
 	}
 	return msg.Role == RoleUser
+}
+
+func (m *Manager) appendProducedEvent(ctx context.Context, rt *sessionRuntime, actorID ActorID, produced Event) error {
+	if produced.SessionID != "" && produced.SessionID != rt.sessionID {
+		return fmt.Errorf("%w: executor returned session %q for runtime %q", ErrInvalidEvent, produced.SessionID, rt.sessionID)
+	}
+	if strings.TrimSpace(string(produced.From)) == "" {
+		produced.From = actorID
+	}
+	produced.SessionID = rt.sessionID
+
+	canonical, err := m.canonicalizeEvent(rt, produced)
+	if err != nil {
+		return fmt.Errorf("canonicalize agent event: %w", err)
+	}
+	if err := m.appendPersistedEvent(ctx, rt, canonical); err != nil {
+		return fmt.Errorf("append agent event: %w", err)
+	}
+	return nil
 }
 
 func resolveSelectedAgentActors(session *Session, selected []ActorID) []ActorID {

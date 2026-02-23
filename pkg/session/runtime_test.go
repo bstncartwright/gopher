@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type recordingExecutor struct {
@@ -20,6 +21,60 @@ func (r *recordingExecutor) Step(_ context.Context, input AgentInput) (AgentOutp
 		return AgentOutput{}, r.err
 	}
 	return r.output, nil
+}
+
+type streamingExecutor struct {
+	started    chan struct{}
+	continueCh chan struct{}
+}
+
+func (e *streamingExecutor) Step(_ context.Context, input AgentInput) (AgentOutput, error) {
+	return AgentOutput{
+		Events: []Event{
+			{
+				From: input.ActorID,
+				Type: EventMessage,
+				Payload: Message{
+					Role:    RoleAgent,
+					Content: "streamed",
+				},
+			},
+		},
+	}, nil
+}
+
+func (e *streamingExecutor) StepStream(_ context.Context, input AgentInput, emit AgentEventEmitter) error {
+	if emit != nil {
+		if err := emit(Event{
+			From: input.ActorID,
+			Type: EventToolCall,
+			Payload: map[string]any{
+				"name": "read",
+				"args": map[string]any{"path": "README.md"},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	if e.started != nil {
+		close(e.started)
+	}
+	if e.continueCh != nil {
+		<-e.continueCh
+	}
+	if emit != nil {
+		if err := emit(Event{
+			From: input.ActorID,
+			Type: EventMessage,
+			Payload: Message{
+				Role:    RoleAgent,
+				Content: "streamed",
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func TestRuntimeUserMessageTriggersDeterministicAgentStep(t *testing.T) {
@@ -222,5 +277,99 @@ func TestRuntimeUserMessageCanTriggerMultipleAgents(t *testing.T) {
 	}
 	if events[2].From != "agent:a" || events[3].From != "agent:z" {
 		t.Fatalf("event sources = [%q %q], want [agent:a agent:z]", events[2].From, events[3].From)
+	}
+}
+
+func TestRuntimeStreamingExecutorAppendsEventsMidStep(t *testing.T) {
+	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
+	exec := &streamingExecutor{
+		started:    make(chan struct{}),
+		continueCh: make(chan struct{}),
+	}
+	manager, err := NewManager(ManagerOptions{
+		Store:    store,
+		Executor: exec,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), CreateSessionOptions{
+		Participants: []Participant{
+			{ID: "agent:a", Type: ActorAgent},
+			{ID: "user:me", Type: ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	streamCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := manager.Subscribe(streamCtx, created.ID)
+	if err != nil {
+		t.Fatalf("Subscribe() error: %v", err)
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- manager.SendEvent(context.Background(), Event{
+			SessionID: created.ID,
+			From:      "user:me",
+			Type:      EventMessage,
+			Payload:   Message{Role: RoleUser, Content: "go"},
+		})
+	}()
+
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for streaming step to start")
+	}
+
+	seenToolCall := false
+	deadline := time.After(2 * time.Second)
+	for !seenToolCall {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				t.Fatalf("stream closed before tool_call event")
+			}
+			if event.Type == EventToolCall {
+				seenToolCall = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for tool_call stream event")
+		}
+	}
+
+	select {
+	case err := <-sendDone:
+		t.Fatalf("SendEvent() finished early: %v", err)
+	default:
+	}
+
+	close(exec.continueCh)
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("SendEvent() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for SendEvent() completion")
+	}
+
+	events, err := store.List(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events (created, user, tool_call, agent message), got %d", len(events))
+	}
+	if events[2].Type != EventToolCall {
+		t.Fatalf("event 2 type = %q, want tool_call", events[2].Type)
+	}
+	if events[3].Type != EventMessage {
+		t.Fatalf("event 3 type = %q, want message", events[3].Type)
 	}
 }

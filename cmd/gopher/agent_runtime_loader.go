@@ -128,7 +128,11 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 	}
 
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no agent workspace found: expected %s/<agent_id>", agentsRoot)
+		defaultWorkspace := filepath.Join(agentsRoot, "default")
+		if err := ensureAgentWorkspace("default", defaultWorkspace); err != nil {
+			return nil, fmt.Errorf("create default agent workspace %s: %w", defaultWorkspace, err)
+		}
+		addCandidate(defaultWorkspace)
 	}
 	sort.Strings(out)
 	return out, nil

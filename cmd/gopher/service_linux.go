@@ -172,39 +172,40 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 	natsPath, natsVersion, _ := readBinaryDetails("nats-server")
 
 	fmt.Fprintln(r.stdout, "gopher status")
+	fmt.Fprintln(r.stdout, "=============")
 	fmt.Fprintln(r.stdout, "")
-	fmt.Fprintf(r.stdout, "%s service: %s\n", describeManagedServiceUnit(unit), formatUnitStatus(selected))
-	fmt.Fprintf(r.stdout, "nats service:    %s\n", formatUnitStatus(nats))
+	printStatusSectionHeader(r.stdout, "service health")
+	printStatusStateLine(r.stdout, fmt.Sprintf("%s service", describeManagedServiceUnit(unit)), formatUnitStatus(selected))
+	printStatusStateLine(r.stdout, "nats service", formatUnitStatus(nats))
 	if unit == gopherGatewayUnitName {
 		updater, _ := readUnitStatus(ctx, "gopher-gateway-update.timer")
-		fmt.Fprintf(r.stdout, "update timer:    %s\n", formatUnitStatus(updater))
+		printStatusStateLine(r.stdout, "update timer", formatUnitStatus(updater))
 	}
 	fmt.Fprintln(r.stdout, "")
-	fmt.Fprintf(r.stdout, "gopher binary:   %s\n", valueOrUnknown(gopherPath))
-	fmt.Fprintf(r.stdout, "gopher version:  %s\n", valueOrUnknown(gopherVersion))
-	fmt.Fprintf(r.stdout, "gopher sha256:   %s\n", valueOrUnknown(gopherSHA))
-	fmt.Fprintf(r.stdout, "nats binary:     %s\n", valueOrUnknown(natsPath))
-	fmt.Fprintf(r.stdout, "nats version:    %s\n", valueOrUnknown(natsVersion))
+	printStatusSectionHeader(r.stdout, "binary details")
+	printStatusValueLine(r.stdout, "gopher binary", valueOrUnknown(gopherPath))
+	printStatusValueLine(r.stdout, "gopher version", valueOrUnknown(gopherVersion))
+	printStatusValueLine(r.stdout, "gopher sha256", valueOrUnknown(gopherSHA))
+	printStatusValueLine(r.stdout, "nats binary", valueOrUnknown(natsPath))
+	printStatusValueLine(r.stdout, "nats version", valueOrUnknown(natsVersion))
 
 	if unit == gopherGatewayUnitName {
 		matrixLine, matrixWarning := readMatrixStatusLine(ctx, gatewayCfg, gatewayCfgErr)
-		if matrixLine != "" || matrixWarning != "" {
+		nodeLines, nodeWarning := readGatewayNodeStatusLines(ctx, gatewayCfg, gatewayCfgErr)
+		if matrixLine != "" || matrixWarning != "" || len(nodeLines) > 0 || nodeWarning != "" {
 			fmt.Fprintln(r.stdout, "")
+			printStatusSectionHeader(r.stdout, "gateway runtime")
 			if matrixLine != "" {
-				fmt.Fprintln(r.stdout, matrixLine)
+				printStatusExternalLine(r.stdout, matrixLine, "INFO")
 			}
 			if matrixWarning != "" {
-				fmt.Fprintln(r.stdout, matrixWarning)
+				printStatusExternalLine(r.stdout, matrixWarning, "WARN")
 			}
-		}
-		nodeLines, nodeWarning := readGatewayNodeStatusLines(ctx, gatewayCfg, gatewayCfgErr)
-		if len(nodeLines) > 0 || nodeWarning != "" {
-			fmt.Fprintln(r.stdout, "")
 			for _, line := range nodeLines {
-				fmt.Fprintln(r.stdout, line)
+				printStatusExternalLine(r.stdout, line, "INFO")
 			}
 			if nodeWarning != "" {
-				fmt.Fprintln(r.stdout, nodeWarning)
+				printStatusExternalLine(r.stdout, nodeWarning, "WARN")
 			}
 		}
 	}
@@ -216,6 +217,62 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 		return fmt.Errorf("%s is %s", unit, valueOrUnknown(selected.ActiveState))
 	}
 	return nil
+}
+
+func printStatusSectionHeader(out io.Writer, title string) {
+	fmt.Fprintln(out, title)
+	fmt.Fprintln(out, strings.Repeat("-", len(title)))
+}
+
+func printStatusStateLine(out io.Writer, label string, detail string) {
+	printStatusRow(out, label, statusBadge(detail), detail)
+}
+
+func printStatusValueLine(out io.Writer, label string, value string) {
+	printStatusRow(out, label, "INFO", value)
+}
+
+func printStatusExternalLine(out io.Writer, raw string, fallbackBadge string) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return
+	}
+	if strings.HasPrefix(trimmed, "- ") {
+		printStatusRow(out, "node", fallbackBadge, strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+		return
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) == 2 {
+		label := strings.TrimSpace(parts[0])
+		detail := strings.TrimSpace(parts[1])
+		printStatusRow(out, label, statusBadgeWithFallback(detail, fallbackBadge), detail)
+		return
+	}
+	printStatusRow(out, "info", statusBadgeWithFallback(trimmed, fallbackBadge), trimmed)
+}
+
+func printStatusRow(out io.Writer, label string, badge string, detail string) {
+	fmt.Fprintf(out, "  %-16s [%-4s] %s\n", valueOrUnknown(label), valueOrUnknown(badge), valueOrUnknown(detail))
+}
+
+func statusBadge(detail string) string {
+	return statusBadgeWithFallback(detail, "INFO")
+}
+
+func statusBadgeWithFallback(detail string, fallback string) string {
+	text := strings.ToLower(strings.TrimSpace(detail))
+	switch {
+	case text == "":
+		return fallback
+	case strings.Contains(text, "not installed"), strings.Contains(text, "failed"), strings.Contains(text, "error"):
+		return "FAIL"
+	case strings.Contains(text, "degraded"), strings.Contains(text, "unknown"), strings.Contains(text, "warning"), strings.Contains(text, "inactive"):
+		return "WARN"
+	case strings.Contains(text, "healthy"), strings.Contains(text, "active"), strings.Contains(text, "enabled"):
+		return "OK"
+	default:
+		return fallback
+	}
 }
 
 type matrixRuntimeMetrics struct {

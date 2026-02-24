@@ -3,6 +3,7 @@ module github.com/bstncartwright/gopher
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/nats-io/nats.go v1.48.0
 	github.com/pelletier/go-toml/v2 v2.2.4
@@ -15,7 +16,6 @@ require (
 
 require (
 	github.com/aymerick/douceur v0.2.0 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect

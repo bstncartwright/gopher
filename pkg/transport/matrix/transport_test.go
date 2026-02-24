@@ -805,6 +805,82 @@ func TestSendMessageNowIncludesFormattedBodyWhenRichTextEnabled(t *testing.T) {
 	}
 }
 
+func TestSendMessageNowIncludesThreadRelation(t *testing.T) {
+	var payload outboundMessagePayload
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error: %v", err)
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$ok"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	if err := instance.sendMessageNow(context.Background(), transport.OutboundMessage{
+		ConversationID:    "!dm:local",
+		Text:              "threaded",
+		ThreadRootEventID: "$root",
+	}); err != nil {
+		t.Fatalf("sendMessageNow() error: %v", err)
+	}
+
+	if payload.RelatesTo == nil {
+		t.Fatalf("m.relates_to is nil")
+	}
+	if payload.RelatesTo.RelType != "m.thread" {
+		t.Fatalf("rel_type = %q, want m.thread", payload.RelatesTo.RelType)
+	}
+	if payload.RelatesTo.EventID != "$root" {
+		t.Fatalf("event_id = %q, want $root", payload.RelatesTo.EventID)
+	}
+	if !payload.RelatesTo.IsFallingBack {
+		t.Fatalf("is_falling_back = false, want true")
+	}
+	if payload.RelatesTo.InReplyTo == nil || payload.RelatesTo.InReplyTo.EventID != "$root" {
+		t.Fatalf("in_reply_to event_id mismatch: %#v", payload.RelatesTo.InReplyTo)
+	}
+}
+
+func TestSendMessageNowWithResultReturnsEventID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$event-123"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	result, err := instance.sendMessageNowWithResult(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "hello",
+	})
+	if err != nil {
+		t.Fatalf("sendMessageNowWithResult() error: %v", err)
+	}
+	if result.EventID != "$event-123" {
+		t.Fatalf("event_id = %q, want $event-123", result.EventID)
+	}
+}
+
 func TestSendMessageNowOmitsFormattedBodyWhenRichTextDisabled(t *testing.T) {
 	var payload outboundMessagePayload
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

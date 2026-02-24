@@ -182,10 +182,26 @@ const (
 )
 
 type outboundMessagePayload struct {
-	MsgType       string `json:"msgtype"`
-	Body          string `json:"body"`
-	Format        string `json:"format,omitempty"`
-	FormattedBody string `json:"formatted_body,omitempty"`
+	MsgType       string           `json:"msgtype"`
+	Body          string           `json:"body"`
+	Format        string           `json:"format,omitempty"`
+	FormattedBody string           `json:"formatted_body,omitempty"`
+	RelatesTo     *matrixRelatesTo `json:"m.relates_to,omitempty"`
+}
+
+type matrixRelatesTo struct {
+	RelType       string           `json:"rel_type,omitempty"`
+	EventID       string           `json:"event_id,omitempty"`
+	IsFallingBack bool             `json:"is_falling_back,omitempty"`
+	InReplyTo     *matrixInReplyTo `json:"m.in_reply_to,omitempty"`
+}
+
+type matrixInReplyTo struct {
+	EventID string `json:"event_id"`
+}
+
+type matrixSendResponse struct {
+	EventID string `json:"event_id"`
 }
 
 var _ transport.Transport = (*Transport)(nil)
@@ -405,6 +421,30 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 	}
 }
 
+func (t *Transport) SendMessageWithResult(ctx context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error) {
+	roomID := strings.TrimSpace(message.ConversationID)
+	if roomID == "" {
+		return transport.OutboundSendResult{}, fmt.Errorf("matrix outbound conversation id is required")
+	}
+	bodyText := strings.TrimSpace(message.Text)
+	if bodyText == "" {
+		return transport.OutboundSendResult{}, nil
+	}
+	t.mu.RLock()
+	started := t.started
+	t.mu.RUnlock()
+	if !started {
+		return transport.OutboundSendResult{}, fmt.Errorf("matrix transport is not running")
+	}
+	outbound := transport.OutboundMessage{
+		ConversationID:    roomID,
+		SenderID:          strings.TrimSpace(message.SenderID),
+		Text:              bodyText,
+		ThreadRootEventID: strings.TrimSpace(message.ThreadRootEventID),
+	}
+	return t.sendMessageNowWithResult(ctx, outbound)
+}
+
 func (t *Transport) SendTyping(ctx context.Context, conversationID string, typing bool) error {
 	return t.SendTypingAs(ctx, conversationID, "", typing)
 }
@@ -454,6 +494,11 @@ func (t *Transport) SendTypingAs(ctx context.Context, conversationID, senderID s
 }
 
 func (t *Transport) sendMessageNow(ctx context.Context, message transport.OutboundMessage) error {
+	_, err := t.sendMessageNowWithResult(ctx, message)
+	return err
+}
+
+func (t *Transport) sendMessageNowWithResult(ctx context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error) {
 	txnID := fmt.Sprintf("gopher-%d", time.Now().UTC().UnixNano())
 	senderID := strings.TrimSpace(message.SenderID)
 	if senderID == "" {
@@ -472,6 +517,16 @@ func (t *Transport) sendMessageNow(ctx context.Context, message transport.Outbou
 		MsgType: "m.text",
 		Body:    message.Text,
 	}
+	if threadRoot := strings.TrimSpace(message.ThreadRootEventID); threadRoot != "" {
+		payload.RelatesTo = &matrixRelatesTo{
+			RelType:       "m.thread",
+			EventID:       threadRoot,
+			IsFallingBack: true,
+			InReplyTo: &matrixInReplyTo{
+				EventID: threadRoot,
+			},
+		}
+	}
 	if t.richTextEnabled {
 		if formattedBody, ok := t.formatOutboundHTML(message.Text); ok {
 			payload.Format = matrixMessageHTMLFormat
@@ -480,23 +535,30 @@ func (t *Transport) sendMessageNow(ctx context.Context, message transport.Outbou
 	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal matrix outbound payload: %w", err)
+		return transport.OutboundSendResult{}, fmt.Errorf("marshal matrix outbound payload: %w", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(blob))
 	if err != nil {
-		return fmt.Errorf("build matrix outbound request: %w", err)
+		return transport.OutboundSendResult{}, fmt.Errorf("build matrix outbound request: %w", err)
 	}
 	request.Header.Set("content-type", "application/json")
 	response, err := t.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("send matrix outbound message: %w", err)
+		return transport.OutboundSendResult{}, fmt.Errorf("send matrix outbound message: %w", err)
 	}
 	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, _ := io.ReadAll(response.Body)
-		return fmt.Errorf("matrix outbound status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+		return transport.OutboundSendResult{}, fmt.Errorf("matrix outbound status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
 	}
-	return nil
+	result := transport.OutboundSendResult{}
+	if len(body) > 0 {
+		var parsed matrixSendResponse
+		if err := json.Unmarshal(body, &parsed); err == nil {
+			result.EventID = strings.TrimSpace(parsed.EventID)
+		}
+	}
+	return result, nil
 }
 
 func (t *Transport) formatOutboundHTML(body string) (string, bool) {

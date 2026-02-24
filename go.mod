@@ -1,6 +1,6 @@
 module github.com/bstncartwright/gopher
 
-go 1.24.5
+go 1.26.0
 
 require (
 	github.com/microcosm-cc/bluemonday v1.0.27

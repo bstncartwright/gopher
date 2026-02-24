@@ -1115,11 +1115,13 @@ func (p *DMPipeline) maybeSendProgressUpdate(conversationID string, event sessio
 		text = formatProgressDelta(delta)
 	case sessionrt.EventToolCall:
 		p.markProgressAnnounced(conversationID)
-		name := strings.TrimSpace(tracePayloadString(tracePayloadMap(event.Payload), "name"))
+		payload := tracePayloadMap(event.Payload)
+		name := strings.TrimSpace(tracePayloadString(payload, "name"))
 		if name == "" {
 			name = "tool"
 		}
-		text = fmt.Sprintf("running `%s`.", name)
+		args := tracePayloadMap(tracePayloadAny(payload, "args"))
+		text = fmt.Sprintf("running `%s`%s.", name, progressToolDetail(name, args, nil))
 	case sessionrt.EventToolResult:
 		p.markProgressAnnounced(conversationID)
 		payload := tracePayloadMap(event.Payload)
@@ -1131,7 +1133,8 @@ func (p *DMPipeline) maybeSendProgressUpdate(conversationID string, event sessio
 		if status == "" {
 			status = "done"
 		}
-		text = fmt.Sprintf("`%s` completed (%s).", name, status)
+		result := tracePayloadMap(tracePayloadAny(payload, "result"))
+		text = fmt.Sprintf("`%s` completed (%s)%s.", name, status, progressToolDetail(name, nil, result))
 	default:
 		return
 	}
@@ -1149,6 +1152,53 @@ func (p *DMPipeline) maybeSendProgressUpdate(conversationID string, event sessio
 			"error", err,
 		)
 	}
+}
+
+func progressToolDetail(name string, args map[string]any, result map[string]any) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "exec":
+		command := strings.TrimSpace(tracePayloadString(args, "command"))
+		if command == "" {
+			command = strings.TrimSpace(tracePayloadString(result, "command"))
+		}
+		command = formatProgressInlineValue(command, 120)
+		if command == "" {
+			return ""
+		}
+		return fmt.Sprintf(" (command `%s`)", command)
+	case "write":
+		path := strings.TrimSpace(tracePayloadString(args, "path"))
+		if path == "" {
+			path = strings.TrimSpace(tracePayloadString(result, "path"))
+		}
+		path = formatProgressInlineValue(path, 140)
+		if path == "" {
+			return ""
+		}
+		return fmt.Sprintf(" (file `%s`)", path)
+	default:
+		return ""
+	}
+}
+
+func formatProgressInlineValue(raw string, maxChars int) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.Join(strings.Fields(raw), " ")
+	raw = strings.ReplaceAll(raw, "`", "'")
+	if maxChars <= 0 {
+		maxChars = 80
+	}
+	runes := []rune(raw)
+	if len(runes) <= maxChars {
+		return raw
+	}
+	if maxChars <= 3 {
+		return string(runes[:maxChars])
+	}
+	return string(runes[:maxChars-3]) + "..."
 }
 
 func (p *DMPipeline) resetProgressState(conversationID string) {

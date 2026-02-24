@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -878,6 +880,183 @@ func TestSendMessageNowWithResultReturnsEventID(t *testing.T) {
 	}
 	if result.EventID != "$event-123" {
 		t.Fatalf("event_id = %q, want $event-123", result.EventID)
+	}
+}
+
+func TestSendMessageNowWithResultUploadsAndSendsAttachments(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "report.md")
+	reportData := []byte("# report\n")
+	if err := os.WriteFile(reportPath, reportData, 0o644); err != nil {
+		t.Fatalf("os.WriteFile() error: %v", err)
+	}
+
+	uploads := 0
+	sends := []outboundMessagePayload{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.URL.Path == "/_matrix/media/v3/upload":
+			uploads++
+			if request.Method != http.MethodPost {
+				t.Fatalf("upload method = %s, want POST", request.Method)
+			}
+			if request.URL.Query().Get("filename") != "report.md" {
+				t.Fatalf("upload filename = %q, want report.md", request.URL.Query().Get("filename"))
+			}
+			body, _ := io.ReadAll(request.Body)
+			if string(body) != string(reportData) {
+				t.Fatalf("upload body mismatch: %q", string(body))
+			}
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"content_uri":"mxc://local/report"}`))
+		case strings.Contains(request.URL.Path, "/send/m.room.message/"):
+			payload := outboundMessagePayload{}
+			body, _ := io.ReadAll(request.Body)
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v", err)
+			}
+			sends = append(sends, payload)
+			writer.WriteHeader(http.StatusOK)
+			if len(sends) == 1 {
+				_, _ = writer.Write([]byte(`{"event_id":"$text"}`))
+			} else {
+				_, _ = writer.Write([]byte(`{"event_id":"$file"}`))
+			}
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	result, err := instance.sendMessageNowWithResult(context.Background(), transport.OutboundMessage{
+		ConversationID:    "!dm:local",
+		Text:              "done",
+		ThreadRootEventID: "$root",
+		Attachments: []transport.OutboundAttachment{
+			{Path: reportPath},
+		},
+	})
+	if err != nil {
+		t.Fatalf("sendMessageNowWithResult() error: %v", err)
+	}
+	if result.EventID != "$text" {
+		t.Fatalf("event_id = %q, want $text", result.EventID)
+	}
+	if uploads != 1 {
+		t.Fatalf("uploads = %d, want 1", uploads)
+	}
+	if len(sends) != 2 {
+		t.Fatalf("send calls = %d, want 2", len(sends))
+	}
+	if sends[0].MsgType != "m.text" || sends[0].Body != "done" {
+		t.Fatalf("first payload = %#v, want m.text done", sends[0])
+	}
+	if sends[1].MsgType != "m.file" {
+		t.Fatalf("second msgtype = %q, want m.file", sends[1].MsgType)
+	}
+	if sends[1].URL != "mxc://local/report" {
+		t.Fatalf("attachment url = %q, want mxc://local/report", sends[1].URL)
+	}
+	if sends[1].Info == nil || sends[1].Info.Size != int64(len(reportData)) {
+		t.Fatalf("attachment info size = %#v, want %d", sends[1].Info, len(reportData))
+	}
+	if sends[1].RelatesTo == nil || sends[1].RelatesTo.EventID != "$root" {
+		t.Fatalf("attachment thread relation = %#v, want root", sends[1].RelatesTo)
+	}
+}
+
+func TestSendMessageNowWithResultReturnsAttachmentEventIDWhenTextEmpty(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() error: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.URL.Path == "/_matrix/media/v3/upload":
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"content_uri":"mxc://local/note"}`))
+		case strings.Contains(request.URL.Path, "/send/m.room.message/"):
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte(`{"event_id":"$file-only"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	result, err := instance.sendMessageNowWithResult(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Attachments: []transport.OutboundAttachment{
+			{Path: filePath},
+		},
+	})
+	if err != nil {
+		t.Fatalf("sendMessageNowWithResult() error: %v", err)
+	}
+	if result.EventID != "$file-only" {
+		t.Fatalf("event_id = %q, want $file-only", result.EventID)
+	}
+}
+
+func TestSendMessageNowWithResultIgnoresAttachmentFailureWhenTextSent(t *testing.T) {
+	sendCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.Contains(request.URL.Path, "/send/m.room.message/") {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		sendCalls++
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"event_id":"$text"}`))
+	}))
+	defer server.Close()
+
+	instance, err := New(Options{
+		HomeserverURL: server.URL,
+		AppserviceID:  "gopher",
+		ASToken:       "as-token",
+		HSToken:       "hs-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	result, err := instance.sendMessageNowWithResult(context.Background(), transport.OutboundMessage{
+		ConversationID: "!dm:local",
+		Text:           "hello",
+		Attachments: []transport.OutboundAttachment{
+			{Path: "/missing/file.md"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("sendMessageNowWithResult() error: %v", err)
+	}
+	if result.EventID != "$text" {
+		t.Fatalf("event_id = %q, want $text", result.EventID)
+	}
+	if sendCalls != 1 {
+		t.Fatalf("send calls = %d, want 1", sendCalls)
 	}
 }
 

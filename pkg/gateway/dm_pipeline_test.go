@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -283,6 +284,36 @@ func (e *dmWriteTraceExecutor) Step(_ context.Context, input sessionrt.AgentInpu
 	}, nil
 }
 
+type dmWritePathExecutor struct {
+	path string
+}
+
+func (e *dmWritePathExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventToolResult,
+				Payload: map[string]any{
+					"name":   "write",
+					"status": "ok",
+					"result": map[string]any{
+						"path": e.path,
+					},
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: "ack",
+				},
+			},
+		},
+	}, nil
+}
+
 func latestUserContent(history []sessionrt.Event) string {
 	for i := len(history) - 1; i >= 0; i-- {
 		event := history[i]
@@ -542,6 +573,73 @@ func TestDMPipelineDoesNotSendWriteProgressUpdatesToDM(t *testing.T) {
 	}
 	if strings.TrimSpace(messages[0].Text) != "ack" {
 		t.Fatalf("final response = %q, want ack", messages[0].Text)
+	}
+}
+
+func TestDMPipelineIncludesAttachmentsFromToolResultResolver(t *testing.T) {
+	workspace := t.TempDir()
+	reportPath := workspace + "/report.md"
+	if err := os.WriteFile(reportPath, []byte("# report\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() error: %v", err)
+	}
+
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmWritePathExecutor{path: reportPath},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		AttachmentResolver: func(_ string, _ sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment {
+			payload, ok := event.Payload.(map[string]any)
+			if !ok {
+				return nil
+			}
+			result, ok := payload["result"].(map[string]any)
+			if !ok {
+				return nil
+			}
+			pathValue, _ := result["path"].(string)
+			pathValue = strings.TrimSpace(pathValue)
+			if pathValue == "" {
+				return nil
+			}
+			return []transport.OutboundAttachment{{Path: pathValue}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:attachments",
+		SenderID:       "@user:hs",
+		Text:           "write a report",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+	message := fake.lastSent()
+	if strings.TrimSpace(message.Text) != "ack" {
+		t.Fatalf("final response = %q, want ack", message.Text)
+	}
+	if len(message.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(message.Attachments))
+	}
+	if message.Attachments[0].Path != reportPath {
+		t.Fatalf("attachment path = %q, want %q", message.Attachments[0].Path, reportPath)
 	}
 }
 

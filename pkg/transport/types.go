@@ -17,10 +17,17 @@ type OutboundMessage struct {
 	SenderID          string
 	Text              string
 	ThreadRootEventID string
+	Attachments       []OutboundAttachment
 }
 
 type OutboundSendResult struct {
 	EventID string
+}
+
+type OutboundAttachment struct {
+	Path     string
+	Name     string
+	MIMEType string
 }
 
 type InboundHandler func(ctx context.Context, message InboundMessage) error

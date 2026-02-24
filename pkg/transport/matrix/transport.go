@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -184,9 +187,16 @@ const (
 type outboundMessagePayload struct {
 	MsgType       string           `json:"msgtype"`
 	Body          string           `json:"body"`
+	URL           string           `json:"url,omitempty"`
+	Info          *matrixMediaInfo `json:"info,omitempty"`
 	Format        string           `json:"format,omitempty"`
 	FormattedBody string           `json:"formatted_body,omitempty"`
 	RelatesTo     *matrixRelatesTo `json:"m.relates_to,omitempty"`
+}
+
+type matrixMediaInfo struct {
+	MIMEType string `json:"mimetype,omitempty"`
+	Size     int64  `json:"size,omitempty"`
 }
 
 type matrixRelatesTo struct {
@@ -202,6 +212,10 @@ type matrixInReplyTo struct {
 
 type matrixSendResponse struct {
 	EventID string `json:"event_id"`
+}
+
+type matrixUploadResponse struct {
+	ContentURI string `json:"content_uri"`
 }
 
 var _ transport.Transport = (*Transport)(nil)
@@ -389,7 +403,8 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 		return fmt.Errorf("matrix outbound conversation id is required")
 	}
 	bodyText := strings.TrimSpace(message.Text)
-	if bodyText == "" {
+	attachments := cloneOutboundAttachments(message.Attachments)
+	if bodyText == "" && len(attachments) == 0 {
 		return nil
 	}
 	t.mu.RLock()
@@ -403,9 +418,11 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 	item := queuedOutbound{
 		kind: outboundKindMessage,
 		message: transport.OutboundMessage{
-			ConversationID: roomID,
-			SenderID:       strings.TrimSpace(message.SenderID),
-			Text:           bodyText,
+			ConversationID:    roomID,
+			SenderID:          strings.TrimSpace(message.SenderID),
+			Text:              bodyText,
+			ThreadRootEventID: strings.TrimSpace(message.ThreadRootEventID),
+			Attachments:       attachments,
 		},
 	}
 	select {
@@ -427,7 +444,8 @@ func (t *Transport) SendMessageWithResult(ctx context.Context, message transport
 		return transport.OutboundSendResult{}, fmt.Errorf("matrix outbound conversation id is required")
 	}
 	bodyText := strings.TrimSpace(message.Text)
-	if bodyText == "" {
+	attachments := cloneOutboundAttachments(message.Attachments)
+	if bodyText == "" && len(attachments) == 0 {
 		return transport.OutboundSendResult{}, nil
 	}
 	t.mu.RLock()
@@ -441,6 +459,7 @@ func (t *Transport) SendMessageWithResult(ctx context.Context, message transport
 		SenderID:          strings.TrimSpace(message.SenderID),
 		Text:              bodyText,
 		ThreadRootEventID: strings.TrimSpace(message.ThreadRootEventID),
+		Attachments:       attachments,
 	}
 	return t.sendMessageNowWithResult(ctx, outbound)
 }
@@ -499,66 +518,255 @@ func (t *Transport) sendMessageNow(ctx context.Context, message transport.Outbou
 }
 
 func (t *Transport) sendMessageNowWithResult(ctx context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error) {
-	txnID := fmt.Sprintf("gopher-%d", time.Now().UTC().UnixNano())
 	senderID := strings.TrimSpace(message.SenderID)
 	if senderID == "" {
 		senderID = strings.TrimSpace(t.resolveRoomManagedUser(message.ConversationID))
 	}
+	result := transport.OutboundSendResult{}
+
+	threadRoot := strings.TrimSpace(message.ThreadRootEventID)
+	bodyText := strings.TrimSpace(message.Text)
+	if bodyText != "" {
+		payload := outboundMessagePayload{
+			MsgType: "m.text",
+			Body:    bodyText,
+		}
+		withThreadRelation(&payload, threadRoot)
+		if t.richTextEnabled {
+			if formattedBody, ok := t.formatOutboundHTML(bodyText); ok {
+				payload.Format = matrixMessageHTMLFormat
+				payload.FormattedBody = formattedBody
+			}
+		}
+		eventID, err := t.sendPayloadNow(ctx, message.ConversationID, senderID, payload)
+		if err != nil {
+			return transport.OutboundSendResult{}, err
+		}
+		result.EventID = eventID
+	}
+
+	attachments := cloneOutboundAttachments(message.Attachments)
+	if len(attachments) == 0 {
+		return result, nil
+	}
+
+	var (
+		sentAttachment  bool
+		attachmentError error
+	)
+	for _, attachment := range attachments {
+		eventID, err := t.sendAttachmentNow(ctx, message.ConversationID, senderID, threadRoot, attachment)
+		if err != nil {
+			if attachmentError == nil {
+				attachmentError = err
+			}
+			if bodyText != "" {
+				slog.Warn("matrix_transport: outbound attachment skipped",
+					"conversation_id", message.ConversationID,
+					"path", strings.TrimSpace(attachment.Path),
+					"error", err,
+				)
+				continue
+			}
+			return transport.OutboundSendResult{}, err
+		}
+		sentAttachment = true
+		if result.EventID == "" {
+			result.EventID = eventID
+		}
+	}
+	if bodyText == "" && !sentAttachment && attachmentError != nil {
+		return transport.OutboundSendResult{}, attachmentError
+	}
+	return result, nil
+}
+
+func cloneOutboundAttachments(attachments []transport.OutboundAttachment) []transport.OutboundAttachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	out := make([]transport.OutboundAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		path := strings.TrimSpace(attachment.Path)
+		if path == "" {
+			continue
+		}
+		out = append(out, transport.OutboundAttachment{
+			Path:     path,
+			Name:     strings.TrimSpace(attachment.Name),
+			MIMEType: strings.TrimSpace(attachment.MIMEType),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func withThreadRelation(payload *outboundMessagePayload, threadRoot string) {
+	if payload == nil {
+		return
+	}
+	threadRoot = strings.TrimSpace(threadRoot)
+	if threadRoot == "" {
+		return
+	}
+	payload.RelatesTo = &matrixRelatesTo{
+		RelType:       "m.thread",
+		EventID:       threadRoot,
+		IsFallingBack: true,
+		InReplyTo: &matrixInReplyTo{
+			EventID: threadRoot,
+		},
+	}
+}
+
+func (t *Transport) sendPayloadNow(ctx context.Context, roomID, senderID string, payload outboundMessagePayload) (string, error) {
+	txnID := fmt.Sprintf("gopher-%d", time.Now().UTC().UnixNano())
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%s?access_token=%s",
 		t.homeserverURL,
-		url.PathEscape(message.ConversationID),
+		url.PathEscape(roomID),
 		url.PathEscape(txnID),
 		url.QueryEscape(t.asToken),
 	)
 	if senderID != "" {
 		endpoint += "&user_id=" + url.QueryEscape(senderID)
 	}
-	payload := outboundMessagePayload{
-		MsgType: "m.text",
-		Body:    message.Text,
-	}
-	if threadRoot := strings.TrimSpace(message.ThreadRootEventID); threadRoot != "" {
-		payload.RelatesTo = &matrixRelatesTo{
-			RelType:       "m.thread",
-			EventID:       threadRoot,
-			IsFallingBack: true,
-			InReplyTo: &matrixInReplyTo{
-				EventID: threadRoot,
-			},
-		}
-	}
-	if t.richTextEnabled {
-		if formattedBody, ok := t.formatOutboundHTML(message.Text); ok {
-			payload.Format = matrixMessageHTMLFormat
-			payload.FormattedBody = formattedBody
-		}
-	}
 	blob, err := json.Marshal(payload)
 	if err != nil {
-		return transport.OutboundSendResult{}, fmt.Errorf("marshal matrix outbound payload: %w", err)
+		return "", fmt.Errorf("marshal matrix outbound payload: %w", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(blob))
 	if err != nil {
-		return transport.OutboundSendResult{}, fmt.Errorf("build matrix outbound request: %w", err)
+		return "", fmt.Errorf("build matrix outbound request: %w", err)
 	}
 	request.Header.Set("content-type", "application/json")
 	response, err := t.httpClient.Do(request)
 	if err != nil {
-		return transport.OutboundSendResult{}, fmt.Errorf("send matrix outbound message: %w", err)
+		return "", fmt.Errorf("send matrix outbound message: %w", err)
 	}
 	defer response.Body.Close()
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return transport.OutboundSendResult{}, fmt.Errorf("matrix outbound status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("matrix outbound status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
 	}
-	result := transport.OutboundSendResult{}
+	var parsed matrixSendResponse
 	if len(body) > 0 {
-		var parsed matrixSendResponse
 		if err := json.Unmarshal(body, &parsed); err == nil {
-			result.EventID = strings.TrimSpace(parsed.EventID)
+			return strings.TrimSpace(parsed.EventID), nil
 		}
 	}
-	return result, nil
+	return "", nil
+}
+
+func (t *Transport) sendAttachmentNow(ctx context.Context, roomID, senderID, threadRoot string, attachment transport.OutboundAttachment) (string, error) {
+	pathValue := strings.TrimSpace(attachment.Path)
+	if pathValue == "" {
+		return "", fmt.Errorf("matrix attachment path is required")
+	}
+	fileName := strings.TrimSpace(attachment.Name)
+	if fileName == "" {
+		fileName = filepath.Base(pathValue)
+	}
+	if fileName == "." || fileName == string(filepath.Separator) || fileName == "" {
+		fileName = "attachment"
+	}
+
+	fileData, err := os.ReadFile(pathValue)
+	if err != nil {
+		return "", fmt.Errorf("read matrix attachment %s: %w", pathValue, err)
+	}
+	mimeType := strings.TrimSpace(attachment.MIMEType)
+	if mimeType == "" {
+		mimeType = detectAttachmentMIMEType(fileName, fileData)
+	}
+
+	mediaURL, err := t.uploadMediaNow(ctx, senderID, fileName, mimeType, fileData)
+	if err != nil {
+		return "", err
+	}
+	payload := outboundMessagePayload{
+		MsgType: matrixMsgTypeForMIME(mimeType),
+		Body:    fileName,
+		URL:     mediaURL,
+		Info: &matrixMediaInfo{
+			MIMEType: mimeType,
+			Size:     int64(len(fileData)),
+		},
+	}
+	withThreadRelation(&payload, threadRoot)
+	return t.sendPayloadNow(ctx, roomID, senderID, payload)
+}
+
+func (t *Transport) uploadMediaNow(ctx context.Context, senderID, fileName, mimeType string, data []byte) (string, error) {
+	endpoint := fmt.Sprintf("%s/_matrix/media/v3/upload?access_token=%s",
+		t.homeserverURL,
+		url.QueryEscape(t.asToken),
+	)
+	if senderID = strings.TrimSpace(senderID); senderID != "" {
+		endpoint += "&user_id=" + url.QueryEscape(senderID)
+	}
+	if fileName = strings.TrimSpace(fileName); fileName != "" {
+		endpoint += "&filename=" + url.QueryEscape(fileName)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("build matrix media upload request: %w", err)
+	}
+	request.Header.Set("content-type", strings.TrimSpace(mimeType))
+	response, err := t.httpClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("send matrix media upload request: %w", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("matrix media upload status: %s body=%s", response.Status, strings.TrimSpace(string(body)))
+	}
+	var payload matrixUploadResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("decode matrix media upload payload: %w", err)
+	}
+	contentURI := strings.TrimSpace(payload.ContentURI)
+	if contentURI == "" {
+		return "", fmt.Errorf("matrix media upload response missing content_uri")
+	}
+	return contentURI, nil
+}
+
+func detectAttachmentMIMEType(fileName string, data []byte) string {
+	if ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))); ext != "" {
+		if byExt := strings.TrimSpace(mime.TypeByExtension(ext)); byExt != "" {
+			if semi := strings.Index(byExt, ";"); semi >= 0 {
+				byExt = strings.TrimSpace(byExt[:semi])
+			}
+			if byExt != "" {
+				return byExt
+			}
+		}
+	}
+	if len(data) == 0 {
+		return "application/octet-stream"
+	}
+	contentType := strings.TrimSpace(http.DetectContentType(data))
+	if contentType == "" {
+		return "application/octet-stream"
+	}
+	return contentType
+}
+
+func matrixMsgTypeForMIME(mimeType string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "m.image"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "m.video"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "m.audio"
+	default:
+		return "m.file"
+	}
 }
 
 func (t *Transport) formatOutboundHTML(body string) (string, bool) {

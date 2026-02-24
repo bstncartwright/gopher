@@ -171,16 +171,17 @@ func startMatrixDMBridgeWithRuntime(
 	}
 
 	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
-		Manager:          manager,
-		Transport:        matrixBridge,
-		AgentID:          agentRuntime.DefaultActorID,
-		AgentByRecipient: identities.ActorByUserID,
-		RecipientByAgent: identities.UserByActorID,
-		Conversations:    gateway.NewConversationSessionMap(),
-		Bindings:         bindingStore,
-		TracePublisher:   tracePublisher,
-		TraceProvisioner: traceProvisioner,
-		ProgressUpdates:  cfg.Matrix.ProgressUpdates,
+		Manager:            manager,
+		Transport:          matrixBridge,
+		AgentID:            agentRuntime.DefaultActorID,
+		AgentByRecipient:   identities.ActorByUserID,
+		RecipientByAgent:   identities.UserByActorID,
+		Conversations:      gateway.NewConversationSessionMap(),
+		Bindings:           bindingStore,
+		TracePublisher:     tracePublisher,
+		TraceProvisioner:   traceProvisioner,
+		ProgressUpdates:    cfg.Matrix.ProgressUpdates,
+		AttachmentResolver: newMatrixAttachmentResolver(agentRuntime),
 	})
 	if err != nil {
 		slog.Error("matrix_gateway: failed to create dm pipeline", "error", err)

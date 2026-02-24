@@ -183,6 +183,12 @@ success criteria:
 - `bot_membership=join`
 - `bot_reply_count>=1`
 
+dm control commands:
+- `!context clear` / `!context reset`: replace the current dm session with a fresh one.
+- `!context summarize` / `!context summary`: run the summary prompt in the active session.
+- `!trace` / `!trace link`: ensure trace is on and reply in-thread with the trace room link.
+- `!trace on|off|status`: toggle/query trace publishing for that dm (all replies are threaded).
+
 failure triage:
 - `bot_membership=invite`: appservice registration mismatch or invite not reaching transport.
 - `bot_reply_count=0` with `bot_membership=join`: provider auth missing/invalid or runtime execution failure.

@@ -141,6 +141,62 @@ func TestMatrixTracePublisherSuppressesDeltaEvents(t *testing.T) {
 	}
 }
 
+func TestMatrixTracePublisherIncludesFirstProgressDeltaWhenEnabled(t *testing.T) {
+	sender := &fakeTraceSender{}
+	publisher := NewMatrixTracePublisherWithOptions(sender, MatrixTracePublisherOptions{
+		IncludeProgressDeltas: true,
+	})
+	delta := sessionrt.Event{
+		SessionID: "sess-1",
+		Seq:       1,
+		From:      "agent:milo",
+		Type:      sessionrt.EventAgentDelta,
+		Payload: map[string]any{
+			"delta": "Analyzing repository and collecting context",
+		},
+	}
+	if err := publisher.PublishEvent(context.Background(), "!trace:one", delta); err != nil {
+		t.Fatalf("PublishEvent(delta) error: %v", err)
+	}
+	if err := publisher.PublishEvent(context.Background(), "!trace:one", delta); err != nil {
+		t.Fatalf("PublishEvent(delta second) error: %v", err)
+	}
+	if len(sender.sent) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(sender.sent))
+	}
+	if !strings.Contains(sender.sent[0].Text, "progress:") {
+		t.Fatalf("expected progress delta body in %q", sender.sent[0].Text)
+	}
+
+	userTrigger := sessionrt.Event{
+		SessionID: "sess-1",
+		Seq:       2,
+		From:      "user:@alice:local",
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "next task",
+		},
+	}
+	if err := publisher.PublishEvent(context.Background(), "!trace:one", userTrigger); err != nil {
+		t.Fatalf("PublishEvent(user trigger) error: %v", err)
+	}
+	if err := publisher.PublishEvent(context.Background(), "!trace:one", sessionrt.Event{
+		SessionID: "sess-1",
+		Seq:       3,
+		From:      "agent:milo",
+		Type:      sessionrt.EventAgentDelta,
+		Payload: map[string]any{
+			"delta": "Running command",
+		},
+	}); err != nil {
+		t.Fatalf("PublishEvent(delta after trigger) error: %v", err)
+	}
+	if len(sender.sent) != 3 {
+		t.Fatalf("sent messages = %d, want 3", len(sender.sent))
+	}
+}
+
 func TestRenderTraceEventCardsRedactsSensitiveKeys(t *testing.T) {
 	event := sessionrt.Event{
 		Seq:  7,

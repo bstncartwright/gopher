@@ -414,6 +414,12 @@ expected result:
 - `bot_membership=join`
 - `bot_reply_count>=1`
 
+dm control commands:
+- `!context clear` / `!context reset`: rotate to a fresh session for the dm and keep the room.
+- `!context summarize` / `!context summary`: request a short state summary in-session.
+- `!trace` / `!trace link`: ensure trace is on and reply in-thread with the trace room link.
+- `!trace on|off|status`: toggle/query trace publishing for the dm (replies in-thread).
+
 to disable rich matrix formatting for compatibility debugging:
 - toml: set `[gateway.matrix] rich_text_enabled = false`
 - env: `GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED=false`

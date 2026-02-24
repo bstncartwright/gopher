@@ -500,10 +500,10 @@ func TestDMPipelineProgressUpdatesDuringToolExecution(t *testing.T) {
 	for _, message := range messages {
 		joined += "\n" + message.Text
 	}
-	if !strings.Contains(joined, "Update: running `exec` (command `echo hi`).") {
+	if !strings.Contains(joined, "running `exec` (command `echo hi`).") {
 		t.Fatalf("missing tool start progress update: %q", joined)
 	}
-	if !strings.Contains(joined, "Update: `exec` completed (ok) (command `echo hi`).") {
+	if !strings.Contains(joined, "`exec` completed (ok) (command `echo hi`).") {
 		t.Fatalf("missing tool completion progress update: %q", joined)
 	}
 	if !strings.Contains(joined, "ack") {
@@ -550,10 +550,10 @@ func TestDMPipelineProgressUpdatesIncludeWritePath(t *testing.T) {
 	for _, message := range messages {
 		joined += "\n" + message.Text
 	}
-	if !strings.Contains(joined, "Update: running `write` (file `/tmp/report.md`).") {
+	if !strings.Contains(joined, "running `write` (file `/tmp/report.md`).") {
 		t.Fatalf("missing write start detail in progress update: %q", joined)
 	}
-	if !strings.Contains(joined, "Update: `write` completed (ok) (file `/tmp/report.md`).") {
+	if !strings.Contains(joined, "`write` completed (ok) (file `/tmp/report.md`).") {
 		t.Fatalf("missing write completion detail in progress update: %q", joined)
 	}
 	if !strings.Contains(joined, "ack") {

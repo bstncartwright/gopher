@@ -1121,7 +1121,7 @@ func (p *DMPipeline) maybeSendProgressUpdate(conversationID string, event sessio
 			name = "tool"
 		}
 		args := tracePayloadMap(tracePayloadAny(payload, "args"))
-		text = fmt.Sprintf("Update: running `%s`%s.", name, progressToolDetail(name, args, nil))
+		text = fmt.Sprintf("running `%s`%s.", name, progressToolDetail(name, args, nil))
 	case sessionrt.EventToolResult:
 		p.markProgressAnnounced(conversationID)
 		payload := tracePayloadMap(event.Payload)
@@ -1134,7 +1134,7 @@ func (p *DMPipeline) maybeSendProgressUpdate(conversationID string, event sessio
 			status = "done"
 		}
 		result := tracePayloadMap(tracePayloadAny(payload, "result"))
-		text = fmt.Sprintf("Update: `%s` completed (%s)%s.", name, status, progressToolDetail(name, nil, result))
+		text = fmt.Sprintf("`%s` completed (%s)%s.", name, status, progressToolDetail(name, nil, result))
 	default:
 		return
 	}
@@ -1251,7 +1251,7 @@ func formatProgressDelta(delta string) string {
 	if len(runes) > dmProgressDeltaMaxChars {
 		delta = strings.TrimSpace(string(runes[:dmProgressDeltaMaxChars])) + "..."
 	}
-	return "Update: " + delta
+	return delta
 }
 
 func (p *DMPipeline) consumeHeartbeatReply(conversationID, text string) (bool, string) {

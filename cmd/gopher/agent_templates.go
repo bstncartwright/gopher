@@ -66,6 +66,9 @@ Treat this workspace as durable memory. Keep it in git (private preferred):
 - Agent id: %s
 - Workspace files are loaded each turn and can shape behavior.
 - Canonical uppercase files are preferred; lowercase legacy names are supported as fallback.
+- Cross-node admin is available via CLI:
+  - gopher node configure --target-node <id> ...
+  - gopher node restart --target-node <id>
 `, agentID)
 }
 

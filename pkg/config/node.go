@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -338,6 +339,81 @@ func validateNodeConfig(cfg *NodeConfig) error {
 		}
 	}
 	return nil
+}
+
+func ValidateNodeConfig(cfg *NodeConfig) error {
+	return validateNodeConfig(cfg)
+}
+
+func RenderNodeTOML(cfg NodeConfig) (string, error) {
+	if err := validateNodeConfig(&cfg); err != nil {
+		return "", err
+	}
+	var body strings.Builder
+	body.WriteString("[node]\n")
+	body.WriteString(fmt.Sprintf("node_id = %q\n\n", strings.TrimSpace(cfg.NodeID)))
+
+	body.WriteString("[node.nats]\n")
+	body.WriteString(fmt.Sprintf("url = %q\n", strings.TrimSpace(cfg.NATSURL)))
+	body.WriteString(fmt.Sprintf("connect_timeout = %q\n", cfg.ConnectTimeout.String()))
+	body.WriteString(fmt.Sprintf("reconnect_wait = %q\n\n", cfg.ReconnectWait.String()))
+
+	body.WriteString("[node.runtime]\n")
+	body.WriteString(fmt.Sprintf("heartbeat_interval = %q\n", cfg.HeartbeatInterval.String()))
+
+	capabilities := append([]scheduler.Capability(nil), cfg.Capabilities...)
+	sort.Slice(capabilities, func(i, j int) bool {
+		if capabilities[i].Kind == capabilities[j].Kind {
+			return strings.TrimSpace(capabilities[i].Name) < strings.TrimSpace(capabilities[j].Name)
+		}
+		return capabilities[i].Kind < capabilities[j].Kind
+	})
+	for _, capability := range capabilities {
+		body.WriteString("\n[[node.capabilities]]\n")
+		body.WriteString(fmt.Sprintf("kind = %q\n", nodeCapabilityKindText(capability.Kind)))
+		body.WriteString(fmt.Sprintf("name = %q\n", strings.TrimSpace(capability.Name)))
+	}
+	body.WriteString("\n")
+	return body.String(), nil
+}
+
+func WriteNodeConfigFile(path string, cfg NodeConfig) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("config file path is required")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve node config path: %w", err)
+	}
+	rendered, err := RenderNodeTOML(cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return fmt.Errorf("create node config dir %s: %w", filepath.Dir(absPath), err)
+	}
+	tmpPath := absPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(rendered), 0o644); err != nil {
+		return fmt.Errorf("write node config temp file %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, absPath); err != nil {
+		return fmt.Errorf("replace node config file %s: %w", absPath, err)
+	}
+	return nil
+}
+
+func nodeCapabilityKindText(kind scheduler.CapabilityKind) string {
+	switch kind {
+	case scheduler.CapabilityAgent:
+		return "agent"
+	case scheduler.CapabilityTool:
+		return "tool"
+	case scheduler.CapabilitySystem:
+		return "system"
+	default:
+		return "agent"
+	}
 }
 
 func hasNodeEnv(env map[string]string) bool {

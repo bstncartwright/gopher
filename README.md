@@ -143,6 +143,10 @@ gopher gateway run --node-id gateway --nats-url nats://127.0.0.1:4222
 # run worker node
 gopher node run --node-id node-1 --nats-url nats://127.0.0.1:4222
 
+# configure/restart an existing remote node from gateway side
+gopher node configure --target-node node-1 --node-heartbeat-interval 5s --capability tool:gpu
+gopher node restart --target-node node-1
+
 # help
 gopher help
 gopher gateway run --help
@@ -487,6 +491,11 @@ gateway automatically forwards provider auth env vars to the selected worker nod
 optional controls:
 - disable forwarding: `GOPHER_GATEWAY_SHARE_AUTH_ENV=false`
 - override forwarded key list: `GOPHER_GATEWAY_SHARED_AUTH_ENV_KEYS=OPENAI_API_KEY,ZAI_API_KEY`
+
+node admin controls over NATS:
+- `gopher node configure --target-node <id> ...` persists remote `node.toml` and can request restart.
+- `gopher node restart --target-node <id>` requests remote restart with best-effort rejoin warning.
+- agents can invoke these via the `exec` tool when `gopher` is allowed in `shell_allowlist`.
 
 ## safety philosophy
 

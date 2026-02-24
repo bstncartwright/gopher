@@ -64,6 +64,8 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  gateway run           start gateway node runtime")
 	fmt.Fprintln(out, "  gateway config init   write starter gopher.toml")
 	fmt.Fprintln(out, "  node run              start worker node runtime")
+	fmt.Fprintln(out, "  node configure        configure a remote node over nats")
+	fmt.Fprintln(out, "  node restart          request remote node restart over nats")
 	fmt.Fprintln(out, "  node config init      write starter node.toml")
 	fmt.Fprintln(out, "  status                show gopher service status")
 	fmt.Fprintln(out, "  restart               restart gopher service")

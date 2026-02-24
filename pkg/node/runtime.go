@@ -49,6 +49,7 @@ type RuntimeOptions struct {
 	Capabilities      []scheduler.Capability
 	Fabric            fabricts.Fabric
 	Executor          sessionrt.AgentExecutor
+	AdminHandler      AdminHandler
 	HeartbeatInterval time.Duration
 	Now               func() time.Time
 }
@@ -56,11 +57,15 @@ type RuntimeOptions struct {
 type Runtime struct {
 	nodeID       string
 	isGateway    bool
-	capabilities []scheduler.Capability
 	fabric       fabricts.Fabric
 	executor     sessionrt.AgentExecutor
-	interval     time.Duration
+	adminHandler AdminHandler
 	now          func() time.Time
+
+	cfgMu          sync.RWMutex
+	capabilities   []scheduler.Capability
+	interval       time.Duration
+	heartbeatReset chan struct{}
 
 	mu      sync.Mutex
 	envMu   sync.Mutex
@@ -99,13 +104,15 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		"heartbeat_interval", interval,
 	)
 	return &Runtime{
-		nodeID:       nodeID,
-		isGateway:    opts.IsGateway,
-		capabilities: append([]scheduler.Capability(nil), opts.Capabilities...),
-		fabric:       opts.Fabric,
-		executor:     opts.Executor,
-		interval:     interval,
-		now:          nowFn,
+		nodeID:         nodeID,
+		isGateway:      opts.IsGateway,
+		capabilities:   append([]scheduler.Capability(nil), opts.Capabilities...),
+		fabric:         opts.Fabric,
+		executor:       opts.Executor,
+		adminHandler:   opts.AdminHandler,
+		interval:       interval,
+		heartbeatReset: make(chan struct{}, 1),
+		now:            nowFn,
 	}, nil
 }
 
@@ -136,6 +143,17 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return fmt.Errorf("subscribe control: %w", err)
 	}
 	r.subs = append(r.subs, controlSub)
+	if r.adminHandler != nil {
+		adminSub, err := r.fabric.Subscribe(fabricts.NodeAdminSubject(r.nodeID), r.handleAdminMessage)
+		if err != nil {
+			controlSub.Unsubscribe()
+			r.subs = nil
+			r.cancel()
+			slog.Error("node_runtime: failed to subscribe to admin", "node_id", r.nodeID, "error", err)
+			return fmt.Errorf("subscribe admin: %w", err)
+		}
+		r.subs = append(r.subs, adminSub)
+	}
 
 	if err := r.publishCapabilities(ctx); err != nil {
 		r.cancel()
@@ -171,7 +189,7 @@ func (r *Runtime) Stop() {
 }
 
 func (r *Runtime) heartbeatLoop() {
-	ticker := time.NewTicker(r.interval)
+	ticker := time.NewTicker(r.heartbeatInterval())
 	defer ticker.Stop()
 
 	heartbeatCount := 0
@@ -180,6 +198,9 @@ func (r *Runtime) heartbeatLoop() {
 		case <-r.ctx.Done():
 			slog.Debug("node_runtime: heartbeat loop stopped", "node_id", r.nodeID, "heartbeats_sent", heartbeatCount)
 			return
+		case <-r.heartbeatReset:
+			ticker.Stop()
+			ticker = time.NewTicker(r.heartbeatInterval())
 		case <-ticker.C:
 			heartbeatCount++
 			if err := r.publishHeartbeat(context.Background()); err != nil {
@@ -190,10 +211,11 @@ func (r *Runtime) heartbeatLoop() {
 }
 
 func (r *Runtime) publishCapabilities(ctx context.Context) error {
+	capabilities := r.currentCapabilities()
 	announcement := CapabilityAnnouncement{
 		NodeID:       r.nodeID,
 		IsGateway:    r.isGateway,
-		Capabilities: append([]scheduler.Capability(nil), r.capabilities...),
+		Capabilities: capabilities,
 		Timestamp:    r.now().UTC(),
 	}
 	blob, err := json.Marshal(announcement)
@@ -204,7 +226,7 @@ func (r *Runtime) publishCapabilities(ctx context.Context) error {
 	slog.Debug("node_runtime: publishing capabilities",
 		"node_id", r.nodeID,
 		"is_gateway", r.isGateway,
-		"capabilities_count", len(r.capabilities),
+		"capabilities_count", len(capabilities),
 	)
 	return r.fabric.Publish(ctx, fabricts.Message{
 		Subject: fabricts.NodeCapabilitiesSubject(r.nodeID),
@@ -213,10 +235,11 @@ func (r *Runtime) publishCapabilities(ctx context.Context) error {
 }
 
 func (r *Runtime) publishHeartbeat(ctx context.Context) error {
+	capabilities := r.currentCapabilities()
 	heartbeat := Heartbeat{
 		NodeID:       r.nodeID,
 		IsGateway:    r.isGateway,
-		Capabilities: append([]scheduler.Capability(nil), r.capabilities...),
+		Capabilities: capabilities,
 		Timestamp:    r.now().UTC(),
 	}
 	blob, err := json.Marshal(heartbeat)
@@ -269,16 +292,100 @@ func (r *Runtime) handleControlMessage(ctx context.Context, message fabricts.Mes
 	r.respond(ctx, message.Reply, ExecutionResponse{Events: output.Events})
 }
 
+func (r *Runtime) handleAdminMessage(ctx context.Context, message fabricts.Message) {
+	var request AdminRequest
+	if err := json.Unmarshal(message.Data, &request); err != nil {
+		slog.Error("node_runtime: failed to decode admin request", "node_id", r.nodeID, "error", err)
+		r.respondAdmin(ctx, message.Reply, AdminResponse{
+			OK:    false,
+			Error: fmt.Sprintf("decode admin request: %v", err),
+		})
+		return
+	}
+	if r.adminHandler == nil {
+		r.respondAdmin(ctx, message.Reply, AdminResponse{
+			OK:    false,
+			Error: "admin handler is unavailable",
+		})
+		return
+	}
+	response := r.adminHandler.HandleAdmin(request)
+	r.respondAdmin(ctx, message.Reply, response)
+}
+
 func (r *Runtime) respond(ctx context.Context, reply string, response ExecutionResponse) {
+	r.respondJSON(ctx, reply, response)
+}
+
+func (r *Runtime) respondAdmin(ctx context.Context, reply string, response AdminResponse) {
+	r.respondJSON(ctx, reply, response)
+}
+
+func (r *Runtime) respondJSON(ctx context.Context, reply string, payload any) {
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
 		return
 	}
-	blob, err := json.Marshal(response)
+	blob, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
 	_ = r.fabric.Publish(ctx, fabricts.Message{Subject: reply, Data: blob})
+}
+
+type RuntimeConfigUpdate struct {
+	Capabilities      *[]scheduler.Capability
+	HeartbeatInterval *time.Duration
+}
+
+func (r *Runtime) ApplyRuntimeConfig(update RuntimeConfigUpdate) error {
+	r.cfgMu.Lock()
+	if update.Capabilities != nil {
+		r.capabilities = append([]scheduler.Capability(nil), (*update.Capabilities)...)
+	}
+	intervalChanged := false
+	if update.HeartbeatInterval != nil {
+		if *update.HeartbeatInterval <= 0 {
+			r.cfgMu.Unlock()
+			return fmt.Errorf("heartbeat interval must be > 0")
+		}
+		r.interval = *update.HeartbeatInterval
+		intervalChanged = true
+	}
+	r.cfgMu.Unlock()
+
+	if intervalChanged {
+		select {
+		case r.heartbeatReset <- struct{}{}:
+		default:
+		}
+	}
+	if update.Capabilities != nil {
+		if err := r.publishCapabilities(context.Background()); err != nil {
+			return err
+		}
+	}
+	if update.Capabilities != nil || intervalChanged {
+		if err := r.publishHeartbeat(context.Background()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) currentCapabilities() []scheduler.Capability {
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	return append([]scheduler.Capability(nil), r.capabilities...)
+}
+
+func (r *Runtime) heartbeatInterval() time.Duration {
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	if r.interval <= 0 {
+		return defaultHeartbeatInterval
+	}
+	return r.interval
 }
 
 func (r *Runtime) stepWithAuthEnv(

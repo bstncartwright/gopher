@@ -22,6 +22,10 @@ func NodeControlSubject(nodeID string) string {
 	return fmt.Sprintf("node.%s.control", nodeID)
 }
 
+func NodeAdminSubject(nodeID string) string {
+	return fmt.Sprintf("node.%s.admin", nodeID)
+}
+
 func CapabilityInvokeSubject(capability string) string {
 	return fmt.Sprintf("cap.%s.invoke", capability)
 }

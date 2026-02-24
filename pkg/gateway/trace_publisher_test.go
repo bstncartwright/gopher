@@ -31,6 +31,23 @@ func (s *fakeTraceSender) SendMessage(_ context.Context, message transport.Outbo
 func (s *fakeTraceSender) RecordTracePublishSuccess() { s.publishSuccess++ }
 func (s *fakeTraceSender) RecordTracePublishFailure() { s.publishFailure++ }
 
+type fakeTraceSenderWithResult struct {
+	fakeTraceSender
+	eventIDs []string
+}
+
+func (s *fakeTraceSenderWithResult) SendMessageWithResult(_ context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error) {
+	if err := s.SendMessage(context.Background(), message); err != nil {
+		return transport.OutboundSendResult{}, err
+	}
+	out := transport.OutboundSendResult{}
+	if len(s.eventIDs) > 0 {
+		out.EventID = s.eventIDs[0]
+		s.eventIDs = s.eventIDs[1:]
+	}
+	return out, nil
+}
+
 func TestRenderTraceEventCardsSupportsCoreEventTypes(t *testing.T) {
 	now := time.Date(2026, time.February, 20, 13, 0, 0, 0, time.UTC)
 	cases := []sessionrt.Event{
@@ -96,6 +113,31 @@ func TestRenderTraceEventCardsSupportsCoreEventTypes(t *testing.T) {
 		if !strings.Contains(messages[0], fmt.Sprintf("[#%d]", event.Seq)) {
 			t.Fatalf("missing sequence header in %q", messages[0])
 		}
+	}
+	if !strings.HasPrefix(renderTraceEventCards(cases[0], 3500)[0], "🤖 ") {
+		t.Fatalf("expected emoji prefix in agent message header")
+	}
+}
+
+func TestMatrixTracePublisherSuppressesDeltaEvents(t *testing.T) {
+	sender := &fakeTraceSender{}
+	publisher := NewMatrixTracePublisher(sender)
+	event := sessionrt.Event{
+		Seq:  99,
+		From: "agent:milo",
+		Type: sessionrt.EventAgentDelta,
+		Payload: map[string]any{
+			"delta": "hello",
+		},
+	}
+	if err := publisher.PublishEvent(context.Background(), "!trace:one", event); err != nil {
+		t.Fatalf("PublishEvent() error: %v", err)
+	}
+	if len(sender.sent) != 0 {
+		t.Fatalf("sent messages = %d, want 0", len(sender.sent))
+	}
+	if sender.publishSuccess != 0 || sender.publishFailure != 0 {
+		t.Fatalf("success/failure = %d/%d, want 0/0", sender.publishSuccess, sender.publishFailure)
 	}
 }
 
@@ -200,5 +242,47 @@ func TestMatrixTracePublisherTracksFailure(t *testing.T) {
 	}
 	if sender.publishSuccess != 0 || sender.publishFailure != 1 {
 		t.Fatalf("success/failure = %d/%d, want 0/1", sender.publishSuccess, sender.publishFailure)
+	}
+}
+
+func TestMatrixTracePublisherThreadsEventsUnderUserTrigger(t *testing.T) {
+	sender := &fakeTraceSenderWithResult{
+		eventIDs: []string{"$root", "$tool"},
+	}
+	publisher := NewMatrixTracePublisher(sender)
+	trigger := sessionrt.Event{
+		SessionID: "sess-1",
+		Seq:       11,
+		From:      "user:@alice:local",
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "help me",
+		},
+	}
+	if err := publisher.PublishEvent(context.Background(), "!trace:one", trigger); err != nil {
+		t.Fatalf("PublishEvent(trigger) error: %v", err)
+	}
+	toolCall := sessionrt.Event{
+		SessionID: "sess-1",
+		Seq:       12,
+		From:      "agent:milo",
+		Type:      sessionrt.EventToolCall,
+		Payload: map[string]any{
+			"name": "exec",
+			"args": map[string]any{"cmd": "echo hi"},
+		},
+	}
+	if err := publisher.PublishEvent(context.Background(), "!trace:one", toolCall); err != nil {
+		t.Fatalf("PublishEvent(tool) error: %v", err)
+	}
+	if len(sender.sent) != 2 {
+		t.Fatalf("sent messages = %d, want 2", len(sender.sent))
+	}
+	if sender.sent[0].ThreadRootEventID != "" {
+		t.Fatalf("trigger thread root = %q, want empty", sender.sent[0].ThreadRootEventID)
+	}
+	if sender.sent[1].ThreadRootEventID != "$root" {
+		t.Fatalf("tool thread root = %q, want $root", sender.sent[1].ThreadRootEventID)
 	}
 }

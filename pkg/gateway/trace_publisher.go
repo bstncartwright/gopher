@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
@@ -21,6 +22,10 @@ type traceMessageSender interface {
 	SendMessage(ctx context.Context, message transport.OutboundMessage) error
 }
 
+type traceMessageSenderWithResult interface {
+	SendMessageWithResult(ctx context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error)
+}
+
 type tracePublishMetrics interface {
 	RecordTracePublishSuccess()
 	RecordTracePublishFailure()
@@ -29,6 +34,8 @@ type tracePublishMetrics interface {
 type MatrixTracePublisher struct {
 	sender   traceMessageSender
 	maxChars int
+	mu       sync.Mutex
+	threads  map[sessionrt.SessionID]string
 }
 
 func NewMatrixTracePublisher(sender traceMessageSender) *MatrixTracePublisher {
@@ -42,6 +49,7 @@ func NewMatrixTracePublisherWithMaxChars(sender traceMessageSender, maxChars int
 	return &MatrixTracePublisher{
 		sender:   sender,
 		maxChars: maxChars,
+		threads:  map[sessionrt.SessionID]string{},
 	}
 }
 
@@ -53,22 +61,86 @@ func (p *MatrixTracePublisher) PublishEvent(ctx context.Context, traceConversati
 	if traceConversationID == "" {
 		return nil
 	}
+	if shouldSuppressTraceEvent(event) {
+		return nil
+	}
 	messages := renderTraceEventCards(event, p.maxChars)
+	if len(messages) == 0 {
+		return nil
+	}
+	isUserTrigger := traceIsUserTriggerEvent(event)
+	if isUserTrigger {
+		p.clearSessionThreadRoot(event.SessionID)
+	}
+	threadRoot := ""
+	if !isUserTrigger {
+		threadRoot = p.sessionThreadRoot(event.SessionID)
+	}
 	for _, text := range messages {
-		if err := p.sender.SendMessage(ctx, transport.OutboundMessage{
-			ConversationID: traceConversationID,
-			Text:           text,
-		}); err != nil {
+		outbound := transport.OutboundMessage{
+			ConversationID:    traceConversationID,
+			Text:              text,
+			ThreadRootEventID: threadRoot,
+		}
+		sendResult, err := p.sendTraceMessage(ctx, outbound)
+		if err != nil {
 			if metrics, ok := p.sender.(tracePublishMetrics); ok {
 				metrics.RecordTracePublishFailure()
 			}
 			return err
+		}
+		if isUserTrigger && threadRoot == "" {
+			threadRoot = strings.TrimSpace(sendResult.EventID)
+			if threadRoot != "" {
+				p.setSessionThreadRoot(event.SessionID, threadRoot)
+			}
 		}
 	}
 	if metrics, ok := p.sender.(tracePublishMetrics); ok {
 		metrics.RecordTracePublishSuccess()
 	}
 	return nil
+}
+
+func (p *MatrixTracePublisher) sendTraceMessage(ctx context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error) {
+	if senderWithResult, ok := p.sender.(traceMessageSenderWithResult); ok {
+		return senderWithResult.SendMessageWithResult(ctx, message)
+	}
+	if err := p.sender.SendMessage(ctx, message); err != nil {
+		return transport.OutboundSendResult{}, err
+	}
+	return transport.OutboundSendResult{}, nil
+}
+
+func (p *MatrixTracePublisher) sessionThreadRoot(sessionID sessionrt.SessionID) string {
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if p == nil || sessionID == "" {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return strings.TrimSpace(p.threads[sessionID])
+}
+
+func (p *MatrixTracePublisher) setSessionThreadRoot(sessionID sessionrt.SessionID, eventID string) {
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	eventID = strings.TrimSpace(eventID)
+	if p == nil || sessionID == "" || eventID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.threads[sessionID] = eventID
+}
+
+func (p *MatrixTracePublisher) clearSessionThreadRoot(sessionID sessionrt.SessionID) {
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if p == nil || sessionID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.threads, sessionID)
 }
 
 func renderTraceEventCards(event sessionrt.Event, maxChars int) []string {
@@ -87,9 +159,76 @@ func renderTraceEventCards(event sessionrt.Event, maxChars int) []string {
 	if !event.Timestamp.IsZero() {
 		timestamp = event.Timestamp.UTC().Format(time.RFC3339)
 	}
-	header := fmt.Sprintf("[#%d] %s • %s • %s", event.Seq, eventType, from, timestamp)
+	header := fmt.Sprintf("%s [#%d] %s • %s • %s", traceEventEmoji(event), event.Seq, eventType, from, timestamp)
 	body := renderTraceEventBody(event)
 	return splitTraceCard(header, body, maxChars)
+}
+
+func shouldSuppressTraceEvent(event sessionrt.Event) bool {
+	switch event.Type {
+	case sessionrt.EventAgentDelta, sessionrt.EventAgentThinkingDelta:
+		return true
+	default:
+		return false
+	}
+}
+
+func traceIsUserTriggerEvent(event sessionrt.Event) bool {
+	if event.Type != sessionrt.EventMessage {
+		return false
+	}
+	msg, ok := traceMessageFromPayload(event.Payload)
+	if !ok {
+		return false
+	}
+	return msg.Role == sessionrt.RoleUser
+}
+
+func traceEventEmoji(event sessionrt.Event) string {
+	switch event.Type {
+	case sessionrt.EventMessage:
+		msg, ok := traceMessageFromPayload(event.Payload)
+		if !ok {
+			return "💬"
+		}
+		switch msg.Role {
+		case sessionrt.RoleUser:
+			return "🧑"
+		case sessionrt.RoleAgent:
+			return "🤖"
+		case sessionrt.RoleSystem:
+			return "🖥️"
+		default:
+			return "💬"
+		}
+	case sessionrt.EventToolCall:
+		return "🛠️"
+	case sessionrt.EventToolResult:
+		status := strings.ToLower(strings.TrimSpace(tracePayloadString(tracePayloadMap(event.Payload), "status")))
+		if strings.Contains(status, "fail") || strings.Contains(status, "error") || strings.Contains(status, "timeout") {
+			return "❌"
+		}
+		if strings.Contains(status, "ok") || strings.Contains(status, "success") || strings.Contains(status, "done") || strings.Contains(status, "complete") || status == "" {
+			return "✅"
+		}
+		return "📦"
+	case sessionrt.EventControl:
+		return "⚙️"
+	case sessionrt.EventError:
+		return "🚨"
+	case sessionrt.EventAgentStart:
+		return "▶️"
+	case sessionrt.EventAgentStop:
+		return "⏹️"
+	case sessionrt.EventStatePatch:
+		return "🧩"
+	case sessionrt.EventAgentDelta:
+		return "✏️"
+	case sessionrt.EventAgentThinkingDelta:
+		return "🧠"
+	default:
+		return "📌"
+	}
 }
 
 func renderTraceEventBody(event sessionrt.Event) string {

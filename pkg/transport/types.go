@@ -13,9 +13,14 @@ type InboundMessage struct {
 }
 
 type OutboundMessage struct {
-	ConversationID string
-	SenderID       string
-	Text           string
+	ConversationID    string
+	SenderID          string
+	Text              string
+	ThreadRootEventID string
+}
+
+type OutboundSendResult struct {
+	EventID string
 }
 
 type InboundHandler func(ctx context.Context, message InboundMessage) error

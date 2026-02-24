@@ -225,7 +225,50 @@ func (e *dmTraceExecutor) Step(_ context.Context, input sessionrt.AgentInput) (s
 				Payload: map[string]any{
 					"name":   "exec",
 					"status": "ok",
-					"result": map[string]any{"stdout": "hi"},
+					"result": map[string]any{
+						"command": "echo hi",
+						"stdout":  "hi",
+					},
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: "ack",
+				},
+			},
+		},
+	}, nil
+}
+
+type dmWriteTraceExecutor struct{}
+
+func (e *dmWriteTraceExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventToolCall,
+				Payload: map[string]any{
+					"name": "write",
+					"args": map[string]any{
+						"path":    "/tmp/report.md",
+						"content": "hello",
+					},
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventToolResult,
+				Payload: map[string]any{
+					"name":   "write",
+					"status": "ok",
+					"result": map[string]any{
+						"path":          "/tmp/report.md",
+						"bytes_written": 5,
+					},
 				},
 			},
 			{
@@ -457,11 +500,61 @@ func TestDMPipelineProgressUpdatesDuringToolExecution(t *testing.T) {
 	for _, message := range messages {
 		joined += "\n" + message.Text
 	}
-	if !strings.Contains(joined, "Update: running `exec`.") {
+	if !strings.Contains(joined, "Update: running `exec` (command `echo hi`).") {
 		t.Fatalf("missing tool start progress update: %q", joined)
 	}
-	if !strings.Contains(joined, "Update: `exec` completed (ok).") {
+	if !strings.Contains(joined, "Update: `exec` completed (ok) (command `echo hi`).") {
 		t.Fatalf("missing tool completion progress update: %q", joined)
+	}
+	if !strings.Contains(joined, "ack") {
+		t.Fatalf("missing final response message: %q", joined)
+	}
+}
+
+func TestDMPipelineProgressUpdatesIncludeWritePath(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmWriteTraceExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:         manager,
+		Transport:       fake,
+		AgentID:         "agent:a",
+		ProgressUpdates: true,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:write-progress",
+		SenderID:       "@user:hs",
+		Text:           "run tool",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 3
+	})
+	messages := fake.sentMessages()
+	joined := ""
+	for _, message := range messages {
+		joined += "\n" + message.Text
+	}
+	if !strings.Contains(joined, "Update: running `write` (file `/tmp/report.md`).") {
+		t.Fatalf("missing write start detail in progress update: %q", joined)
+	}
+	if !strings.Contains(joined, "Update: `write` completed (ok) (file `/tmp/report.md`).") {
+		t.Fatalf("missing write completion detail in progress update: %q", joined)
 	}
 	if !strings.Contains(joined, "ack") {
 		t.Fatalf("missing final response message: %q", joined)

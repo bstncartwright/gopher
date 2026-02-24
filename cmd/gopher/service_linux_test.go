@@ -16,14 +16,17 @@ type fakeServiceRuntime struct {
 	uninstallCalled bool
 	uninstallErr    error
 	statusCalled    bool
+	statusOpts      serviceStatusOptions
 	statusErr       error
 	startCalled     bool
 	startErr        error
 	stopCalled      bool
 	stopErr         error
 	restartCalled   bool
+	restartOpts     serviceTargetOptions
 	restartErr      error
 	logsCalled      bool
+	logsOpts        serviceLogsOptions
 	logsErr         error
 }
 
@@ -40,9 +43,10 @@ func (f *fakeServiceRuntime) Uninstall(ctx context.Context) error {
 	return f.uninstallErr
 }
 
-func (f *fakeServiceRuntime) Status(ctx context.Context) error {
+func (f *fakeServiceRuntime) Status(ctx context.Context, opts serviceStatusOptions) error {
 	_ = ctx
 	f.statusCalled = true
+	f.statusOpts = opts
 	return f.statusErr
 }
 
@@ -58,16 +62,17 @@ func (f *fakeServiceRuntime) Stop(ctx context.Context) error {
 	return f.stopErr
 }
 
-func (f *fakeServiceRuntime) Restart(ctx context.Context) error {
+func (f *fakeServiceRuntime) Restart(ctx context.Context, opts serviceTargetOptions) error {
 	_ = ctx
 	f.restartCalled = true
+	f.restartOpts = opts
 	return f.restartErr
 }
 
 func (f *fakeServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) error {
 	_ = ctx
-	_ = opts
 	f.logsCalled = true
+	f.logsOpts = opts
 	return f.logsErr
 }
 
@@ -108,6 +113,9 @@ func TestRunServiceSubcommandRoutesRestart(t *testing.T) {
 	if !fake.restartCalled {
 		t.Fatalf("expected restart to be called")
 	}
+	if fake.restartOpts.Target != serviceTargetAuto {
+		t.Fatalf("restart target = %q, want %q", fake.restartOpts.Target, serviceTargetAuto)
+	}
 }
 
 func TestRunServiceSubcommandRoutesLogs(t *testing.T) {
@@ -125,6 +133,9 @@ func TestRunServiceSubcommandRoutesLogs(t *testing.T) {
 	}
 	if !fake.logsCalled {
 		t.Fatalf("expected logs to be called")
+	}
+	if fake.logsOpts.Target != serviceTargetAuto {
+		t.Fatalf("logs target = %q, want %q", fake.logsOpts.Target, serviceTargetAuto)
 	}
 }
 
@@ -248,5 +259,86 @@ func TestRunServiceSubcommandPermissionErrorIncludesSudoHint(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sudo -E") {
 		t.Fatalf("expected sudo hint, got: %v", err)
+	}
+}
+
+func TestRunServiceSubcommandRoutesStatusNodeRole(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+	fake := &fakeServiceRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+	var out bytes.Buffer
+	if err := runServiceSubcommand([]string{"status", "--role", "node"}, &out, &out); err != nil {
+		t.Fatalf("runServiceSubcommand(status --role node) error: %v", err)
+	}
+	if !fake.statusCalled {
+		t.Fatalf("expected status to be called")
+	}
+	if fake.statusOpts.Target != serviceTargetNode {
+		t.Fatalf("status target = %q, want %q", fake.statusOpts.Target, serviceTargetNode)
+	}
+}
+
+func TestRunServiceSubcommandRoutesRestartNodeRole(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+	fake := &fakeServiceRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+	var out bytes.Buffer
+	if err := runServiceSubcommand([]string{"restart", "--role", "node"}, &out, &out); err != nil {
+		t.Fatalf("runServiceSubcommand(restart --role node) error: %v", err)
+	}
+	if !fake.restartCalled {
+		t.Fatalf("expected restart to be called")
+	}
+	if fake.restartOpts.Target != serviceTargetNode {
+		t.Fatalf("restart target = %q, want %q", fake.restartOpts.Target, serviceTargetNode)
+	}
+}
+
+func TestRunServiceSubcommandRoutesLogsNodeRole(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+	fake := &fakeServiceRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+	var out bytes.Buffer
+	if err := runServiceSubcommand([]string{"logs", "--role", "node"}, &out, &out); err != nil {
+		t.Fatalf("runServiceSubcommand(logs --role node) error: %v", err)
+	}
+	if !fake.logsCalled {
+		t.Fatalf("expected logs to be called")
+	}
+	if fake.logsOpts.Target != serviceTargetNode {
+		t.Fatalf("logs target = %q, want %q", fake.logsOpts.Target, serviceTargetNode)
+	}
+}
+
+func TestRunServiceSubcommandRejectsInvalidStatusRole(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+	fake := &fakeServiceRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+	var out bytes.Buffer
+	if err := runServiceSubcommand([]string{"status", "--role", "bad"}, &out, &out); err == nil {
+		t.Fatalf("expected invalid role error")
+	}
+	if fake.statusCalled {
+		t.Fatalf("status should not be called on invalid role")
 	}
 }

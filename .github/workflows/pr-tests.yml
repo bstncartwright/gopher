@@ -91,6 +91,21 @@ jobs:
           echo "running staticcheck on: ${changed_pkgs[*]}"
           staticcheck "${changed_pkgs[@]}"
 
+  lint-govulncheck:
+    name: lint-govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   lint-mod:
     name: lint-go-mod
     runs-on: ubuntu-latest

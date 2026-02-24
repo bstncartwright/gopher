@@ -1,6 +1,6 @@
 module github.com/bstncartwright/gopher
 
-go 1.24.5
+go 1.26.0
 
 require (
 	github.com/microcosm-cc/bluemonday v1.0.27
@@ -15,6 +15,7 @@ require (
 
 require (
 	github.com/aymerick/douceur v0.2.0 // indirect
+	github.com/coder/websocket v1.8.14 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect

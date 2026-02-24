@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -150,6 +151,58 @@ func TestPanelLimitedModeSessionsFragment(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Session runtime is unavailable") {
 		t.Fatalf("expected limited mode message, got: %s", rec.Body.String())
+	}
+}
+
+func TestPanelNodesEndpointReturnsSnapshot(t *testing.T) {
+	srv, err := NewServer(ServerOptions{
+		ListenAddr: "127.0.0.1:29329",
+		NodeSnapshot: func() []scheduler.NodeInfo {
+			return []scheduler.NodeInfo{
+				{
+					NodeID:    "gateway",
+					IsGateway: true,
+					Capabilities: []scheduler.Capability{
+						{Kind: scheduler.CapabilitySystem, Name: "router"},
+					},
+					LastHeartbeat: time.Unix(1700000000, 0).UTC(),
+				},
+				{
+					NodeID:    "node-1",
+					IsGateway: false,
+					Capabilities: []scheduler.Capability{
+						{Kind: scheduler.CapabilityTool, Name: "web_search"},
+					},
+					LastHeartbeat: time.Unix(1700000060, 0).UTC(),
+				},
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/nodes", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var payload struct {
+		Nodes []scheduler.NodeInfo `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Nodes) != 2 {
+		t.Fatalf("node count = %d, want 2", len(payload.Nodes))
+	}
+	if payload.Nodes[0].NodeID != "gateway" {
+		t.Fatalf("first node id = %q, want gateway", payload.Nodes[0].NodeID)
+	}
+	if payload.Nodes[1].NodeID != "node-1" {
+		t.Fatalf("second node id = %q, want node-1", payload.Nodes[1].NodeID)
 	}
 }
 

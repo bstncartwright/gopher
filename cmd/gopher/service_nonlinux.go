@@ -22,7 +22,8 @@ func (r *unsupportedServiceRuntime) Uninstall(ctx context.Context) error {
 	return fmt.Errorf("service uninstall is only supported on linux")
 }
 
-func (r *unsupportedServiceRuntime) Status(ctx context.Context) error {
+func (r *unsupportedServiceRuntime) Status(ctx context.Context, opts serviceStatusOptions) error {
+	_ = opts
 	return fmt.Errorf("service status is only supported on linux")
 }
 
@@ -34,7 +35,8 @@ func (r *unsupportedServiceRuntime) Stop(ctx context.Context) error {
 	return fmt.Errorf("service stop is only supported on linux")
 }
 
-func (r *unsupportedServiceRuntime) Restart(ctx context.Context) error {
+func (r *unsupportedServiceRuntime) Restart(ctx context.Context, opts serviceTargetOptions) error {
+	_ = opts
 	return fmt.Errorf("service restart is only supported on linux")
 }
 

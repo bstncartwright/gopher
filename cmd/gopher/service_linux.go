@@ -16,10 +16,12 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/config"
+	"github.com/bstncartwright/gopher/pkg/scheduler"
 	"github.com/bstncartwright/gopher/pkg/service"
 )
 
@@ -34,6 +36,10 @@ const (
 )
 
 var readUnitStatusForManagedUnit = readUnitStatus
+var loadGatewayConfigForStatus = func() (config.GatewayConfig, error) {
+	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: "/etc/gopher/gopher.toml"})
+	return cfg, err
+}
 
 func defaultServiceRuntime(stdout, stderr io.Writer) serviceRuntime {
 	return &linuxServiceRuntime{stdout: stdout, stderr: stderr}
@@ -147,47 +153,126 @@ func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-func (r *linuxServiceRuntime) Status(ctx context.Context) error {
-	gateway, err := readUnitStatus(ctx, "gopher-gateway.service")
+func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOptions) error {
+	unit, err := resolveManagedServiceUnit(ctx, opts.Target)
+	if err != nil {
+		return err
+	}
+	selected, err := readUnitStatus(ctx, unit)
 	if err != nil {
 		return err
 	}
 	nats, _ := readUnitStatus(ctx, "nats-server.service")
-	updater, _ := readUnitStatus(ctx, "gopher-gateway-update.timer")
+	gatewayCfg, gatewayCfgErr := config.GatewayConfig{}, fmt.Errorf("gateway config unavailable")
+	if unit == gopherGatewayUnitName {
+		gatewayCfg, gatewayCfgErr = loadGatewayConfigForStatus()
+	}
 
 	gopherPath, gopherVersion, gopherSHA := readBinaryDetails("gopher")
 	natsPath, natsVersion, _ := readBinaryDetails("nats-server")
 
 	fmt.Fprintln(r.stdout, "gopher status")
+	fmt.Fprintln(r.stdout, "=============")
 	fmt.Fprintln(r.stdout, "")
-	fmt.Fprintf(r.stdout, "gateway service: %s\n", formatUnitStatus(gateway))
-	fmt.Fprintf(r.stdout, "nats service:    %s\n", formatUnitStatus(nats))
-	fmt.Fprintf(r.stdout, "update timer:    %s\n", formatUnitStatus(updater))
+	printStatusSectionHeader(r.stdout, "service health")
+	printStatusStateLine(r.stdout, fmt.Sprintf("%s service", describeManagedServiceUnit(unit)), formatUnitStatus(selected))
+	printStatusStateLine(r.stdout, "nats service", formatUnitStatus(nats))
+	if unit == gopherGatewayUnitName {
+		updater, _ := readUnitStatus(ctx, "gopher-gateway-update.timer")
+		printStatusStateLine(r.stdout, "update timer", formatUnitStatus(updater))
+	}
 	fmt.Fprintln(r.stdout, "")
-	fmt.Fprintf(r.stdout, "gopher binary:   %s\n", valueOrUnknown(gopherPath))
-	fmt.Fprintf(r.stdout, "gopher version:  %s\n", valueOrUnknown(gopherVersion))
-	fmt.Fprintf(r.stdout, "gopher sha256:   %s\n", valueOrUnknown(gopherSHA))
-	fmt.Fprintf(r.stdout, "nats binary:     %s\n", valueOrUnknown(natsPath))
-	fmt.Fprintf(r.stdout, "nats version:    %s\n", valueOrUnknown(natsVersion))
+	printStatusSectionHeader(r.stdout, "binary details")
+	printStatusValueLine(r.stdout, "gopher binary", valueOrUnknown(gopherPath))
+	printStatusValueLine(r.stdout, "gopher version", valueOrUnknown(gopherVersion))
+	printStatusValueLine(r.stdout, "gopher sha256", valueOrUnknown(gopherSHA))
+	printStatusValueLine(r.stdout, "nats binary", valueOrUnknown(natsPath))
+	printStatusValueLine(r.stdout, "nats version", valueOrUnknown(natsVersion))
 
-	matrixLine, matrixWarning := readMatrixStatusLine(ctx)
-	if matrixLine != "" || matrixWarning != "" {
-		fmt.Fprintln(r.stdout, "")
-		if matrixLine != "" {
-			fmt.Fprintln(r.stdout, matrixLine)
-		}
-		if matrixWarning != "" {
-			fmt.Fprintln(r.stdout, matrixWarning)
+	if unit == gopherGatewayUnitName {
+		matrixLine, matrixWarning := readMatrixStatusLine(ctx, gatewayCfg, gatewayCfgErr)
+		nodeLines, nodeWarning := readGatewayNodeStatusLines(ctx, gatewayCfg, gatewayCfgErr)
+		if matrixLine != "" || matrixWarning != "" || len(nodeLines) > 0 || nodeWarning != "" {
+			fmt.Fprintln(r.stdout, "")
+			printStatusSectionHeader(r.stdout, "gateway runtime")
+			if matrixLine != "" {
+				printStatusExternalLine(r.stdout, matrixLine, "INFO")
+			}
+			if matrixWarning != "" {
+				printStatusExternalLine(r.stdout, matrixWarning, "WARN")
+			}
+			for _, line := range nodeLines {
+				printStatusExternalLine(r.stdout, line, "INFO")
+			}
+			if nodeWarning != "" {
+				printStatusExternalLine(r.stdout, nodeWarning, "WARN")
+			}
 		}
 	}
 
-	if gateway.LoadState == "not-found" {
-		return fmt.Errorf("gopher-gateway.service is not installed")
+	if selected.LoadState == "not-found" {
+		return fmt.Errorf("%s is not installed", unit)
 	}
-	if gateway.ActiveState != "active" {
-		return fmt.Errorf("gopher-gateway.service is %s", valueOrUnknown(gateway.ActiveState))
+	if selected.ActiveState != "active" {
+		return fmt.Errorf("%s is %s", unit, valueOrUnknown(selected.ActiveState))
 	}
 	return nil
+}
+
+func printStatusSectionHeader(out io.Writer, title string) {
+	fmt.Fprintln(out, title)
+	fmt.Fprintln(out, strings.Repeat("-", len(title)))
+}
+
+func printStatusStateLine(out io.Writer, label string, detail string) {
+	printStatusRow(out, label, statusBadge(detail), detail)
+}
+
+func printStatusValueLine(out io.Writer, label string, value string) {
+	printStatusRow(out, label, "INFO", value)
+}
+
+func printStatusExternalLine(out io.Writer, raw string, fallbackBadge string) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return
+	}
+	if strings.HasPrefix(trimmed, "- ") {
+		printStatusRow(out, "node", fallbackBadge, strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")))
+		return
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) == 2 {
+		label := strings.TrimSpace(parts[0])
+		detail := strings.TrimSpace(parts[1])
+		printStatusRow(out, label, statusBadgeWithFallback(detail, fallbackBadge), detail)
+		return
+	}
+	printStatusRow(out, "info", statusBadgeWithFallback(trimmed, fallbackBadge), trimmed)
+}
+
+func printStatusRow(out io.Writer, label string, badge string, detail string) {
+	fmt.Fprintf(out, "  %-16s [%-4s] %s\n", valueOrUnknown(label), valueOrUnknown(badge), valueOrUnknown(detail))
+}
+
+func statusBadge(detail string) string {
+	return statusBadgeWithFallback(detail, "INFO")
+}
+
+func statusBadgeWithFallback(detail string, fallback string) string {
+	text := strings.ToLower(strings.TrimSpace(detail))
+	switch {
+	case text == "":
+		return fallback
+	case strings.Contains(text, "not installed"), strings.Contains(text, "failed"), strings.Contains(text, "error"):
+		return "FAIL"
+	case strings.Contains(text, "degraded"), strings.Contains(text, "unknown"), strings.Contains(text, "warning"), strings.Contains(text, "inactive"):
+		return "WARN"
+	case strings.Contains(text, "healthy"), strings.Contains(text, "active"), strings.Contains(text, "enabled"):
+		return "OK"
+	default:
+		return fallback
+	}
 }
 
 type matrixRuntimeMetrics struct {
@@ -214,9 +299,8 @@ type matrixRuntimeMetrics struct {
 	InboundFailures        uint64 `json:"inbound_failures"`
 }
 
-func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
-	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: "/etc/gopher/gopher.toml"})
-	if err != nil || !cfg.Matrix.Enabled {
+func readMatrixStatusLine(ctx context.Context, cfg config.GatewayConfig, cfgErr error) (line string, warning string) {
+	if cfgErr != nil || !cfg.Matrix.Enabled {
 		return "", ""
 	}
 	addr := strings.TrimSpace(cfg.Matrix.ListenAddr)
@@ -260,6 +344,61 @@ func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
 	return line, warning
 }
 
+func readGatewayNodeStatusLines(ctx context.Context, cfg config.GatewayConfig, cfgErr error) ([]string, string) {
+	if cfgErr != nil {
+		return nil, ""
+	}
+	addr := strings.TrimSpace(cfg.Panel.ListenAddr)
+	if addr == "" {
+		addr = "127.0.0.1:29329"
+	}
+	url := fmt.Sprintf("http://%s/_gopher/panel/nodes", addr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: invalid panel request (%v)", err)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: panel endpoint is not reachable at %s", addr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: panel nodes endpoint returned %s", resp.Status)
+	}
+	var payload struct {
+		Nodes []scheduler.NodeInfo `json:"nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: unable to decode panel nodes (%v)", err)
+	}
+	if len(payload.Nodes) == 0 {
+		return []string{"known nodes:    none"}, ""
+	}
+	sort.Slice(payload.Nodes, func(i, j int) bool {
+		return strings.TrimSpace(payload.Nodes[i].NodeID) < strings.TrimSpace(payload.Nodes[j].NodeID)
+	})
+	lines := []string{fmt.Sprintf("known nodes:    %d", len(payload.Nodes))}
+	for _, node := range payload.Nodes {
+		nodeID := strings.TrimSpace(node.NodeID)
+		if nodeID == "" {
+			nodeID = "unknown"
+		}
+		heartbeat := "-"
+		if !node.LastHeartbeat.IsZero() {
+			heartbeat = node.LastHeartbeat.UTC().Format(time.RFC3339)
+		}
+		lines = append(lines, fmt.Sprintf(
+			"  - %s (%s) heartbeat=%s capabilities=%s",
+			nodeID,
+			schedulerNodeRole(node.IsGateway),
+			heartbeat,
+			formatSchedulerCapabilities(node.Capabilities),
+		))
+	}
+	return lines, ""
+}
+
 func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
 	if !metrics.PresenceEnabled {
 		return "disabled"
@@ -274,8 +413,47 @@ func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
 	return state
 }
 
+func formatSchedulerCapabilities(capabilities []scheduler.Capability) string {
+	if len(capabilities) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		name := strings.TrimSpace(capability.Name)
+		if name == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s", schedulerCapabilityKind(capability.Kind), name))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func schedulerCapabilityKind(kind scheduler.CapabilityKind) string {
+	switch kind {
+	case scheduler.CapabilityAgent:
+		return "agent"
+	case scheduler.CapabilityTool:
+		return "tool"
+	case scheduler.CapabilitySystem:
+		return "system"
+	default:
+		return "unknown"
+	}
+}
+
+func schedulerNodeRole(isGateway bool) string {
+	if isGateway {
+		return "gateway"
+	}
+	return "node"
+}
+
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx)
+	unit, err := resolveManagedServiceUnit(ctx, serviceTargetAuto)
 	if err != nil {
 		return err
 	}
@@ -283,15 +461,15 @@ func (r *linuxServiceRuntime) Start(ctx context.Context) error {
 }
 
 func (r *linuxServiceRuntime) Stop(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx)
+	unit, err := resolveManagedServiceUnit(ctx, serviceTargetAuto)
 	if err != nil {
 		return err
 	}
 	return systemctlRunner{}.Run(ctx, "systemctl", "stop", unit)
 }
 
-func (r *linuxServiceRuntime) Restart(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx)
+func (r *linuxServiceRuntime) Restart(ctx context.Context, opts serviceTargetOptions) error {
+	unit, err := resolveManagedServiceUnit(ctx, opts.Target)
 	if err != nil {
 		return err
 	}
@@ -301,7 +479,11 @@ func (r *linuxServiceRuntime) Restart(ctx context.Context) error {
 func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) error {
 	unit := strings.TrimSpace(opts.Unit)
 	if unit == "" {
-		unit = "gopher-gateway.service"
+		resolvedUnit, err := resolveManagedServiceUnit(ctx, opts.Target)
+		if err != nil {
+			return err
+		}
+		unit = resolvedUnit
 	}
 	lines := opts.Lines
 	if lines <= 0 {
@@ -375,7 +557,7 @@ func durationToOnCalendar(d time.Duration) string {
 	}
 }
 
-func resolveManagedServiceUnit(ctx context.Context) (string, error) {
+func resolveManagedServiceUnit(ctx context.Context, target serviceTarget) (string, error) {
 	gateway, err := readUnitStatusForManagedUnit(ctx, gopherGatewayUnitName)
 	if err != nil {
 		return "", err
@@ -387,6 +569,22 @@ func resolveManagedServiceUnit(ctx context.Context) (string, error) {
 
 	gatewayInstalled := gateway.LoadState != "not-found"
 	nodeInstalled := node.LoadState != "not-found"
+	switch target {
+	case "", serviceTargetAuto:
+		// Auto mode below.
+	case serviceTargetGateway:
+		if !gatewayInstalled {
+			return "", fmt.Errorf("%s is not installed", gopherGatewayUnitName)
+		}
+		return gopherGatewayUnitName, nil
+	case serviceTargetNode:
+		if !nodeInstalled {
+			return "", fmt.Errorf("%s is not installed", gopherNodeUnitName)
+		}
+		return gopherNodeUnitName, nil
+	default:
+		return "", fmt.Errorf("invalid service role %q", target)
+	}
 
 	switch {
 	case gatewayInstalled && !nodeInstalled:
@@ -403,6 +601,17 @@ func resolveManagedServiceUnit(ctx context.Context) (string, error) {
 		return gopherGatewayUnitName, nil
 	default:
 		return "", fmt.Errorf("no gopher service installed (checked %s and %s)", gopherGatewayUnitName, gopherNodeUnitName)
+	}
+}
+
+func describeManagedServiceUnit(unit string) string {
+	switch unit {
+	case gopherGatewayUnitName:
+		return "gateway"
+	case gopherNodeUnitName:
+		return "node"
+	default:
+		return unit
 	}
 }
 

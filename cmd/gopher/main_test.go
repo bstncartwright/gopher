@@ -10,8 +10,11 @@ import (
 
 type statusOnlyFakeRuntime struct {
 	statusCalled  bool
+	statusOpts    serviceStatusOptions
 	restartCalled bool
+	restartOpts   serviceTargetOptions
 	logsCalled    bool
+	logsOpts      serviceLogsOptions
 	logsFollow    bool
 }
 
@@ -26,9 +29,10 @@ func (f *statusOnlyFakeRuntime) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-func (f *statusOnlyFakeRuntime) Status(ctx context.Context) error {
+func (f *statusOnlyFakeRuntime) Status(ctx context.Context, opts serviceStatusOptions) error {
 	_ = ctx
 	f.statusCalled = true
+	f.statusOpts = opts
 	return nil
 }
 
@@ -42,15 +46,17 @@ func (f *statusOnlyFakeRuntime) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (f *statusOnlyFakeRuntime) Restart(ctx context.Context) error {
+func (f *statusOnlyFakeRuntime) Restart(ctx context.Context, opts serviceTargetOptions) error {
 	_ = ctx
 	f.restartCalled = true
+	f.restartOpts = opts
 	return nil
 }
 
 func (f *statusOnlyFakeRuntime) Logs(ctx context.Context, opts serviceLogsOptions) error {
 	_ = ctx
 	f.logsCalled = true
+	f.logsOpts = opts
 	f.logsFollow = opts.Follow
 	return nil
 }
@@ -73,6 +79,9 @@ func TestRunStatusRoutesToServiceStatus(t *testing.T) {
 	if !fake.statusCalled {
 		t.Fatalf("expected service status to be called")
 	}
+	if fake.statusOpts.Target != serviceTargetAuto {
+		t.Fatalf("status target = %q, want %q", fake.statusOpts.Target, serviceTargetAuto)
+	}
 }
 
 func TestRunRestartRoutesToServiceRestart(t *testing.T) {
@@ -92,6 +101,9 @@ func TestRunRestartRoutesToServiceRestart(t *testing.T) {
 	}
 	if !fake.restartCalled {
 		t.Fatalf("expected service restart to be called")
+	}
+	if fake.restartOpts.Target != serviceTargetAuto {
+		t.Fatalf("restart target = %q, want %q", fake.restartOpts.Target, serviceTargetAuto)
 	}
 }
 
@@ -116,6 +128,9 @@ func TestRunLogsRoutesToServiceLogs(t *testing.T) {
 	if !fake.logsFollow {
 		t.Fatalf("expected --follow to be propagated")
 	}
+	if fake.logsOpts.Target != serviceTargetAuto {
+		t.Fatalf("logs target = %q, want %q", fake.logsOpts.Target, serviceTargetAuto)
+	}
 }
 
 func TestRunVersionPrintsBinaryVersion(t *testing.T) {
@@ -139,5 +154,45 @@ func TestRunNodeHelp(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "gopher node run") {
 		t.Fatalf("unexpected node help output: %q", out.String())
+	}
+}
+
+func TestRunStatusPassesRoleFlag(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+
+	fake := &statusOnlyFakeRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"status", "--role", "node"}, &out, &out); err != nil {
+		t.Fatalf("run(status --role node) error: %v", err)
+	}
+	if fake.statusOpts.Target != serviceTargetNode {
+		t.Fatalf("status target = %q, want %q", fake.statusOpts.Target, serviceTargetNode)
+	}
+}
+
+func TestRunRestartPassesRoleFlag(t *testing.T) {
+	prev := newServiceRuntime
+	defer func() { newServiceRuntime = prev }()
+
+	fake := &statusOnlyFakeRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+
+	var out bytes.Buffer
+	if err := run([]string{"restart", "--role", "node"}, &out, &out); err != nil {
+		t.Fatalf("run(restart --role node) error: %v", err)
+	}
+	if fake.restartOpts.Target != serviceTargetNode {
+		t.Fatalf("restart target = %q, want %q", fake.restartOpts.Target, serviceTargetNode)
 	}
 }

@@ -80,6 +80,36 @@ func streamOpenAIResponses(model Model, conversation Context, options *OpenAIRes
 			options.OnPayload(payload)
 		}
 
+		transport := resolveOpenAIResponsesTransport(model, options)
+		headers := mergeHeaders(model.Headers, options.Headers)
+		if shouldAttemptOpenAIResponsesWebSocket(transport) {
+			wsStarted := false
+			if err := processOpenAIResponsesWebSocket(
+				ctx,
+				resolveOpenAIResponsesWebSocketURL(model.BaseURL),
+				payload,
+				headers,
+				apiKey,
+				&output,
+				stream,
+				model,
+				options,
+				&wsStarted,
+			); err == nil {
+				if output.StopReason == StopReasonError || output.StopReason == StopReasonAborted {
+					stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
+					return
+				}
+				stream.Push(AssistantMessageEvent{Type: EventDone, Reason: output.StopReason, Message: &output})
+				return
+			} else if transport == TransportWebSocket || wsStarted {
+				output.StopReason = stopReasonForError(ctx, err)
+				output.ErrorMessage = err.Error()
+				stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
+				return
+			}
+		}
+
 		body, err := json.Marshal(payload)
 		if err != nil {
 			output.StopReason = StopReasonError
@@ -88,7 +118,7 @@ func streamOpenAIResponses(model Model, conversation Context, options *OpenAIRes
 			return
 		}
 
-		endpoint := strings.TrimRight(model.BaseURL, "/") + "/responses"
+		endpoint := resolveOpenAIResponsesURL(model.BaseURL)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			output.StopReason = StopReasonError
@@ -96,8 +126,8 @@ func streamOpenAIResponses(model Model, conversation Context, options *OpenAIRes
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
 			return
 		}
-		headers := withJSONContentType(mergeHeaders(model.Headers, options.Headers))
-		for k, v := range headers {
+		sseHeaders := withJSONContentType(headers)
+		for k, v := range sseHeaders {
 			req.Header.Set(k, v)
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)

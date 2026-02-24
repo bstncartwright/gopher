@@ -301,10 +301,14 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 	case "response.failed":
 		return fmt.Errorf("response failed")
 	case "error":
-		code := stringFrom(event, "code")
-		msg := stringFrom(event, "message")
+		errObj := mapFrom(event, "error")
+		code := firstNonEmpty(stringFrom(event, "code"), stringFrom(errObj, "code"))
+		msg := firstNonEmpty(stringFrom(event, "message"), stringFrom(errObj, "message"))
 		if code != "" {
 			return fmt.Errorf("error code %s: %s", code, msg)
+		}
+		if msg == "" {
+			msg = "unknown response error"
 		}
 		return fmt.Errorf("%s", msg)
 	}

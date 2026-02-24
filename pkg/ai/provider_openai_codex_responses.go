@@ -136,7 +136,11 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 		headers := buildCodexHeaders(model.Headers, options.Headers, accountID, apiKey, options.SessionID)
 		transport := options.Transport
 		if transport == "" {
-			transport = TransportSSE
+			if strings.TrimSpace(options.SessionID) != "" && supportsCodexWebSocketByDefault(model.BaseURL) {
+				transport = TransportAuto
+			} else {
+				transport = TransportSSE
+			}
 		}
 
 		if transport != TransportSSE {
@@ -293,6 +297,15 @@ func resolveCodexWebSocketURL(baseURL string) string {
 		u.Scheme = "ws"
 	}
 	return u.String()
+}
+
+func supportsCodexWebSocketByDefault(baseURL string) bool {
+	resolved := resolveCodexURL(baseURL)
+	u, err := url.Parse(resolved)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), "chatgpt.com")
 }
 
 func buildCodexHeaders(base, extra map[string]string, accountID, token, sessionID string) http.Header {

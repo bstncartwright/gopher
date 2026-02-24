@@ -533,8 +533,8 @@ func runGatewayConfigSubcommand(args []string, stdout, stderr io.Writer) error {
 		if _, err := os.Stat(target); err == nil && !*force {
 			return fmt.Errorf("file already exists: %s (use --force to overwrite)", target)
 		}
-		if err := os.WriteFile(target, []byte(config.DefaultGatewayTOML()), 0o644); err != nil {
-			return fmt.Errorf("write config file %s: %w", target, err)
+		if err := writeConfigFileWithBackup(target, []byte(config.DefaultGatewayTOML())); err != nil {
+			return err
 		}
 		fmt.Fprintf(stdout, "wrote %s\n", target)
 		return nil

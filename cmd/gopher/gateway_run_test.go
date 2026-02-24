@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -224,6 +225,40 @@ func TestRunGatewayConfigSubcommandInit(t *testing.T) {
 	}
 	if got := string(body); !strings.Contains(got, "[gateway]") {
 		t.Fatalf("generated config missing gateway section: %q", got)
+	}
+}
+
+func TestRunGatewayConfigSubcommandInitForceRollsBackOnWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "gopher.toml")
+	original := []byte("[gateway]\nnode_id = \"original\"\n")
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatalf("seed config error: %v", err)
+	}
+
+	prevWrite := configFileWrite
+	configFileWrite = func(path string, data []byte, perm os.FileMode) error {
+		if path == target {
+			return fmt.Errorf("forced write failure")
+		}
+		return prevWrite(path, data, perm)
+	}
+	defer func() {
+		configFileWrite = prevWrite
+	}()
+
+	var out bytes.Buffer
+	err := runGatewayConfigSubcommand([]string{"init", "--path", target, "--force"}, &out, io.Discard)
+	if err == nil {
+		t.Fatalf("expected write failure")
+	}
+
+	body, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read restored config error: %v", readErr)
+	}
+	if string(body) != string(original) {
+		t.Fatalf("config rollback failed: got %q want %q", string(body), string(original))
 	}
 }
 

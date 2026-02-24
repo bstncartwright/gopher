@@ -457,10 +457,10 @@ func TestDMPipelineProgressUpdatesDuringToolExecution(t *testing.T) {
 	for _, message := range messages {
 		joined += "\n" + message.Text
 	}
-	if !strings.Contains(joined, "Update: running `exec`.") {
+	if !strings.Contains(joined, "running `exec`.") {
 		t.Fatalf("missing tool start progress update: %q", joined)
 	}
-	if !strings.Contains(joined, "Update: `exec` completed (ok).") {
+	if !strings.Contains(joined, "`exec` completed (ok).") {
 		t.Fatalf("missing tool completion progress update: %q", joined)
 	}
 	if !strings.Contains(joined, "ack") {

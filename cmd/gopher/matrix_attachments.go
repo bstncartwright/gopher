@@ -5,16 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bstncartwright/gopher/pkg/agentcore"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 	"github.com/bstncartwright/gopher/pkg/transport"
 )
 
 const maxMatrixAttachmentBytes = 20 << 20
-
-var autoAttachmentToolNames = map[string]struct{}{
-	"write": {},
-}
 
 func newMatrixAttachmentResolver(runtime *gatewayAgentRuntime) func(conversationID string, agentID sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment {
 	if runtime == nil || len(runtime.Agents) == 0 {
@@ -40,7 +35,7 @@ func newMatrixAttachmentResolver(runtime *gatewayAgentRuntime) func(conversation
 			return nil
 		}
 		root, ok := event.Payload.(map[string]any)
-		if !ok || !shouldResolveMatrixAttachments(root) {
+		if !ok || strings.ToLower(strings.TrimSpace(stringValue(root["status"]))) != "ok" {
 			return nil
 		}
 		workspace := strings.TrimSpace(workspaceByActor[agentID])
@@ -81,31 +76,6 @@ func newMatrixAttachmentResolver(runtime *gatewayAgentRuntime) func(conversation
 	}
 }
 
-func shouldResolveMatrixAttachments(root map[string]any) bool {
-	if strings.ToLower(strings.TrimSpace(stringValue(root["status"]))) != string(agentcore.ToolStatusOK) {
-		return false
-	}
-	if hasExplicitAttachmentCandidates(root["result"]) {
-		return true
-	}
-	_, allowed := autoAttachmentToolNames[strings.ToLower(strings.TrimSpace(stringValue(root["name"])))]
-	return allowed
-}
-
-func hasExplicitAttachmentCandidates(value any) bool {
-	resultMap, ok := value.(map[string]any)
-	if !ok {
-		return false
-	}
-	for key := range resultMap {
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "attachment", "attachments", "attachment_path", "attachment_paths":
-			return true
-		}
-	}
-	return false
-}
-
 func stringValue(value any) string {
 	if value == nil {
 		return ""
@@ -123,15 +93,7 @@ func extractToolResultPathCandidates(root map[string]any) []string {
 	if !exists {
 		return nil
 	}
-	hasExplicit := hasExplicitAttachmentCandidates(result)
-	allowedAuto := false
-	if !hasExplicit {
-		_, allowedAuto = autoAttachmentToolNames[strings.ToLower(strings.TrimSpace(stringValue(root["name"])))]
-	}
-	if !hasExplicit && !allowedAuto {
-		return nil
-	}
-	candidates := collectPathCandidates(result, hasExplicit)
+	candidates := collectExplicitAttachmentPathCandidates(result, false)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -154,21 +116,25 @@ func extractToolResultPathCandidates(root map[string]any) []string {
 	return out
 }
 
-func collectPathCandidates(value any, explicitOnly bool) []string {
+func collectExplicitAttachmentPathCandidates(value any, underAttachmentField bool) []string {
 	switch typed := value.(type) {
 	case string:
+		if !underAttachmentField {
+			return nil
+		}
 		return []string{typed}
 	case []any:
 		out := make([]string, 0, len(typed))
 		for _, item := range typed {
-			out = append(out, collectPathCandidates(item, explicitOnly)...)
+			out = append(out, collectExplicitAttachmentPathCandidates(item, underAttachmentField)...)
 		}
 		return out
 	case []string:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			out = append(out, collectPathCandidates(item, explicitOnly)...)
+		if !underAttachmentField {
+			return nil
 		}
+		out := make([]string, 0, len(typed))
+		out = append(out, typed...)
 		return out
 	case map[string]any:
 		out := []string{}
@@ -176,12 +142,10 @@ func collectPathCandidates(value any, explicitOnly bool) []string {
 			keyValue := strings.ToLower(strings.TrimSpace(key))
 			switch keyValue {
 			case "attachment", "attachments", "attachment_path", "attachment_paths":
-				out = append(out, collectPathCandidates(item, false)...)
-			case "path", "file", "paths", "files", "result":
-				if explicitOnly {
-					continue
-				}
-				out = append(out, collectPathCandidates(item, false)...)
+				out = append(out, collectExplicitAttachmentPathCandidates(item, true)...)
+			default:
+				// Allow explicit attachment fields nested anywhere under tool results.
+				out = append(out, collectExplicitAttachmentPathCandidates(item, underAttachmentField)...)
 			}
 		}
 		return out

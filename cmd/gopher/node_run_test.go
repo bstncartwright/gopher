@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -154,6 +155,40 @@ func TestRunNodeConfigSubcommandInit(t *testing.T) {
 	}
 	if got := string(body); !strings.Contains(got, "[node]") {
 		t.Fatalf("generated config missing node section: %q", got)
+	}
+}
+
+func TestRunNodeConfigSubcommandInitForceRollsBackOnWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "node.toml")
+	original := []byte("[node]\nnode_id = \"original\"\n")
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatalf("seed config error: %v", err)
+	}
+
+	prevWrite := configFileWrite
+	configFileWrite = func(path string, data []byte, perm os.FileMode) error {
+		if path == target {
+			return fmt.Errorf("forced write failure")
+		}
+		return prevWrite(path, data, perm)
+	}
+	defer func() {
+		configFileWrite = prevWrite
+	}()
+
+	var out bytes.Buffer
+	err := runNodeConfigSubcommand([]string{"init", "--path", target, "--force"}, &out, io.Discard)
+	if err == nil {
+		t.Fatalf("expected write failure")
+	}
+
+	body, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read restored config error: %v", readErr)
+	}
+	if string(body) != string(original) {
+		t.Fatalf("config rollback failed: got %q want %q", string(body), string(original))
 	}
 }
 

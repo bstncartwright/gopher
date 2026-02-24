@@ -71,17 +71,24 @@ func TestLoadGatewayAgentRuntimeRejectsDuplicateAgentIDs(t *testing.T) {
 	}
 }
 
-func TestDiscoverGatewayAgentWorkspacesRejectsLegacyNestedPath(t *testing.T) {
+func TestDiscoverGatewayAgentWorkspacesCreatesDefaultWorkspaceWhenMissing(t *testing.T) {
 	workspace := t.TempDir()
-	legacyPath := filepath.Join(workspace, ".gopher", "agents", "planner")
-	createGatewayTestAgentWorkspace(t, legacyPath, "planner")
 
-	_, err := discoverGatewayAgentWorkspaces(workspace)
-	if err == nil {
-		t.Fatalf("expected error for legacy nested path")
+	workspaces, err := discoverGatewayAgentWorkspaces(workspace)
+	if err != nil {
+		t.Fatalf("discoverGatewayAgentWorkspaces() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "/agents/<agent_id>") {
-		t.Fatalf("expected agents path guidance, got: %v", err)
+	if len(workspaces) != 1 {
+		t.Fatalf("workspaces len = %d, want 1", len(workspaces))
+	}
+	if got, want := workspaces[0], filepath.Join(workspace, "agents", "default"); got != want {
+		t.Fatalf("workspace = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "agents", "default", "config.json")); err != nil {
+		t.Fatalf("expected default config.json to exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "agents", "default", "policies.json")); err != nil {
+		t.Fatalf("expected default policies.json to exist: %v", err)
 	}
 }
 

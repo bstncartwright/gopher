@@ -16,10 +16,12 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/config"
+	"github.com/bstncartwright/gopher/pkg/scheduler"
 	"github.com/bstncartwright/gopher/pkg/service"
 )
 
@@ -34,6 +36,10 @@ const (
 )
 
 var readUnitStatusForManagedUnit = readUnitStatus
+var loadGatewayConfigForStatus = func() (config.GatewayConfig, error) {
+	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: "/etc/gopher/gopher.toml"})
+	return cfg, err
+}
 
 func defaultServiceRuntime(stdout, stderr io.Writer) serviceRuntime {
 	return &linuxServiceRuntime{stdout: stdout, stderr: stderr}
@@ -157,6 +163,10 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 		return err
 	}
 	nats, _ := readUnitStatus(ctx, "nats-server.service")
+	gatewayCfg, gatewayCfgErr := config.GatewayConfig{}, fmt.Errorf("gateway config unavailable")
+	if unit == gopherGatewayUnitName {
+		gatewayCfg, gatewayCfgErr = loadGatewayConfigForStatus()
+	}
 
 	gopherPath, gopherVersion, gopherSHA := readBinaryDetails("gopher")
 	natsPath, natsVersion, _ := readBinaryDetails("nats-server")
@@ -177,7 +187,7 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 	fmt.Fprintf(r.stdout, "nats version:    %s\n", valueOrUnknown(natsVersion))
 
 	if unit == gopherGatewayUnitName {
-		matrixLine, matrixWarning := readMatrixStatusLine(ctx)
+		matrixLine, matrixWarning := readMatrixStatusLine(ctx, gatewayCfg, gatewayCfgErr)
 		if matrixLine != "" || matrixWarning != "" {
 			fmt.Fprintln(r.stdout, "")
 			if matrixLine != "" {
@@ -185,6 +195,16 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 			}
 			if matrixWarning != "" {
 				fmt.Fprintln(r.stdout, matrixWarning)
+			}
+		}
+		nodeLines, nodeWarning := readGatewayNodeStatusLines(ctx, gatewayCfg, gatewayCfgErr)
+		if len(nodeLines) > 0 || nodeWarning != "" {
+			fmt.Fprintln(r.stdout, "")
+			for _, line := range nodeLines {
+				fmt.Fprintln(r.stdout, line)
+			}
+			if nodeWarning != "" {
+				fmt.Fprintln(r.stdout, nodeWarning)
 			}
 		}
 	}
@@ -222,9 +242,8 @@ type matrixRuntimeMetrics struct {
 	InboundFailures        uint64 `json:"inbound_failures"`
 }
 
-func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
-	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: "/etc/gopher/gopher.toml"})
-	if err != nil || !cfg.Matrix.Enabled {
+func readMatrixStatusLine(ctx context.Context, cfg config.GatewayConfig, cfgErr error) (line string, warning string) {
+	if cfgErr != nil || !cfg.Matrix.Enabled {
 		return "", ""
 	}
 	addr := strings.TrimSpace(cfg.Matrix.ListenAddr)
@@ -268,6 +287,61 @@ func readMatrixStatusLine(ctx context.Context) (line string, warning string) {
 	return line, warning
 }
 
+func readGatewayNodeStatusLines(ctx context.Context, cfg config.GatewayConfig, cfgErr error) ([]string, string) {
+	if cfgErr != nil {
+		return nil, ""
+	}
+	addr := strings.TrimSpace(cfg.Panel.ListenAddr)
+	if addr == "" {
+		addr = "127.0.0.1:29329"
+	}
+	url := fmt.Sprintf("http://%s/_gopher/panel/nodes", addr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: invalid panel request (%v)", err)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: panel endpoint is not reachable at %s", addr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: panel nodes endpoint returned %s", resp.Status)
+	}
+	var payload struct {
+		Nodes []scheduler.NodeInfo `json:"nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: unable to decode panel nodes (%v)", err)
+	}
+	if len(payload.Nodes) == 0 {
+		return []string{"known nodes:    none"}, ""
+	}
+	sort.Slice(payload.Nodes, func(i, j int) bool {
+		return strings.TrimSpace(payload.Nodes[i].NodeID) < strings.TrimSpace(payload.Nodes[j].NodeID)
+	})
+	lines := []string{fmt.Sprintf("known nodes:    %d", len(payload.Nodes))}
+	for _, node := range payload.Nodes {
+		nodeID := strings.TrimSpace(node.NodeID)
+		if nodeID == "" {
+			nodeID = "unknown"
+		}
+		heartbeat := "-"
+		if !node.LastHeartbeat.IsZero() {
+			heartbeat = node.LastHeartbeat.UTC().Format(time.RFC3339)
+		}
+		lines = append(lines, fmt.Sprintf(
+			"  - %s (%s) heartbeat=%s capabilities=%s",
+			nodeID,
+			schedulerNodeRole(node.IsGateway),
+			heartbeat,
+			formatSchedulerCapabilities(node.Capabilities),
+		))
+	}
+	return lines, ""
+}
+
 func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
 	if !metrics.PresenceEnabled {
 		return "disabled"
@@ -280,6 +354,45 @@ func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
 		return fmt.Sprintf("%s (failures=%d)", state, metrics.PresenceFailures)
 	}
 	return state
+}
+
+func formatSchedulerCapabilities(capabilities []scheduler.Capability) string {
+	if len(capabilities) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		name := strings.TrimSpace(capability.Name)
+		if name == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s", schedulerCapabilityKind(capability.Kind), name))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func schedulerCapabilityKind(kind scheduler.CapabilityKind) string {
+	switch kind {
+	case scheduler.CapabilityAgent:
+		return "agent"
+	case scheduler.CapabilityTool:
+		return "tool"
+	case scheduler.CapabilitySystem:
+		return "system"
+	default:
+		return "unknown"
+	}
+}
+
+func schedulerNodeRole(isGateway bool) string {
+	if isGateway {
+		return "gateway"
+	}
+	return "node"
 }
 
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {

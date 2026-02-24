@@ -204,6 +204,7 @@ func (s *Server) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_gopher/panel", s.handlePage)
 	mux.HandleFunc("GET /_gopher/panel/health", s.handleHealth)
+	mux.HandleFunc("GET /_gopher/panel/nodes", s.handleNodes)
 	mux.HandleFunc("GET /_gopher/panel/fragments/overview", s.handleOverview)
 	mux.HandleFunc("GET /_gopher/panel/fragments/sessions", s.handleSessions)
 	mux.HandleFunc("GET /_gopher/panel/fragments/session/{sessionID}", s.handleSessionDetail)
@@ -222,6 +223,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"listen_addr":        s.listenAddr,
 		"session_store":      s.store != nil,
 		"tracked_node_count": len(s.nodeSnapshot()),
+	})
+}
+
+func (s *Server) handleNodes(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]any{
+		"nodes": s.nodeSnapshot(),
 	})
 }
 

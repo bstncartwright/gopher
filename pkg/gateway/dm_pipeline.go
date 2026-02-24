@@ -15,16 +15,17 @@ import (
 )
 
 type DMPipelineOptions struct {
-	Manager          sessionrt.SessionManager
-	Transport        transport.Transport
-	AgentID          sessionrt.ActorID
-	AgentByRecipient map[string]sessionrt.ActorID
-	RecipientByAgent map[sessionrt.ActorID]string
-	Conversations    *ConversationSessionMap
-	Bindings         ConversationBindingStore
-	TracePublisher   TracePublisher
-	TraceProvisioner TraceConversationProvisioner
-	ProgressUpdates  bool
+	Manager            sessionrt.SessionManager
+	Transport          transport.Transport
+	AgentID            sessionrt.ActorID
+	AgentByRecipient   map[string]sessionrt.ActorID
+	RecipientByAgent   map[sessionrt.ActorID]string
+	Conversations      *ConversationSessionMap
+	Bindings           ConversationBindingStore
+	TracePublisher     TracePublisher
+	TraceProvisioner   TraceConversationProvisioner
+	ProgressUpdates    bool
+	AttachmentResolver func(conversationID string, agentID sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment
 }
 
 type conversationRoute struct {
@@ -68,26 +69,29 @@ type DMPipeline struct {
 	conversations *ConversationSessionMap
 	bindings      ConversationBindingStore
 
-	setupMu          sync.Mutex
-	subscribedMu     sync.Mutex
-	subscribed       map[sessionrt.SessionID]struct{}
-	fallbackMu       sync.Mutex
-	lastFallback     map[string]time.Time
-	processingMu     sync.Mutex
-	processing       map[string]int
-	typingMu         sync.Mutex
-	typingCancel     map[string]context.CancelFunc
-	routeMu          sync.RWMutex
-	routes           map[string]conversationRoute
-	traceRouteMu     sync.RWMutex
-	traceByDM        map[string]string
-	dmByTrace        map[string]string
-	traceSetupMu     sync.Mutex
-	traceSetup       map[string]traceProvisionState
-	heartbeatMu      sync.Mutex
-	heartbeats       map[string]heartbeatState
-	tracePublisher   TracePublisher
-	traceProvisioner TraceConversationProvisioner
+	setupMu            sync.Mutex
+	subscribedMu       sync.Mutex
+	subscribed         map[sessionrt.SessionID]struct{}
+	fallbackMu         sync.Mutex
+	lastFallback       map[string]time.Time
+	processingMu       sync.Mutex
+	processing         map[string]int
+	typingMu           sync.Mutex
+	typingCancel       map[string]context.CancelFunc
+	attachmentMu       sync.Mutex
+	pendingFiles       map[string][]transport.OutboundAttachment
+	routeMu            sync.RWMutex
+	routes             map[string]conversationRoute
+	traceRouteMu       sync.RWMutex
+	traceByDM          map[string]string
+	dmByTrace          map[string]string
+	traceSetupMu       sync.Mutex
+	traceSetup         map[string]traceProvisionState
+	heartbeatMu        sync.Mutex
+	heartbeats         map[string]heartbeatState
+	tracePublisher     TracePublisher
+	traceProvisioner   TraceConversationProvisioner
+	attachmentResolver func(conversationID string, agentID sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment
 }
 
 type heartbeatState struct {
@@ -169,24 +173,26 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		"agents_by_recipient_count", len(agentByRecip),
 	)
 	pipeline := &DMPipeline{
-		manager:          opts.Manager,
-		transport:        opts.Transport,
-		agentID:          opts.AgentID,
-		agentByRecip:     agentByRecip,
-		recipByAgent:     recipByAgent,
-		conversations:    conversations,
-		bindings:         bindings,
-		subscribed:       map[sessionrt.SessionID]struct{}{},
-		lastFallback:     map[string]time.Time{},
-		processing:       map[string]int{},
-		typingCancel:     map[string]context.CancelFunc{},
-		routes:           map[string]conversationRoute{},
-		traceByDM:        map[string]string{},
-		dmByTrace:        map[string]string{},
-		traceSetup:       map[string]traceProvisionState{},
-		heartbeats:       map[string]heartbeatState{},
-		tracePublisher:   opts.TracePublisher,
-		traceProvisioner: opts.TraceProvisioner,
+		manager:            opts.Manager,
+		transport:          opts.Transport,
+		agentID:            opts.AgentID,
+		agentByRecip:       agentByRecip,
+		recipByAgent:       recipByAgent,
+		conversations:      conversations,
+		bindings:           bindings,
+		subscribed:         map[sessionrt.SessionID]struct{}{},
+		lastFallback:       map[string]time.Time{},
+		processing:         map[string]int{},
+		typingCancel:       map[string]context.CancelFunc{},
+		pendingFiles:       map[string][]transport.OutboundAttachment{},
+		routes:             map[string]conversationRoute{},
+		traceByDM:          map[string]string{},
+		dmByTrace:          map[string]string{},
+		traceSetup:         map[string]traceProvisionState{},
+		heartbeats:         map[string]heartbeatState{},
+		tracePublisher:     opts.TracePublisher,
+		traceProvisioner:   opts.TraceProvisioner,
+		attachmentResolver: opts.AttachmentResolver,
 	}
 	for _, binding := range bindings.List() {
 		pipeline.conversations.Set(binding.ConversationID, binding.SessionID)
@@ -661,8 +667,12 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			}
 			if event.Type == sessionrt.EventError {
 				p.finishProcessing(conversationID)
+				p.clearPendingAttachments(conversationID)
 				p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), errorTextFromPayload(event.Payload))
 				continue
+			}
+			if event.Type == sessionrt.EventToolResult {
+				p.captureAttachmentsFromEvent(conversationID, event)
 			}
 
 			if event.Type != sessionrt.EventMessage {
@@ -685,6 +695,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				continue
 			}
 			p.finishProcessing(conversationID)
+			attachments := p.takePendingAttachments(conversationID)
 			content := strings.TrimSpace(msg.Content)
 			if suppress, normalized := p.consumeHeartbeatReply(conversationID, content); suppress {
 				continue
@@ -692,17 +703,19 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				msg.Content = normalized
 				content = normalized
 			}
-			if content == "" {
+			if content == "" && len(attachments) == 0 {
 				continue
 			}
 			slog.Debug("dm_pipeline: sending message",
 				"conversation_id", conversationID,
 				"content_length", len(content),
+				"attachments", len(attachments),
 			)
 			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
 				ConversationID: conversationID,
 				SenderID:       p.senderForConversationEvent(conversationID, event.From),
 				Text:           msg.Content,
+				Attachments:    attachments,
 			}); err != nil {
 				slog.Error("dm_pipeline: send dm response failed",
 					"conversation_id", conversationID,
@@ -729,6 +742,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldEnable {
+		p.clearPendingAttachments(conversationID)
 		p.sendTyping(conversationID, true)
 		p.startTypingKeepalive(conversationID)
 	}
@@ -759,6 +773,82 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
 	}
+}
+
+func (p *DMPipeline) captureAttachmentsFromEvent(conversationID string, event sessionrt.Event) {
+	if p == nil || p.attachmentResolver == nil {
+		return
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	route, ok := p.currentRoute(conversationID)
+	agentID := p.agentID
+	if ok && strings.TrimSpace(string(route.AgentID)) != "" {
+		agentID = route.AgentID
+	}
+	attachments := p.attachmentResolver(conversationID, agentID, event)
+	if len(attachments) == 0 {
+		return
+	}
+	p.attachmentMu.Lock()
+	existing := p.pendingFiles[conversationID]
+	seen := make(map[string]struct{}, len(existing)+len(attachments))
+	for _, attachment := range existing {
+		key := strings.TrimSpace(attachment.Path) + "\x00" + strings.TrimSpace(attachment.Name)
+		seen[key] = struct{}{}
+	}
+	for _, attachment := range attachments {
+		pathValue := strings.TrimSpace(attachment.Path)
+		if pathValue == "" {
+			continue
+		}
+		normalized := transport.OutboundAttachment{
+			Path:     pathValue,
+			Name:     strings.TrimSpace(attachment.Name),
+			MIMEType: strings.TrimSpace(attachment.MIMEType),
+		}
+		key := normalized.Path + "\x00" + normalized.Name
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		existing = append(existing, normalized)
+	}
+	if len(existing) == 0 {
+		delete(p.pendingFiles, conversationID)
+	} else {
+		p.pendingFiles[conversationID] = existing
+	}
+	p.attachmentMu.Unlock()
+}
+
+func (p *DMPipeline) takePendingAttachments(conversationID string) []transport.OutboundAttachment {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil
+	}
+	p.attachmentMu.Lock()
+	defer p.attachmentMu.Unlock()
+	attachments := p.pendingFiles[conversationID]
+	if len(attachments) == 0 {
+		return nil
+	}
+	delete(p.pendingFiles, conversationID)
+	out := make([]transport.OutboundAttachment, len(attachments))
+	copy(out, attachments)
+	return out
+}
+
+func (p *DMPipeline) clearPendingAttachments(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.attachmentMu.Lock()
+	delete(p.pendingFiles, conversationID)
+	p.attachmentMu.Unlock()
 }
 
 func (p *DMPipeline) startTypingKeepalive(conversationID string) {

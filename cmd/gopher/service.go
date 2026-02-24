@@ -18,10 +18,10 @@ import (
 type serviceRuntime interface {
 	Install(ctx context.Context, opts serviceInstallOptions) error
 	Uninstall(ctx context.Context) error
-	Status(ctx context.Context) error
+	Status(ctx context.Context, opts serviceStatusOptions) error
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
-	Restart(ctx context.Context) error
+	Restart(ctx context.Context, opts serviceTargetOptions) error
 	Logs(ctx context.Context, opts serviceLogsOptions) error
 }
 
@@ -36,6 +36,36 @@ type serviceLogsOptions struct {
 	Unit   string
 	Lines  int
 	Follow bool
+	Target serviceTarget
+}
+
+type serviceStatusOptions struct {
+	Target serviceTarget
+}
+
+type serviceTargetOptions struct {
+	Target serviceTarget
+}
+
+type serviceTarget string
+
+const (
+	serviceTargetAuto    serviceTarget = "auto"
+	serviceTargetGateway serviceTarget = "gateway"
+	serviceTargetNode    serviceTarget = "node"
+)
+
+func parseServiceTarget(value string) (serviceTarget, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", string(serviceTargetAuto):
+		return serviceTargetAuto, nil
+	case string(serviceTargetGateway):
+		return serviceTargetGateway, nil
+	case string(serviceTargetNode):
+		return serviceTargetNode, nil
+	default:
+		return "", fmt.Errorf("invalid --role value: %s (expected auto, gateway, or node)", strings.TrimSpace(value))
+	}
 }
 
 var newServiceRuntime = defaultServiceRuntime
@@ -102,7 +132,20 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	case "status":
-		if err := runtimeImpl.Status(ctx); err != nil {
+		flags := flag.NewFlagSet("service status", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		role := flags.String("role", "auto", "service role target (auto|gateway|node)")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if len(flags.Args()) > 0 {
+			return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+		}
+		target, err := parseServiceTarget(*role)
+		if err != nil {
+			return err
+		}
+		if err := runtimeImpl.Status(ctx, serviceStatusOptions{Target: target}); err != nil {
 			return runWithSudoRetry(err)
 		}
 		return nil
@@ -117,14 +160,28 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	case "restart":
-		if err := runtimeImpl.Restart(ctx); err != nil {
+		flags := flag.NewFlagSet("service restart", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		role := flags.String("role", "auto", "service role target (auto|gateway|node)")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if len(flags.Args()) > 0 {
+			return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+		}
+		target, err := parseServiceTarget(*role)
+		if err != nil {
+			return err
+		}
+		if err := runtimeImpl.Restart(ctx, serviceTargetOptions{Target: target}); err != nil {
 			return runWithSudoRetry(err)
 		}
 		return nil
 	case "logs":
 		flags := flag.NewFlagSet("service logs", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
-		unit := flags.String("unit", "gopher-gateway.service", "systemd unit name")
+		role := flags.String("role", "auto", "service role target (auto|gateway|node)")
+		unit := flags.String("unit", "", "systemd unit name (overrides --role)")
 		lines := flags.Int("lines", 200, "number of journal lines")
 		follow := flags.Bool("follow", false, "follow logs")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -133,10 +190,15 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		if len(flags.Args()) > 0 {
 			return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 		}
+		target, err := parseServiceTarget(*role)
+		if err != nil {
+			return err
+		}
 		if err := runtimeImpl.Logs(ctx, serviceLogsOptions{
 			Unit:   strings.TrimSpace(*unit),
 			Lines:  *lines,
 			Follow: *follow,
+			Target: target,
 		}); err != nil {
 			return runWithSudoRetry(err)
 		}
@@ -228,11 +290,11 @@ func printServiceUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage:")
 	fmt.Fprintln(out, "  gopher service install [--role gateway|node] [flags]")
 	fmt.Fprintln(out, "  gopher service uninstall")
-	fmt.Fprintln(out, "  gopher service status")
+	fmt.Fprintln(out, "  gopher service status [--role auto|gateway|node]")
 	fmt.Fprintln(out, "  gopher service start")
 	fmt.Fprintln(out, "  gopher service stop")
-	fmt.Fprintln(out, "  gopher service restart")
-	fmt.Fprintln(out, "  gopher service logs [--unit gopher-gateway.service] [--lines 200] [--follow]")
+	fmt.Fprintln(out, "  gopher service restart [--role auto|gateway|node]")
+	fmt.Fprintln(out, "  gopher service logs [--role auto|gateway|node] [--unit <name>] [--lines 200] [--follow]")
 	fmt.Fprintln(out, "  gopher service update check [flags]")
 	fmt.Fprintln(out, "  gopher service update apply [flags]")
 }

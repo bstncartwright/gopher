@@ -147,22 +147,28 @@ func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-func (r *linuxServiceRuntime) Status(ctx context.Context) error {
-	gateway, err := readUnitStatus(ctx, "gopher-gateway.service")
+func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOptions) error {
+	unit, err := resolveManagedServiceUnit(ctx, opts.Target)
+	if err != nil {
+		return err
+	}
+	selected, err := readUnitStatus(ctx, unit)
 	if err != nil {
 		return err
 	}
 	nats, _ := readUnitStatus(ctx, "nats-server.service")
-	updater, _ := readUnitStatus(ctx, "gopher-gateway-update.timer")
 
 	gopherPath, gopherVersion, gopherSHA := readBinaryDetails("gopher")
 	natsPath, natsVersion, _ := readBinaryDetails("nats-server")
 
 	fmt.Fprintln(r.stdout, "gopher status")
 	fmt.Fprintln(r.stdout, "")
-	fmt.Fprintf(r.stdout, "gateway service: %s\n", formatUnitStatus(gateway))
+	fmt.Fprintf(r.stdout, "%s service: %s\n", describeManagedServiceUnit(unit), formatUnitStatus(selected))
 	fmt.Fprintf(r.stdout, "nats service:    %s\n", formatUnitStatus(nats))
-	fmt.Fprintf(r.stdout, "update timer:    %s\n", formatUnitStatus(updater))
+	if unit == gopherGatewayUnitName {
+		updater, _ := readUnitStatus(ctx, "gopher-gateway-update.timer")
+		fmt.Fprintf(r.stdout, "update timer:    %s\n", formatUnitStatus(updater))
+	}
 	fmt.Fprintln(r.stdout, "")
 	fmt.Fprintf(r.stdout, "gopher binary:   %s\n", valueOrUnknown(gopherPath))
 	fmt.Fprintf(r.stdout, "gopher version:  %s\n", valueOrUnknown(gopherVersion))
@@ -170,22 +176,24 @@ func (r *linuxServiceRuntime) Status(ctx context.Context) error {
 	fmt.Fprintf(r.stdout, "nats binary:     %s\n", valueOrUnknown(natsPath))
 	fmt.Fprintf(r.stdout, "nats version:    %s\n", valueOrUnknown(natsVersion))
 
-	matrixLine, matrixWarning := readMatrixStatusLine(ctx)
-	if matrixLine != "" || matrixWarning != "" {
-		fmt.Fprintln(r.stdout, "")
-		if matrixLine != "" {
-			fmt.Fprintln(r.stdout, matrixLine)
-		}
-		if matrixWarning != "" {
-			fmt.Fprintln(r.stdout, matrixWarning)
+	if unit == gopherGatewayUnitName {
+		matrixLine, matrixWarning := readMatrixStatusLine(ctx)
+		if matrixLine != "" || matrixWarning != "" {
+			fmt.Fprintln(r.stdout, "")
+			if matrixLine != "" {
+				fmt.Fprintln(r.stdout, matrixLine)
+			}
+			if matrixWarning != "" {
+				fmt.Fprintln(r.stdout, matrixWarning)
+			}
 		}
 	}
 
-	if gateway.LoadState == "not-found" {
-		return fmt.Errorf("gopher-gateway.service is not installed")
+	if selected.LoadState == "not-found" {
+		return fmt.Errorf("%s is not installed", unit)
 	}
-	if gateway.ActiveState != "active" {
-		return fmt.Errorf("gopher-gateway.service is %s", valueOrUnknown(gateway.ActiveState))
+	if selected.ActiveState != "active" {
+		return fmt.Errorf("%s is %s", unit, valueOrUnknown(selected.ActiveState))
 	}
 	return nil
 }
@@ -275,7 +283,7 @@ func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
 }
 
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx)
+	unit, err := resolveManagedServiceUnit(ctx, serviceTargetAuto)
 	if err != nil {
 		return err
 	}
@@ -283,15 +291,15 @@ func (r *linuxServiceRuntime) Start(ctx context.Context) error {
 }
 
 func (r *linuxServiceRuntime) Stop(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx)
+	unit, err := resolveManagedServiceUnit(ctx, serviceTargetAuto)
 	if err != nil {
 		return err
 	}
 	return systemctlRunner{}.Run(ctx, "systemctl", "stop", unit)
 }
 
-func (r *linuxServiceRuntime) Restart(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx)
+func (r *linuxServiceRuntime) Restart(ctx context.Context, opts serviceTargetOptions) error {
+	unit, err := resolveManagedServiceUnit(ctx, opts.Target)
 	if err != nil {
 		return err
 	}
@@ -301,7 +309,11 @@ func (r *linuxServiceRuntime) Restart(ctx context.Context) error {
 func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) error {
 	unit := strings.TrimSpace(opts.Unit)
 	if unit == "" {
-		unit = "gopher-gateway.service"
+		resolvedUnit, err := resolveManagedServiceUnit(ctx, opts.Target)
+		if err != nil {
+			return err
+		}
+		unit = resolvedUnit
 	}
 	lines := opts.Lines
 	if lines <= 0 {
@@ -375,7 +387,7 @@ func durationToOnCalendar(d time.Duration) string {
 	}
 }
 
-func resolveManagedServiceUnit(ctx context.Context) (string, error) {
+func resolveManagedServiceUnit(ctx context.Context, target serviceTarget) (string, error) {
 	gateway, err := readUnitStatusForManagedUnit(ctx, gopherGatewayUnitName)
 	if err != nil {
 		return "", err
@@ -387,6 +399,22 @@ func resolveManagedServiceUnit(ctx context.Context) (string, error) {
 
 	gatewayInstalled := gateway.LoadState != "not-found"
 	nodeInstalled := node.LoadState != "not-found"
+	switch target {
+	case "", serviceTargetAuto:
+		// Auto mode below.
+	case serviceTargetGateway:
+		if !gatewayInstalled {
+			return "", fmt.Errorf("%s is not installed", gopherGatewayUnitName)
+		}
+		return gopherGatewayUnitName, nil
+	case serviceTargetNode:
+		if !nodeInstalled {
+			return "", fmt.Errorf("%s is not installed", gopherNodeUnitName)
+		}
+		return gopherNodeUnitName, nil
+	default:
+		return "", fmt.Errorf("invalid service role %q", target)
+	}
 
 	switch {
 	case gatewayInstalled && !nodeInstalled:
@@ -403,6 +431,17 @@ func resolveManagedServiceUnit(ctx context.Context) (string, error) {
 		return gopherGatewayUnitName, nil
 	default:
 		return "", fmt.Errorf("no gopher service installed (checked %s and %s)", gopherGatewayUnitName, gopherNodeUnitName)
+	}
+}
+
+func describeManagedServiceUnit(unit string) string {
+	switch unit {
+	case gopherGatewayUnitName:
+		return "gateway"
+	case gopherNodeUnitName:
+		return "node"
+	default:
+		return unit
 	}
 }
 

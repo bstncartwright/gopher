@@ -32,9 +32,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "node":
 		return runNodeSubcommand(args[1:], stdout, stderr)
 	case "status":
-		return runServiceSubcommand([]string{"status"}, stdout, stderr)
+		serviceArgs := append([]string{"status"}, args[1:]...)
+		return runServiceSubcommand(serviceArgs, stdout, stderr)
 	case "restart":
-		return runServiceSubcommand([]string{"restart"}, stdout, stderr)
+		serviceArgs := append([]string{"restart"}, args[1:]...)
+		return runServiceSubcommand(serviceArgs, stdout, stderr)
 	case "logs":
 		serviceArgs := append([]string{"logs"}, args[1:]...)
 		return runServiceSubcommand(serviceArgs, stdout, stderr)

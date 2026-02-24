@@ -45,6 +45,7 @@ type TraceConversationRequest struct {
 	AgentID          sessionrt.ActorID
 	SenderID         string
 	RecipientID      string
+	TriggerEventID   string
 }
 
 type TraceConversationBinding struct {
@@ -82,14 +83,11 @@ type DMPipeline struct {
 	traceByDM        map[string]string
 	dmByTrace        map[string]string
 	traceSetupMu     sync.Mutex
-	traceSetup       map[sessionrt.SessionID]struct{}
+	traceSetup       map[string]traceProvisionState
 	heartbeatMu      sync.Mutex
 	heartbeats       map[string]heartbeatState
-	progressMu       sync.Mutex
-	progress         map[string]progressState
 	tracePublisher   TracePublisher
 	traceProvisioner TraceConversationProvisioner
-	progressUpdates  bool
 }
 
 type heartbeatState struct {
@@ -97,21 +95,22 @@ type heartbeatState struct {
 	ackMaxChars int
 }
 
-type progressState struct {
-	announced bool
+type traceProvisionState struct {
+	InFlight      bool
+	LastFailureAt time.Time
 }
 
 const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmContextClearedReply    = "Context cleared. Started a fresh session for this chat."
-	dmProgressDeltaMaxChars  = 220
 	dmFallbackMinInterval    = 5 * time.Second
 	dmFallbackDetailMaxChars = 120
 	dmTypingTimeout          = 3 * time.Second
 	dmTypingKeepaliveDefault = 5 * time.Second
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	heartbeatAckDefaultChars = 300
+	traceProvisionBackoff    = 30 * time.Second
 )
 
 var dmTypingKeepaliveInterval = dmTypingKeepaliveDefault
@@ -184,12 +183,10 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		routes:           map[string]conversationRoute{},
 		traceByDM:        map[string]string{},
 		dmByTrace:        map[string]string{},
-		traceSetup:       map[sessionrt.SessionID]struct{}{},
+		traceSetup:       map[string]traceProvisionState{},
 		heartbeats:       map[string]heartbeatState{},
-		progress:         map[string]progressState{},
 		tracePublisher:   opts.TracePublisher,
 		traceProvisioner: opts.TraceProvisioner,
-		progressUpdates:  opts.ProgressUpdates,
 	}
 	for _, binding := range bindings.List() {
 		pipeline.conversations.Set(binding.ConversationID, binding.SessionID)
@@ -247,6 +244,15 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 		)
 		return err
 	}
+	p.ensureTraceConversation(ctx, TraceConversationRequest{
+		ConversationID:   conversationID,
+		ConversationName: inbound.ConversationName,
+		SessionID:        sessionID,
+		AgentID:          agentID,
+		SenderID:         inbound.SenderID,
+		RecipientID:      recipientID,
+		TriggerEventID:   inbound.EventID,
+	})
 	p.startProcessing(conversationID)
 
 	from := matrixActorID(inbound.SenderID)
@@ -273,14 +279,18 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 }
 
 func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport.InboundMessage, agentID sessionrt.ActorID, recipientID string) (bool, error) {
-	action, ok := parseDMContextCommand(inbound.Text)
+	command, ok := parseDMCommand(inbound.Text)
 	if !ok {
 		return false, nil
 	}
 
 	conversationID := strings.TrimSpace(inbound.ConversationID)
-	switch action {
-	case "clear":
+	if strings.HasPrefix(command.Kind, "trace.") && p.traceProvisioner == nil {
+		p.sendTraceCommandReply(conversationID, recipientID, inbound.EventID, "Trace is disabled in gateway config.")
+		return true, nil
+	}
+	switch command.Kind {
+	case "context.clear":
 		if err := p.resetConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
 			return true, err
 		}
@@ -295,15 +305,30 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 			)
 		}
 		return true, nil
-	case "summarize":
+	case "context.summarize":
 		sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID)
 		if err != nil {
 			return true, err
 		}
+		p.ensureTraceConversation(ctx, TraceConversationRequest{
+			ConversationID:   conversationID,
+			ConversationName: inbound.ConversationName,
+			SessionID:        sessionID,
+			AgentID:          agentID,
+			SenderID:         inbound.SenderID,
+			RecipientID:      recipientID,
+			TriggerEventID:   inbound.EventID,
+		})
 		p.startProcessing(conversationID)
+		from := matrixActorID(inbound.SenderID)
+		if inbound.SenderManaged {
+			if managedActor, ok := p.actorForManagedSender(inbound.SenderID); ok {
+				from = managedActor
+			}
+		}
 		p.dispatchInboundEvent(sessionrt.Event{
 			SessionID: sessionID,
-			From:      matrixActorID(inbound.SenderID),
+			From:      from,
 			Type:      sessionrt.EventMessage,
 			Payload: sessionrt.Message{
 				Role:    sessionrt.RoleUser,
@@ -311,33 +336,103 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 			},
 		}, conversationID, inbound.SenderID, "")
 		return true, nil
+	case "trace.link", "trace.on":
+		sessionID, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID)
+		if err != nil {
+			return true, err
+		}
+		if err := p.setTraceModeForConversation(conversationID, TraceModeReadOnly); err != nil {
+			return true, err
+		}
+		p.ensureTraceConversationWithOptions(ctx, TraceConversationRequest{
+			ConversationID:   conversationID,
+			ConversationName: inbound.ConversationName,
+			SessionID:        sessionID,
+			AgentID:          agentID,
+			SenderID:         inbound.SenderID,
+			RecipientID:      recipientID,
+			TriggerEventID:   inbound.EventID,
+		}, true)
+		traceConversationID, ok := p.traceConversationFor(conversationID)
+		if !ok {
+			p.sendTraceCommandReply(conversationID, recipientID, inbound.EventID, "Trace room is not available yet. Try again in a moment.")
+			return true, nil
+		}
+		p.sendTraceConversationReadyNotice(conversationID, traceConversationID, inbound.EventID)
+		return true, nil
+	case "trace.off":
+		_, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID)
+		if err != nil {
+			return true, err
+		}
+		if err := p.setTraceModeForConversation(conversationID, TraceModeOff); err != nil {
+			return true, err
+		}
+		p.sendTraceCommandReply(conversationID, recipientID, inbound.EventID, "Trace is now off for this conversation.")
+		return true, nil
+	case "trace.status":
+		_, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID)
+		if err != nil {
+			return true, err
+		}
+		mode := p.traceModeForConversation(conversationID)
+		traceConversationID, hasTraceRoom := p.traceConversationFor(conversationID)
+		if mode == TraceModeOff {
+			p.sendTraceCommandReply(conversationID, recipientID, inbound.EventID, "Trace is off for this conversation.")
+			return true, nil
+		}
+		if !hasTraceRoom {
+			p.sendTraceCommandReply(conversationID, recipientID, inbound.EventID, "Trace is on for this conversation. No trace room is bound yet.")
+			return true, nil
+		}
+		p.sendTraceConversationReadyNotice(conversationID, traceConversationID, inbound.EventID)
+		return true, nil
 	default:
 		return false, nil
 	}
 }
 
-func parseDMContextCommand(text string) (string, bool) {
+type dmCommand struct {
+	Kind string
+}
+
+func parseDMCommand(text string) (dmCommand, bool) {
 	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
 	if len(fields) == 0 {
-		return "", false
+		return dmCommand{}, false
 	}
 	switch fields[0] {
-	case "/clear", "/reset":
-		return "clear", true
-	case "/summarize", "/summary":
-		return "summarize", true
-	case "/context":
+	case "!context":
 		if len(fields) < 2 {
-			return "", false
+			return dmCommand{}, false
 		}
 		switch fields[1] {
 		case "clear", "reset":
-			return "clear", true
+			return dmCommand{Kind: "context.clear"}, true
 		case "summarize", "summary":
-			return "summarize", true
+			return dmCommand{Kind: "context.summarize"}, true
+		default:
+			return dmCommand{}, false
 		}
+	case "!trace":
+		if len(fields) == 1 {
+			return dmCommand{Kind: "trace.link"}, true
+		}
+		switch fields[1] {
+		case "link":
+			return dmCommand{Kind: "trace.link"}, true
+		case "on":
+			return dmCommand{Kind: "trace.on"}, true
+		case "off":
+			return dmCommand{Kind: "trace.off"}, true
+		case "status":
+			return dmCommand{Kind: "trace.status"}, true
+		default:
+			return dmCommand{}, false
+		}
+	default:
+		return dmCommand{}, false
 	}
-	return "", false
 }
 
 func (p *DMPipeline) resetConversationSession(ctx context.Context, conversationID, conversationName, senderID string, agentID sessionrt.ActorID, recipientID string) error {
@@ -487,14 +582,6 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		_ = p.manager.CancelSession(context.Background(), created.ID)
 		return "", err
 	}
-	p.ensureTraceConversation(ctx, TraceConversationRequest{
-		ConversationID:   conversationID,
-		ConversationName: conversationName,
-		SessionID:        created.ID,
-		AgentID:          desiredAgentID,
-		SenderID:         senderID,
-		RecipientID:      recipientID,
-	})
 	slog.Info("dm_pipeline: session created",
 		"conversation_id", conversationID,
 		"session_id", created.ID,
@@ -572,7 +659,6 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 					"error", err,
 				)
 			}
-			p.maybeSendProgressUpdate(conversationID, event)
 			if event.Type == sessionrt.EventError {
 				p.finishProcessing(conversationID)
 				p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), errorTextFromPayload(event.Payload))
@@ -643,7 +729,6 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldEnable {
-		p.resetProgressState(conversationID)
 		p.sendTyping(conversationID, true)
 		p.startTypingKeepalive(conversationID)
 	}
@@ -671,7 +756,6 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldDisable {
-		p.clearProgressState(conversationID)
 		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
 	}
@@ -859,7 +943,7 @@ func (p *DMPipeline) BindConversation(conversationID string, sessionID sessionrt
 }
 
 func (p *DMPipeline) EnsureTraceConversation(ctx context.Context, req TraceConversationRequest) {
-	p.ensureTraceConversation(ctx, req)
+	p.ensureTraceConversationWithOptions(ctx, req, false)
 }
 
 func (p *DMPipeline) TraceConversationFor(conversationID string) (string, bool) {
@@ -1096,164 +1180,6 @@ func (p *DMPipeline) IsConversationProcessing(conversationID string) bool {
 	return p.processing[conversationID] > 0
 }
 
-func (p *DMPipeline) maybeSendProgressUpdate(conversationID string, event sessionrt.Event) {
-	if p == nil || !p.progressUpdates {
-		return
-	}
-	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" || !p.IsConversationProcessing(conversationID) || p.hasPendingHeartbeat(conversationID) {
-		return
-	}
-
-	var text string
-	switch event.Type {
-	case sessionrt.EventAgentDelta:
-		if !p.markProgressAnnounced(conversationID) {
-			return
-		}
-		delta := strings.TrimSpace(tracePayloadString(tracePayloadMap(event.Payload), "delta"))
-		text = formatProgressDelta(delta)
-	case sessionrt.EventToolCall:
-		p.markProgressAnnounced(conversationID)
-		payload := tracePayloadMap(event.Payload)
-		name := strings.TrimSpace(tracePayloadString(payload, "name"))
-		if name == "" {
-			name = "tool"
-		}
-		args := tracePayloadMap(tracePayloadAny(payload, "args"))
-		text = fmt.Sprintf("running `%s`%s.", name, progressToolDetail(name, args, nil))
-	case sessionrt.EventToolResult:
-		p.markProgressAnnounced(conversationID)
-		payload := tracePayloadMap(event.Payload)
-		name := strings.TrimSpace(tracePayloadString(payload, "name"))
-		status := strings.TrimSpace(tracePayloadString(payload, "status"))
-		if name == "" {
-			name = "tool"
-		}
-		if status == "" {
-			status = "done"
-		}
-		result := tracePayloadMap(tracePayloadAny(payload, "result"))
-		text = fmt.Sprintf("`%s` completed (%s)%s.", name, status, progressToolDetail(name, nil, result))
-	default:
-		return
-	}
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
-		ConversationID: conversationID,
-		SenderID:       p.senderForConversationEvent(conversationID, event.From),
-		Text:           text,
-	}); err != nil {
-		slog.Warn("dm_pipeline: send progress update failed",
-			"conversation_id", conversationID,
-			"event_type", event.Type,
-			"error", err,
-		)
-	}
-}
-
-func progressToolDetail(name string, args map[string]any, result map[string]any) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "exec":
-		command := strings.TrimSpace(tracePayloadString(args, "command"))
-		if command == "" {
-			command = strings.TrimSpace(tracePayloadString(result, "command"))
-		}
-		command = formatProgressInlineValue(command, 120)
-		if command == "" {
-			return ""
-		}
-		return fmt.Sprintf(" (command `%s`)", command)
-	case "write":
-		path := strings.TrimSpace(tracePayloadString(args, "path"))
-		if path == "" {
-			path = strings.TrimSpace(tracePayloadString(result, "path"))
-		}
-		path = formatProgressInlineValue(path, 140)
-		if path == "" {
-			return ""
-		}
-		return fmt.Sprintf(" (file `%s`)", path)
-	default:
-		return ""
-	}
-}
-
-func formatProgressInlineValue(raw string, maxChars int) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	raw = strings.Join(strings.Fields(raw), " ")
-	raw = strings.ReplaceAll(raw, "`", "'")
-	if maxChars <= 0 {
-		maxChars = 80
-	}
-	runes := []rune(raw)
-	if len(runes) <= maxChars {
-		return raw
-	}
-	if maxChars <= 3 {
-		return string(runes[:maxChars])
-	}
-	return string(runes[:maxChars-3]) + "..."
-}
-
-func (p *DMPipeline) resetProgressState(conversationID string) {
-	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" {
-		return
-	}
-	p.progressMu.Lock()
-	defer p.progressMu.Unlock()
-	delete(p.progress, conversationID)
-}
-
-func (p *DMPipeline) clearProgressState(conversationID string) {
-	p.resetProgressState(conversationID)
-}
-
-func (p *DMPipeline) markProgressAnnounced(conversationID string) bool {
-	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" {
-		return false
-	}
-	p.progressMu.Lock()
-	defer p.progressMu.Unlock()
-	state := p.progress[conversationID]
-	if state.announced {
-		return false
-	}
-	state.announced = true
-	p.progress[conversationID] = state
-	return true
-}
-
-func (p *DMPipeline) hasPendingHeartbeat(conversationID string) bool {
-	conversationID = strings.TrimSpace(conversationID)
-	if conversationID == "" {
-		return false
-	}
-	p.heartbeatMu.Lock()
-	defer p.heartbeatMu.Unlock()
-	state, ok := p.heartbeats[conversationID]
-	return ok && state.pending > 0
-}
-
-func formatProgressDelta(delta string) string {
-	delta = strings.Join(strings.Fields(strings.TrimSpace(delta)), " ")
-	if delta == "" {
-		return "Working on it now. I will post updates as tools run."
-	}
-	runes := []rune(delta)
-	if len(runes) > dmProgressDeltaMaxChars {
-		delta = strings.TrimSpace(string(runes[:dmProgressDeltaMaxChars])) + "..."
-	}
-	return delta
-}
-
 func (p *DMPipeline) consumeHeartbeatReply(conversationID, text string) (bool, string) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
@@ -1414,6 +1340,10 @@ func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) 
 }
 
 func (p *DMPipeline) ensureTraceConversation(ctx context.Context, req TraceConversationRequest) {
+	p.ensureTraceConversationWithOptions(ctx, req, false)
+}
+
+func (p *DMPipeline) ensureTraceConversationWithOptions(ctx context.Context, req TraceConversationRequest, force bool) {
 	if p == nil || p.traceProvisioner == nil {
 		return
 	}
@@ -1423,17 +1353,24 @@ func (p *DMPipeline) ensureTraceConversation(ctx context.Context, req TraceConve
 	req.AgentID = sessionrt.ActorID(strings.TrimSpace(string(req.AgentID)))
 	req.SenderID = strings.TrimSpace(req.SenderID)
 	req.RecipientID = strings.TrimSpace(req.RecipientID)
+	req.TriggerEventID = strings.TrimSpace(req.TriggerEventID)
 	if req.ConversationID == "" || strings.TrimSpace(string(req.SessionID)) == "" {
 		return
 	}
-
-	p.traceSetupMu.Lock()
-	if _, exists := p.traceSetup[req.SessionID]; exists {
-		p.traceSetupMu.Unlock()
+	if p.traceModeForConversation(req.ConversationID) == TraceModeOff {
 		return
 	}
-	p.traceSetup[req.SessionID] = struct{}{}
-	p.traceSetupMu.Unlock()
+	if _, exists := p.traceConversationFor(req.ConversationID); exists {
+		return
+	}
+
+	if !p.beginTraceProvision(req.ConversationID, force) {
+		return
+	}
+	provisionSucceeded := false
+	defer func() {
+		p.finishTraceProvision(req.ConversationID, provisionSucceeded)
+	}()
 
 	created, err := p.traceProvisioner.CreateTraceConversation(ctx, req)
 	if err != nil {
@@ -1456,7 +1393,47 @@ func (p *DMPipeline) ensureTraceConversation(ctx context.Context, req TraceConve
 		)
 		return
 	}
-	p.sendTraceConversationReadyNotice(req.ConversationID, created.ConversationID)
+	provisionSucceeded = true
+	p.sendTraceConversationReadyNotice(req.ConversationID, created.ConversationID, req.TriggerEventID)
+}
+
+func (p *DMPipeline) beginTraceProvision(conversationID string, force bool) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	p.traceSetupMu.Lock()
+	defer p.traceSetupMu.Unlock()
+	state := p.traceSetup[conversationID]
+	if state.InFlight {
+		return false
+	}
+	if !force && !state.LastFailureAt.IsZero() && time.Since(state.LastFailureAt) < traceProvisionBackoff {
+		return false
+	}
+	state.InFlight = true
+	p.traceSetup[conversationID] = state
+	return true
+}
+
+func (p *DMPipeline) finishTraceProvision(conversationID string, success bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.traceSetupMu.Lock()
+	defer p.traceSetupMu.Unlock()
+	state, ok := p.traceSetup[conversationID]
+	if !ok {
+		return
+	}
+	if success {
+		delete(p.traceSetup, conversationID)
+		return
+	}
+	state.InFlight = false
+	state.LastFailureAt = time.Now().UTC()
+	p.traceSetup[conversationID] = state
 }
 
 func (p *DMPipeline) setConversationTraceBinding(conversationID string, trace TraceConversationBinding) error {
@@ -1496,8 +1473,50 @@ func (p *DMPipeline) setConversationTraceBinding(conversationID string, trace Tr
 	return nil
 }
 
+func (p *DMPipeline) setTraceModeForConversation(conversationID string, mode string) error {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return fmt.Errorf("conversation id is required")
+	}
+	mode = normalizeTraceMode(mode)
+	if mode == "" {
+		mode = TraceModeReadOnly
+	}
+	if p.bindings == nil {
+		return nil
+	}
+	binding, ok := p.bindings.GetByConversation(conversationID)
+	if !ok {
+		return fmt.Errorf("conversation binding not found")
+	}
+	binding.TraceMode = mode
+	if err := p.bindings.Set(binding); err != nil {
+		return err
+	}
+	p.setTraceConversationRoute(conversationID, binding.TraceConversationID)
+	return nil
+}
+
+func (p *DMPipeline) traceModeForConversation(conversationID string) string {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return TraceModeReadOnly
+	}
+	if p.bindings != nil {
+		if binding, ok := p.bindings.GetByConversation(conversationID); ok {
+			if mode := normalizeTraceMode(binding.TraceMode); mode != "" {
+				return mode
+			}
+		}
+	}
+	return TraceModeReadOnly
+}
+
 func (p *DMPipeline) publishTraceEvent(conversationID string, event sessionrt.Event) error {
 	if p == nil || p.tracePublisher == nil {
+		return nil
+	}
+	if p.traceModeForConversation(conversationID) == TraceModeOff {
 		return nil
 	}
 	traceConversationID, ok := p.traceConversationFor(conversationID)
@@ -1566,9 +1585,10 @@ func (p *DMPipeline) recordTraceInboundIgnored() {
 	recorder.RecordTraceInboundIgnored()
 }
 
-func (p *DMPipeline) sendTraceConversationReadyNotice(conversationID, traceConversationID string) {
+func (p *DMPipeline) sendTraceConversationReadyNotice(conversationID, traceConversationID, triggerEventID string) {
 	conversationID = strings.TrimSpace(conversationID)
 	traceConversationID = strings.TrimSpace(traceConversationID)
+	triggerEventID = strings.TrimSpace(triggerEventID)
 	if conversationID == "" || traceConversationID == "" {
 		return
 	}
@@ -1581,13 +1601,35 @@ func (p *DMPipeline) sendTraceConversationReadyNotice(conversationID, traceConve
 		return
 	}
 	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
-		ConversationID: conversationID,
-		SenderID:       senderID,
-		Text:           message,
+		ConversationID:    conversationID,
+		SenderID:          senderID,
+		Text:              message,
+		ThreadRootEventID: triggerEventID,
 	}); err != nil {
 		slog.Warn("dm_pipeline: failed to send trace conversation notice",
 			"conversation_id", conversationID,
 			"trace_conversation_id", traceConversationID,
+			"error", err,
+		)
+	}
+}
+
+func (p *DMPipeline) sendTraceCommandReply(conversationID, senderID, triggerEventID, text string) {
+	conversationID = strings.TrimSpace(conversationID)
+	senderID = strings.TrimSpace(senderID)
+	triggerEventID = strings.TrimSpace(triggerEventID)
+	text = strings.TrimSpace(text)
+	if conversationID == "" || text == "" || p == nil || p.transport == nil {
+		return
+	}
+	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID:    conversationID,
+		SenderID:          senderID,
+		Text:              text,
+		ThreadRootEventID: triggerEventID,
+	}); err != nil {
+		slog.Warn("dm_pipeline: failed to send trace command reply",
+			"conversation_id", conversationID,
 			"error", err,
 		)
 	}

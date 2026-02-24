@@ -21,6 +21,7 @@ const (
 )
 
 const (
+	TraceModeOff      = "off"
 	TraceModeReadOnly = "read_only"
 	TraceRenderCards  = "cards"
 )
@@ -114,20 +115,7 @@ func (s *FileConversationBindingStore) Set(binding ConversationBinding) error {
 		if normalized.ConversationName == "" {
 			normalized.ConversationName = existing.ConversationName
 		}
-		if normalized.SessionID == existing.SessionID {
-			if normalized.TraceConversationID == "" {
-				normalized.TraceConversationID = existing.TraceConversationID
-			}
-			if normalized.TraceConversationName == "" {
-				normalized.TraceConversationName = existing.TraceConversationName
-			}
-			if normalized.TraceMode == "" {
-				normalized.TraceMode = existing.TraceMode
-			}
-			if normalized.TraceRender == "" {
-				normalized.TraceRender = existing.TraceRender
-			}
-		}
+		normalized = mergeTraceFields(normalized, existing)
 	}
 	for conversationID, existing := range s.items {
 		if conversationID == normalized.ConversationID {
@@ -258,20 +246,7 @@ func (s *InMemoryConversationBindingStore) Set(binding ConversationBinding) erro
 		if normalized.ConversationName == "" {
 			normalized.ConversationName = existing.ConversationName
 		}
-		if normalized.SessionID == existing.SessionID {
-			if normalized.TraceConversationID == "" {
-				normalized.TraceConversationID = existing.TraceConversationID
-			}
-			if normalized.TraceConversationName == "" {
-				normalized.TraceConversationName = existing.TraceConversationName
-			}
-			if normalized.TraceMode == "" {
-				normalized.TraceMode = existing.TraceMode
-			}
-			if normalized.TraceRender == "" {
-				normalized.TraceRender = existing.TraceRender
-			}
-		}
+		normalized = mergeTraceFields(normalized, existing)
 	}
 	for conversationID, existing := range s.items {
 		if conversationID == normalized.ConversationID {
@@ -374,11 +349,29 @@ func normalizeTraceMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "":
 		return ""
+	case TraceModeOff:
+		return TraceModeOff
 	case TraceModeReadOnly:
 		return TraceModeReadOnly
 	default:
 		return ""
 	}
+}
+
+func mergeTraceFields(target ConversationBinding, existing ConversationBinding) ConversationBinding {
+	if strings.TrimSpace(target.TraceConversationID) == "" {
+		target.TraceConversationID = existing.TraceConversationID
+	}
+	if strings.TrimSpace(target.TraceConversationName) == "" {
+		target.TraceConversationName = existing.TraceConversationName
+	}
+	if strings.TrimSpace(target.TraceMode) == "" {
+		target.TraceMode = existing.TraceMode
+	}
+	if strings.TrimSpace(target.TraceRender) == "" {
+		target.TraceRender = existing.TraceRender
+	}
+	return target
 }
 
 func normalizeTraceRender(value string) string {

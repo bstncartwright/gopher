@@ -461,7 +461,7 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}
 }
 
-func TestDMPipelineProgressUpdatesDuringToolExecution(t *testing.T) {
+func TestDMPipelineDoesNotSendProgressUpdatesDuringToolExecution(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:    store,
@@ -473,10 +473,9 @@ func TestDMPipelineProgressUpdatesDuringToolExecution(t *testing.T) {
 
 	fake := &fakeTransport{}
 	pipeline, err := NewDMPipeline(DMPipelineOptions{
-		Manager:         manager,
-		Transport:       fake,
-		AgentID:         "agent:a",
-		ProgressUpdates: true,
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
 	})
 	if err != nil {
 		t.Fatalf("NewDMPipeline() error: %v", err)
@@ -493,25 +492,18 @@ func TestDMPipelineProgressUpdatesDuringToolExecution(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() >= 3
+		return fake.sentCount() >= 1
 	})
 	messages := fake.sentMessages()
-	joined := ""
-	for _, message := range messages {
-		joined += "\n" + message.Text
+	if len(messages) != 1 {
+		t.Fatalf("sent message count = %d, want 1", len(messages))
 	}
-	if !strings.Contains(joined, "running `exec` (command `echo hi`).") {
-		t.Fatalf("missing tool start progress update: %q", joined)
-	}
-	if !strings.Contains(joined, "`exec` completed (ok) (command `echo hi`).") {
-		t.Fatalf("missing tool completion progress update: %q", joined)
-	}
-	if !strings.Contains(joined, "ack") {
-		t.Fatalf("missing final response message: %q", joined)
+	if strings.TrimSpace(messages[0].Text) != "ack" {
+		t.Fatalf("final response = %q, want ack", messages[0].Text)
 	}
 }
 
-func TestDMPipelineProgressUpdatesIncludeWritePath(t *testing.T) {
+func TestDMPipelineDoesNotSendWriteProgressUpdatesToDM(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:    store,
@@ -523,10 +515,9 @@ func TestDMPipelineProgressUpdatesIncludeWritePath(t *testing.T) {
 
 	fake := &fakeTransport{}
 	pipeline, err := NewDMPipeline(DMPipelineOptions{
-		Manager:         manager,
-		Transport:       fake,
-		AgentID:         "agent:a",
-		ProgressUpdates: true,
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
 	})
 	if err != nil {
 		t.Fatalf("NewDMPipeline() error: %v", err)
@@ -543,21 +534,14 @@ func TestDMPipelineProgressUpdatesIncludeWritePath(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() >= 3
+		return fake.sentCount() >= 1
 	})
 	messages := fake.sentMessages()
-	joined := ""
-	for _, message := range messages {
-		joined += "\n" + message.Text
+	if len(messages) != 1 {
+		t.Fatalf("sent message count = %d, want 1", len(messages))
 	}
-	if !strings.Contains(joined, "running `write` (file `/tmp/report.md`).") {
-		t.Fatalf("missing write start detail in progress update: %q", joined)
-	}
-	if !strings.Contains(joined, "`write` completed (ok) (file `/tmp/report.md`).") {
-		t.Fatalf("missing write completion detail in progress update: %q", joined)
-	}
-	if !strings.Contains(joined, "ack") {
-		t.Fatalf("missing final response message: %q", joined)
+	if strings.TrimSpace(messages[0].Text) != "ack" {
+		t.Fatalf("final response = %q, want ack", messages[0].Text)
 	}
 }
 
@@ -599,6 +583,7 @@ func TestDMPipelineCreatesTraceConversationAndPublishesTraceEvents(t *testing.T)
 		ConversationID: "!dm:one",
 		SenderID:       "@user:hs",
 		RecipientID:    "@milo:hs",
+		EventID:        "$dm-event-1",
 		Text:           "hello",
 	}); err != nil {
 		t.Fatalf("HandleInbound() error: %v", err)
@@ -633,12 +618,27 @@ func TestDMPipelineCreatesTraceConversationAndPublishesTraceEvents(t *testing.T)
 	foundTraceNotice := false
 	for _, message := range fake.sentMessages() {
 		if strings.Contains(message.Text, "Trace channel (read-only): https://matrix.to/#/") {
+			if message.ThreadRootEventID != "$dm-event-1" {
+				t.Fatalf("trace notice thread root = %q, want $dm-event-1", message.ThreadRootEventID)
+			}
 			foundTraceNotice = true
 			break
 		}
 	}
 	if !foundTraceNotice {
 		t.Fatalf("expected trace channel notice in outbound messages")
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:one",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		Text:           "!context clear",
+	}); err != nil {
+		t.Fatalf("HandleInbound(clear) error: %v", err)
+	}
+	if traceProvisioner.callCount() != 1 {
+		t.Fatalf("trace provisioner call count after clear = %d, want 1", traceProvisioner.callCount())
 	}
 }
 
@@ -706,7 +706,7 @@ func TestDMPipelineIgnoresTraceRoomInboundMessages(t *testing.T) {
 	}
 }
 
-func TestDMPipelineTraceProvisionerDoesNotRetryWithinSession(t *testing.T) {
+func TestDMPipelineTraceProvisionerBackoffAppliesAcrossSessionReset(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:    store,
@@ -761,12 +761,12 @@ func TestDMPipelineTraceProvisionerDoesNotRetryWithinSession(t *testing.T) {
 		ConversationID: "!dm:one",
 		SenderID:       "@user:hs",
 		RecipientID:    "@milo:hs",
-		Text:           "/clear",
+		Text:           "!context clear",
 	}); err != nil {
 		t.Fatalf("HandleInbound(clear) error: %v", err)
 	}
-	if traceProvisioner.callCount() != 2 {
-		t.Fatalf("trace provisioner call count = %d after clear, want 2", traceProvisioner.callCount())
+	if traceProvisioner.callCount() != 1 {
+		t.Fatalf("trace provisioner call count = %d after clear, want 1", traceProvisioner.callCount())
 	}
 }
 
@@ -2058,7 +2058,7 @@ func TestDMPipelineClearCommandResetsSessionAndAcknowledges(t *testing.T) {
 	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
 		ConversationID: "!dm:clear",
 		SenderID:       "@user:hs",
-		Text:           "/clear",
+		Text:           "!context clear",
 	}); err != nil {
 		t.Fatalf("HandleInbound(clear) error: %v", err)
 	}
@@ -2116,7 +2116,7 @@ func TestDMPipelineSummarizeCommandDispatchesSummaryPrompt(t *testing.T) {
 	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
 		ConversationID: "!dm:summary",
 		SenderID:       "@user:hs",
-		Text:           "/context summarize",
+		Text:           "!context summarize",
 	}); err != nil {
 		t.Fatalf("HandleInbound(summarize) error: %v", err)
 	}
@@ -2127,6 +2127,127 @@ func TestDMPipelineSummarizeCommandDispatchesSummaryPrompt(t *testing.T) {
 	if got := fake.lastSent().Text; got != "summary reply" {
 		t.Fatalf("summary reply = %q, want summary reply", got)
 	}
+}
+
+func TestDMPipelineTraceOffStopsPublishAndTraceOnResumes(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmTraceExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	tracePublisher := &fakeTracePublisher{}
+	traceProvisioner := &fakeTraceProvisioner{
+		result: TraceConversationBinding{
+			ConversationID:   "!trace:one",
+			ConversationName: "trace-room",
+			Mode:             TraceModeReadOnly,
+			Render:           TraceRenderCards,
+		},
+	}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:          manager,
+		Transport:        fake,
+		AgentID:          "agent:a",
+		TracePublisher:   tracePublisher,
+		TraceProvisioner: traceProvisioner,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:trace-toggle",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		EventID:        "$evt-1",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound(initial) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return tracePublisher.publishedCount() >= 3
+	})
+	initialPublished := tracePublisher.publishedCount()
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:trace-toggle",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		EventID:        "$evt-off",
+		Text:           "!trace off",
+	}); err != nil {
+		t.Fatalf("HandleInbound(trace off) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 3
+	})
+	foundOff := false
+	for _, message := range fake.sentMessages() {
+		if message.Text == "Trace is now off for this conversation." {
+			foundOff = true
+			if message.ThreadRootEventID != "$evt-off" {
+				t.Fatalf("trace off thread root = %q, want $evt-off", message.ThreadRootEventID)
+			}
+		}
+	}
+	if !foundOff {
+		t.Fatalf("missing trace off acknowledgement")
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:trace-toggle",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		EventID:        "$evt-2",
+		Text:           "while trace is off",
+	}); err != nil {
+		t.Fatalf("HandleInbound(while off) error: %v", err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if tracePublisher.publishedCount() != initialPublished {
+		t.Fatalf("published trace count = %d, want unchanged %d", tracePublisher.publishedCount(), initialPublished)
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:trace-toggle",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		EventID:        "$evt-on",
+		Text:           "!trace on",
+	}); err != nil {
+		t.Fatalf("HandleInbound(trace on) error: %v", err)
+	}
+	foundOn := false
+	for _, message := range fake.sentMessages() {
+		if strings.Contains(message.Text, "Trace channel (read-only): https://matrix.to/#/") && message.ThreadRootEventID == "$evt-on" {
+			foundOn = true
+		}
+	}
+	if !foundOn {
+		t.Fatalf("missing trace link reply for trace on command")
+	}
+	if traceProvisioner.callCount() != 1 {
+		t.Fatalf("trace provisioner call count = %d, want 1", traceProvisioner.callCount())
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:trace-toggle",
+		SenderID:       "@user:hs",
+		RecipientID:    "@milo:hs",
+		EventID:        "$evt-3",
+		Text:           "trace resumed",
+	}); err != nil {
+		t.Fatalf("HandleInbound(after on) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return tracePublisher.publishedCount() > initialPublished
+	})
 }
 
 func TestFallbackReplyForErrorSanitizesSensitiveDetails(t *testing.T) {

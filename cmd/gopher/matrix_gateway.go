@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"log/slog"
@@ -163,7 +164,9 @@ func startMatrixDMBridgeWithRuntime(
 	var tracePublisher gateway.TracePublisher
 	var traceProvisioner gateway.TraceConversationProvisioner
 	if cfg.Matrix.TraceEnabled {
-		tracePublisher = gateway.NewMatrixTracePublisher(matrixBridge)
+		tracePublisher = gateway.NewMatrixTracePublisherWithOptions(matrixBridge, gateway.MatrixTracePublisherOptions{
+			IncludeProgressDeltas: cfg.Matrix.ProgressUpdates,
+		})
 		traceProvisioner = newMatrixTraceConversationProvisioner(matrixBridge, logger)
 	}
 
@@ -563,8 +566,8 @@ func (p *matrixTraceConversationProvisioner) CreateTraceConversation(ctx context
 	if creatorUserID == "" {
 		return gateway.TraceConversationBinding{}, fmt.Errorf("trace room creator user is required")
 	}
-	traceRoomName := traceRoomNameFromSessionID(req.SessionID)
-	traceRoomTopic := fmt.Sprintf("Trace stream for session %s", strings.TrimSpace(string(req.SessionID)))
+	traceRoomName := traceRoomNameFromConversation(req.ConversationID, req.ConversationName)
+	traceRoomTopic := traceRoomTopicFromConversation(req.ConversationID)
 	roomID, err := p.transport.CreatePublicRoom(ctx, matrixtransport.CreatePublicRoomOptions{
 		Name:          traceRoomName,
 		Topic:         traceRoomTopic,
@@ -586,20 +589,58 @@ func (p *matrixTraceConversationProvisioner) CreateTraceConversation(ctx context
 	}, nil
 }
 
-func traceRoomNameFromSessionID(sessionID sessionrt.SessionID) string {
-	raw := strings.TrimSpace(string(sessionID))
-	if raw == "" {
-		return "trace-session"
+func traceRoomNameFromConversation(conversationID, conversationName string) string {
+	slug := makeTraceRoomSlug(conversationName)
+	if slug == "" {
+		slug = "dm-" + traceConversationSuffix(conversationID)
 	}
-	short := raw
-	if len(short) > 12 {
-		short = short[:12]
+	return "trace-" + slug
+}
+
+func traceRoomTopicFromConversation(conversationID string) string {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "Trace stream for DM room"
 	}
-	short = strings.ToLower(short)
-	short = strings.ReplaceAll(short, ":", "-")
-	short = strings.ReplaceAll(short, "_", "-")
-	short = strings.ReplaceAll(short, " ", "-")
-	return "trace-" + short
+	return fmt.Sprintf("Trace stream for DM room %s", conversationID)
+}
+
+func makeTraceRoomSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	var builder strings.Builder
+	lastHyphen := false
+	for _, r := range value {
+		isAlpha := r >= 'a' && r <= 'z'
+		isDigit := r >= '0' && r <= '9'
+		if isAlpha || isDigit {
+			builder.WriteRune(r)
+			lastHyphen = false
+			continue
+		}
+		if lastHyphen || builder.Len() == 0 {
+			continue
+		}
+		builder.WriteByte('-')
+		lastHyphen = true
+	}
+	out := strings.Trim(builder.String(), "-")
+	if len(out) > 32 {
+		out = strings.Trim(out[:32], "-")
+	}
+	return out
+}
+
+func traceConversationSuffix(conversationID string) string {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "unknown"
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(conversationID))
+	return fmt.Sprintf("%08x", hash.Sum32())
 }
 
 type gatewayCronToolService struct {

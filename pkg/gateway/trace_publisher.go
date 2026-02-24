@@ -13,6 +13,7 @@ import (
 )
 
 const defaultTraceMessageMaxChars = 3500
+const traceProgressDeltaMaxChars = 180
 
 type TracePublisher interface {
 	PublishEvent(ctx context.Context, traceConversationID string, event sessionrt.Event) error
@@ -32,24 +33,42 @@ type tracePublishMetrics interface {
 }
 
 type MatrixTracePublisher struct {
-	sender   traceMessageSender
-	maxChars int
-	mu       sync.Mutex
-	threads  map[sessionrt.SessionID]string
+	sender                traceMessageSender
+	maxChars              int
+	includeProgressDeltas bool
+	mu                    sync.Mutex
+	threads               map[sessionrt.SessionID]string
+	deltaPosted           map[sessionrt.SessionID]bool
+}
+
+type MatrixTracePublisherOptions struct {
+	MaxChars              int
+	IncludeProgressDeltas bool
 }
 
 func NewMatrixTracePublisher(sender traceMessageSender) *MatrixTracePublisher {
-	return NewMatrixTracePublisherWithMaxChars(sender, defaultTraceMessageMaxChars)
+	return NewMatrixTracePublisherWithOptions(sender, MatrixTracePublisherOptions{
+		MaxChars: defaultTraceMessageMaxChars,
+	})
 }
 
 func NewMatrixTracePublisherWithMaxChars(sender traceMessageSender, maxChars int) *MatrixTracePublisher {
+	return NewMatrixTracePublisherWithOptions(sender, MatrixTracePublisherOptions{
+		MaxChars: maxChars,
+	})
+}
+
+func NewMatrixTracePublisherWithOptions(sender traceMessageSender, opts MatrixTracePublisherOptions) *MatrixTracePublisher {
+	maxChars := opts.MaxChars
 	if maxChars <= 0 {
 		maxChars = defaultTraceMessageMaxChars
 	}
 	return &MatrixTracePublisher{
-		sender:   sender,
-		maxChars: maxChars,
-		threads:  map[sessionrt.SessionID]string{},
+		sender:                sender,
+		maxChars:              maxChars,
+		includeProgressDeltas: opts.IncludeProgressDeltas,
+		threads:               map[sessionrt.SessionID]string{},
+		deltaPosted:           map[sessionrt.SessionID]bool{},
 	}
 }
 
@@ -61,16 +80,27 @@ func (p *MatrixTracePublisher) PublishEvent(ctx context.Context, traceConversati
 	if traceConversationID == "" {
 		return nil
 	}
-	if shouldSuppressTraceEvent(event) {
-		return nil
-	}
-	messages := renderTraceEventCards(event, p.maxChars)
-	if len(messages) == 0 {
-		return nil
-	}
 	isUserTrigger := traceIsUserTriggerEvent(event)
 	if isUserTrigger {
 		p.clearSessionThreadRoot(event.SessionID)
+		p.clearSessionDeltaPosted(event.SessionID)
+	}
+	if event.Type == sessionrt.EventAgentDelta {
+		if !p.includeProgressDeltas || p.sessionDeltaPosted(event.SessionID) {
+			return nil
+		}
+	} else if shouldSuppressTraceEvent(event) {
+		return nil
+	}
+
+	var messages []string
+	if event.Type == sessionrt.EventAgentDelta {
+		messages = renderTraceProgressDelta(event, p.maxChars)
+	} else {
+		messages = renderTraceEventCards(event, p.maxChars)
+	}
+	if len(messages) == 0 {
+		return nil
 	}
 	threadRoot := ""
 	if !isUserTrigger {
@@ -95,6 +125,9 @@ func (p *MatrixTracePublisher) PublishEvent(ctx context.Context, traceConversati
 				p.setSessionThreadRoot(event.SessionID, threadRoot)
 			}
 		}
+	}
+	if event.Type == sessionrt.EventAgentDelta {
+		p.markSessionDeltaPosted(event.SessionID)
 	}
 	if metrics, ok := p.sender.(tracePublishMetrics); ok {
 		metrics.RecordTracePublishSuccess()
@@ -143,6 +176,36 @@ func (p *MatrixTracePublisher) clearSessionThreadRoot(sessionID sessionrt.Sessio
 	delete(p.threads, sessionID)
 }
 
+func (p *MatrixTracePublisher) sessionDeltaPosted(sessionID sessionrt.SessionID) bool {
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if p == nil || sessionID == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.deltaPosted[sessionID]
+}
+
+func (p *MatrixTracePublisher) markSessionDeltaPosted(sessionID sessionrt.SessionID) {
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if p == nil || sessionID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.deltaPosted[sessionID] = true
+}
+
+func (p *MatrixTracePublisher) clearSessionDeltaPosted(sessionID sessionrt.SessionID) {
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if p == nil || sessionID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.deltaPosted, sessionID)
+}
+
 func renderTraceEventCards(event sessionrt.Event, maxChars int) []string {
 	if maxChars <= 0 {
 		maxChars = defaultTraceMessageMaxChars
@@ -166,11 +229,39 @@ func renderTraceEventCards(event sessionrt.Event, maxChars int) []string {
 
 func shouldSuppressTraceEvent(event sessionrt.Event) bool {
 	switch event.Type {
-	case sessionrt.EventAgentDelta, sessionrt.EventAgentThinkingDelta:
+	case sessionrt.EventAgentThinkingDelta:
 		return true
 	default:
 		return false
 	}
+}
+
+func renderTraceProgressDelta(event sessionrt.Event, maxChars int) []string {
+	eventType := strings.TrimSpace(string(event.Type))
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	from := strings.TrimSpace(string(event.From))
+	if from == "" {
+		from = string(sessionrt.SystemActorID)
+	}
+	timestamp := "-"
+	if !event.Timestamp.IsZero() {
+		timestamp = event.Timestamp.UTC().Format(time.RFC3339)
+	}
+	header := fmt.Sprintf("%s [#%d] %s • %s • %s", traceEventEmoji(event), event.Seq, eventType, from, timestamp)
+
+	delta := strings.TrimSpace(tracePayloadString(tracePayloadMap(event.Payload), "delta"))
+	delta = strings.Join(strings.Fields(delta), " ")
+	if delta == "" {
+		delta = "Working."
+	}
+	runes := []rune(delta)
+	if len(runes) > traceProgressDeltaMaxChars {
+		delta = strings.TrimSpace(string(runes[:traceProgressDeltaMaxChars-3])) + "..."
+	}
+	body := "progress: " + delta
+	return splitTraceCard(header, body, maxChars)
 }
 
 func traceIsUserTriggerEvent(event sessionrt.Event) bool {

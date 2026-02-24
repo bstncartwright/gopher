@@ -149,10 +149,14 @@ func TestSelectCatchupReplayEventsReturnsOnlyNewerEventsChronologically(t *testi
 	}
 }
 
-func TestTraceRoomNameFromSessionIDUsesPrefixAndTruncation(t *testing.T) {
-	name := traceRoomNameFromSessionID("sess-1234567890abcdef")
-	if name != "trace-sess-1234567" {
-		t.Fatalf("trace room name = %q, want trace-sess-1234567", name)
+func TestTraceRoomNameFromConversationUsesNameAndFallback(t *testing.T) {
+	name := traceRoomNameFromConversation("!dm:one", "Writer Room")
+	if name != "trace-writer-room" {
+		t.Fatalf("trace room name = %q, want trace-writer-room", name)
+	}
+	fallback := traceRoomNameFromConversation("!dm:one", "")
+	if !strings.HasPrefix(fallback, "trace-dm-") {
+		t.Fatalf("fallback trace room name = %q, want trace-dm-*", fallback)
 	}
 }
 
@@ -170,6 +174,9 @@ func TestMatrixTraceConversationProvisionerCreatesPublicTraceRoom(t *testing.T) 
 		}
 		if !bytes.Contains(body, []byte(`"preset":"public_chat"`)) {
 			t.Fatalf("expected public preset payload: %s", string(body))
+		}
+		if !bytes.Contains(body, []byte(`"topic":"Trace stream for DM room !dm:one"`)) {
+			t.Fatalf("expected conversation topic payload: %s", string(body))
 		}
 		if bytes.Contains(body, []byte(`"invite"`)) {
 			t.Fatalf("did not expect invite list for trace room: %s", string(body))
@@ -191,9 +198,10 @@ func TestMatrixTraceConversationProvisionerCreatesPublicTraceRoom(t *testing.T) 
 	provisioner := newMatrixTraceConversationProvisioner(transport, nil)
 
 	result, err := provisioner.CreateTraceConversation(context.Background(), gateway.TraceConversationRequest{
-		ConversationID: "!dm:one",
-		SessionID:      "sess-1234567890abcdef",
-		RecipientID:    "@milo:local",
+		ConversationID:   "!dm:one",
+		ConversationName: "Writer Room",
+		SessionID:        "sess-1234567890abcdef",
+		RecipientID:      "@milo:local",
 	})
 	if err != nil {
 		t.Fatalf("CreateTraceConversation() error: %v", err)

@@ -22,6 +22,9 @@ func TestRenderGatewayUnit(t *testing.T) {
 	if !strings.Contains(unit, "WorkingDirectory=/root/.gopher") {
 		t.Fatalf("missing default working directory in unit: %s", unit)
 	}
+	if strings.Contains(unit, "\nUser=") || strings.Contains(unit, "\nGroup=") {
+		t.Fatalf("default unit should not force user/group: %s", unit)
+	}
 }
 
 func TestRenderUpdateTimerUnit(t *testing.T) {
@@ -47,5 +50,23 @@ func TestRenderNodeUnit(t *testing.T) {
 	}
 	if !strings.Contains(unit, "Description=gopher node service") {
 		t.Fatalf("missing node description in unit: %s", unit)
+	}
+}
+
+func TestRenderGatewayUnitIncludesConfiguredIdentity(t *testing.T) {
+	unit, err := RenderGatewayUnit(GatewayUnitConfig{
+		ExecStart:  "/usr/local/bin/gopher gateway run --config /tmp/gopher.toml",
+		User:       "exedev",
+		WorkingDir: "/home/exedev/.gopher",
+		EnvFile:    "/home/exedev/.gopher/gopher.env",
+	})
+	if err != nil {
+		t.Fatalf("RenderGatewayUnit() error: %v", err)
+	}
+	if !strings.Contains(unit, "User=exedev") {
+		t.Fatalf("missing configured user in unit: %s", unit)
+	}
+	if !strings.Contains(unit, "Group=exedev") {
+		t.Fatalf("missing configured group default in unit: %s", unit)
 	}
 }

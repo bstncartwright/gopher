@@ -80,11 +80,8 @@ func renderRuntimeUnit(cfg runtimeUnitConfig) (string, error) {
 		description = cfg.defaultDesc
 	}
 	user := strings.TrimSpace(cfg.User)
-	if user == "" {
-		user = "root"
-	}
 	group := strings.TrimSpace(cfg.Group)
-	if group == "" {
+	if group == "" && user != "" {
 		group = user
 	}
 	workingDir := strings.TrimSpace(cfg.WorkingDir)
@@ -95,6 +92,13 @@ func renderRuntimeUnit(cfg runtimeUnitConfig) (string, error) {
 	if envFile == "" {
 		envFile = "/etc/gopher/gopher.env"
 	}
+	identityLines := ""
+	if user != "" {
+		identityLines += fmt.Sprintf("User=%s\n", user)
+	}
+	if group != "" {
+		identityLines += fmt.Sprintf("Group=%s\n", group)
+	}
 
 	unit := `[Unit]
 Description=%s
@@ -103,9 +107,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=%s
-Group=%s
-WorkingDirectory=%s
+%sWorkingDirectory=%s
 EnvironmentFile=-%s
 ExecStart=%s
 Restart=on-failure
@@ -115,7 +117,7 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 `
-	return fmt.Sprintf(unit, description, user, group, workingDir, envFile, cfg.ExecStart), nil
+	return fmt.Sprintf(unit, description, identityLines, workingDir, envFile, cfg.ExecStart), nil
 }
 
 func RenderUpdateServiceUnit(cfg UpdateUnitConfig) (string, error) {

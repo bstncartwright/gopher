@@ -13,9 +13,10 @@ var sessionCounter uint64
 func (a *Agent) NewSession() *Session {
 	id := fmt.Sprintf("s-%d-%d", time.Now().UTC().UnixNano(), atomic.AddUint64(&sessionCounter, 1))
 	return &Session{
-		ID:           id,
-		Messages:     make([]Message, 0, a.Config.MaxContextMessages),
-		WorkingState: map[string]any{},
+		ID:                  id,
+		Messages:            make([]Message, 0, a.Config.MaxContextMessages),
+		WorkingState:        map[string]any{},
+		CompactionSummaries: make([]string, 0, 3),
 	}
 }
 

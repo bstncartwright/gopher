@@ -79,6 +79,7 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	} else {
 		config.TimeFormat = "auto"
 	}
+	applyDefaultContextManagement(&config)
 	if err := validateRequiredCapabilities(config.Execution.RequiredCapabilities); err != nil {
 		slog.Error("load_agent: invalid required_capabilities", "required_capabilities", config.Execution.RequiredCapabilities, "error", err)
 		return nil, err
@@ -191,10 +192,11 @@ func buildLongTermMemoryManager(workspaceAbs string) memory.MemoryManager {
 	}
 
 	manager, err := memory.NewManager(memory.ManagerOptions{
-		Store:     store,
-		Retriever: retrieval.NewHybridRetriever(retrieval.HybridRetrieverOptions{}),
-		Embedder:  memory.NewHashEmbedder(128),
-		FailOpen:  true,
+		Store:            store,
+		Retriever:        retrieval.NewHybridRetriever(retrieval.HybridRetrieverOptions{}),
+		Embedder:         memory.NewHashEmbedder(128),
+		FailOpenRetrieve: true,
+		FailOpenStore:    false,
 	})
 	if err != nil {
 		slog.Warn("build_long_term_memory_manager: failed to create manager, disabling long-term memory", "path", path, "error", err)
@@ -353,6 +355,26 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 		return
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_search")
+}
+
+func applyDefaultContextManagement(cfg *AgentConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.ContextManagement.EnablePruning == nil {
+		cfg.ContextManagement.EnablePruning = boolPtr(true)
+	}
+	if cfg.ContextManagement.EnableCompaction == nil {
+		cfg.ContextManagement.EnableCompaction = boolPtr(true)
+	}
+	if cfg.ContextManagement.EnableOverflowRetry == nil {
+		cfg.ContextManagement.EnableOverflowRetry = boolPtr(true)
+	}
+}
+
+func boolPtr(value bool) *bool {
+	v := value
+	return &v
 }
 
 func appendUniqueTool(tools []string, target string) []string {

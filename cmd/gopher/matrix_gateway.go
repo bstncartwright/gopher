@@ -19,6 +19,8 @@ import (
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/config"
 	"github.com/bstncartwright/gopher/pkg/gateway"
+	"github.com/bstncartwright/gopher/pkg/memory"
+	"github.com/bstncartwright/gopher/pkg/memory/ingest"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 	storepkg "github.com/bstncartwright/gopher/pkg/store"
 	"github.com/bstncartwright/gopher/pkg/transport"
@@ -87,10 +89,36 @@ func startMatrixDMBridgeWithRuntime(
 		return nil, fmt.Errorf("create conversation binding store: %w", err)
 	}
 
+	var eventPublisher sessionrt.EventPublisher
+	memoryRouter := newGatewayMemoryRouter(agentRuntime)
+	if memoryRouter != nil {
+		sessionPublisher := ingest.NewSessionPublisher(ingest.SessionPublisherOptions{
+			Manager: memoryRouter,
+			OnStoreError: func(_ context.Context, event sessionrt.Event, record memory.MemoryRecord, err error) {
+				slog.Warn("matrix_gateway: failed to persist ingested memory record",
+					"session_id", event.SessionID,
+					"event_type", event.Type,
+					"record_type", record.Type.String(),
+					"record_agent", record.AgentID,
+					"error", err,
+				)
+			},
+		})
+		eventPublisher = sessionrt.NewMultiEventPublisher(sessionPublisher)
+		flusher := &sessionPublisherFlusher{flusher: sessionPublisher}
+		for _, agent := range agentRuntime.Agents {
+			if agent == nil {
+				continue
+			}
+			agent.SessionMemoryFlusher = flusher
+		}
+	}
+
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:          store,
 		Executor:       executor,
 		AgentSelector:  matrixMentionAgentSelector(identities, newMatrixLLMUntaggedResponderRouter(agentRuntime, logger)),
+		Publisher:      eventPublisher,
 		RecoverOnStart: true,
 	})
 	if err != nil {

@@ -56,11 +56,11 @@ func TestContextBuilderOrderingTruncationAndDeterminism(t *testing.T) {
 		t.Fatalf("did not expect heartbeat section when heartbeat is disabled")
 	}
 
-	if len(ctxA.Messages) != 3 {
-		t.Fatalf("expected 3 messages (2 bounded + 1 new), got %d", len(ctxA.Messages))
+	if len(ctxA.Messages) != 4 {
+		t.Fatalf("expected 4 messages (full token-budgeted history + 1 new), got %d", len(ctxA.Messages))
 	}
-	if ctxA.Messages[0].Role != ai.RoleAssistant || ctxA.Messages[1].Role != ai.RoleUser || ctxA.Messages[2].Role != ai.RoleUser {
-		t.Fatalf("unexpected role order: %#v", []ai.MessageRole{ctxA.Messages[0].Role, ctxA.Messages[1].Role, ctxA.Messages[2].Role})
+	if ctxA.Messages[0].Role != ai.RoleUser || ctxA.Messages[1].Role != ai.RoleAssistant || ctxA.Messages[2].Role != ai.RoleUser || ctxA.Messages[3].Role != ai.RoleUser {
+		t.Fatalf("unexpected role order: %#v", []ai.MessageRole{ctxA.Messages[0].Role, ctxA.Messages[1].Role, ctxA.Messages[2].Role, ctxA.Messages[3].Role})
 	}
 }
 

@@ -10,10 +10,11 @@ import (
 )
 
 type SessionPublisherOptions struct {
-	Manager    memory.MemoryManager
-	Extractor  *Extractor
-	FlushEvery int
-	MaxBuffer  int
+	Manager      memory.MemoryManager
+	Extractor    *Extractor
+	FlushEvery   int
+	MaxBuffer    int
+	OnStoreError func(ctx context.Context, event sessionrt.Event, record memory.MemoryRecord, err error)
 }
 
 type SessionPublisher struct {
@@ -21,6 +22,7 @@ type SessionPublisher struct {
 	extractor  *Extractor
 	flushEvery int
 	maxBuffer  int
+	onStoreErr func(ctx context.Context, event sessionrt.Event, record memory.MemoryRecord, err error)
 
 	mu       sync.Mutex
 	sessions map[sessionrt.SessionID]*sessionState
@@ -32,6 +34,11 @@ type sessionState struct {
 }
 
 var _ sessionrt.EventPublisher = (*SessionPublisher)(nil)
+var _ SessionFlusher = (*SessionPublisher)(nil)
+
+type SessionFlusher interface {
+	FlushSession(ctx context.Context, sessionID sessionrt.SessionID) error
+}
 
 func NewSessionPublisher(opts SessionPublisherOptions) *SessionPublisher {
 	flushEvery := opts.FlushEvery
@@ -51,6 +58,7 @@ func NewSessionPublisher(opts SessionPublisherOptions) *SessionPublisher {
 		extractor:  extractor,
 		flushEvery: flushEvery,
 		maxBuffer:  maxBuffer,
+		onStoreErr: opts.OnStoreError,
 		sessions:   make(map[sessionrt.SessionID]*sessionState),
 	}
 }
@@ -96,15 +104,47 @@ func (p *SessionPublisher) PublishEvent(ctx context.Context, event sessionrt.Eve
 		return nil
 	}
 
+	_ = p.flushSnapshot(ctx, event, string(event.SessionID), agentID, eventsSnapshot)
+	return nil
+}
+
+func (p *SessionPublisher) FlushSession(ctx context.Context, sessionID sessionrt.SessionID) error {
+	if p == nil || p.manager == nil {
+		return nil
+	}
+	if sessionID == "" {
+		return nil
+	}
+	p.mu.Lock()
+	state := p.sessions[sessionID]
+	if state == nil || len(state.events) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	eventsSnapshot := append([]sessionrt.Event(nil), state.events...)
+	agentID := strings.TrimSpace(state.agentID)
+	p.mu.Unlock()
+	return p.flushSnapshot(ctx, sessionrt.Event{SessionID: sessionID}, string(sessionID), agentID, eventsSnapshot)
+}
+
+func (p *SessionPublisher) flushSnapshot(ctx context.Context, trigger sessionrt.Event, sessionID string, agentID string, eventsSnapshot []sessionrt.Event) error {
 	storeCtx := ctx
 	if storeCtx == nil || storeCtx.Err() != nil {
 		storeCtx = context.Background()
 	}
-	records := p.extractor.ExtractSession(string(event.SessionID), agentID, eventsSnapshot)
+	records := p.extractor.ExtractSession(sessionID, agentID, eventsSnapshot)
+	var firstErr error
 	for _, record := range records {
-		_ = p.manager.Store(storeCtx, record)
+		if err := p.manager.Store(storeCtx, record); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			if p.onStoreErr != nil {
+				p.onStoreErr(storeCtx, trigger, record, err)
+			}
+		}
 	}
-	return nil
+	return firstErr
 }
 
 func isImportantMemoryTrigger(event sessionrt.Event) bool {

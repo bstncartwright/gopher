@@ -78,7 +78,11 @@ func (f *fakeServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) 
 
 func TestRunServiceSubcommandRoutesInstall(t *testing.T) {
 	prev := newServiceRuntime
+	prevGetEUID := serviceGetEUID
 	defer func() { newServiceRuntime = prev }()
+	defer func() { serviceGetEUID = prevGetEUID }()
+	serviceGetEUID = func() int { return 1000 }
+	t.Setenv("HOME", "/tmp/gopher-home")
 	fake := &fakeServiceRuntime{}
 	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
 		_ = stdout
@@ -97,6 +101,12 @@ func TestRunServiceSubcommandRoutesInstall(t *testing.T) {
 	}
 	if fake.installOpts.ConfigPath != defaultServiceGatewayConfigPath() {
 		t.Fatalf("install config path = %q, want %q", fake.installOpts.ConfigPath, defaultServiceGatewayConfigPath())
+	}
+	if fake.installOpts.EnvPath != defaultServiceEnvPath() {
+		t.Fatalf("install env path = %q, want %q", fake.installOpts.EnvPath, defaultServiceEnvPath())
+	}
+	if strings.TrimSpace(fake.installOpts.BinaryPath) == "" {
+		t.Fatalf("install binary path should not be empty")
 	}
 }
 
@@ -343,5 +353,24 @@ func TestRunServiceSubcommandRejectsInvalidStatusRole(t *testing.T) {
 	}
 	if fake.statusCalled {
 		t.Fatalf("status should not be called on invalid role")
+	}
+}
+
+func TestDefaultServiceEnvPathForRoot(t *testing.T) {
+	prevGetEUID := serviceGetEUID
+	defer func() { serviceGetEUID = prevGetEUID }()
+	serviceGetEUID = func() int { return 0 }
+	if got := defaultServiceEnvPath(); got != "/etc/gopher/gopher.env" {
+		t.Fatalf("defaultServiceEnvPath() = %q, want /etc/gopher/gopher.env", got)
+	}
+}
+
+func TestDefaultServiceEnvPathForUser(t *testing.T) {
+	prevGetEUID := serviceGetEUID
+	defer func() { serviceGetEUID = prevGetEUID }()
+	serviceGetEUID = func() int { return 1000 }
+	t.Setenv("HOME", "/tmp/gopher-user")
+	if got := defaultServiceEnvPath(); got != "/tmp/gopher-user/.gopher/gopher.env" {
+		t.Fatalf("defaultServiceEnvPath() = %q, want /tmp/gopher-user/.gopher/gopher.env", got)
 	}
 }

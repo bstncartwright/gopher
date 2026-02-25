@@ -18,8 +18,9 @@ import (
 func TestResolveManagedServiceUnitPrefersInstalledNodeWhenGatewayMissing(t *testing.T) {
 	prev := readUnitStatusForManagedUnit
 	defer func() { readUnitStatusForManagedUnit = prev }()
-	readUnitStatusForManagedUnit = func(ctx context.Context, unit string) (unitStatus, error) {
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
 		_ = ctx
+		_ = scope
 		switch unit {
 		case gopherGatewayUnitName:
 			return unitStatus{LoadState: "not-found", ActiveState: "inactive"}, nil
@@ -30,7 +31,7 @@ func TestResolveManagedServiceUnitPrefersInstalledNodeWhenGatewayMissing(t *test
 		}
 	}
 
-	unit, err := resolveManagedServiceUnit(context.Background(), serviceTargetAuto)
+	unit, err := resolveManagedServiceUnit(context.Background(), serviceSystemdScope{}, serviceTargetAuto)
 	if err != nil {
 		t.Fatalf("resolveManagedServiceUnit() error: %v", err)
 	}
@@ -42,8 +43,9 @@ func TestResolveManagedServiceUnitPrefersInstalledNodeWhenGatewayMissing(t *test
 func TestResolveManagedServiceUnitPrefersGatewayWhenNodeMissing(t *testing.T) {
 	prev := readUnitStatusForManagedUnit
 	defer func() { readUnitStatusForManagedUnit = prev }()
-	readUnitStatusForManagedUnit = func(ctx context.Context, unit string) (unitStatus, error) {
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
 		_ = ctx
+		_ = scope
 		switch unit {
 		case gopherGatewayUnitName:
 			return unitStatus{LoadState: "loaded", ActiveState: "active"}, nil
@@ -54,7 +56,7 @@ func TestResolveManagedServiceUnitPrefersGatewayWhenNodeMissing(t *testing.T) {
 		}
 	}
 
-	unit, err := resolveManagedServiceUnit(context.Background(), serviceTargetAuto)
+	unit, err := resolveManagedServiceUnit(context.Background(), serviceSystemdScope{}, serviceTargetAuto)
 	if err != nil {
 		t.Fatalf("resolveManagedServiceUnit() error: %v", err)
 	}
@@ -66,8 +68,9 @@ func TestResolveManagedServiceUnitPrefersGatewayWhenNodeMissing(t *testing.T) {
 func TestResolveManagedServiceUnitPrefersActiveUnitWhenBothInstalled(t *testing.T) {
 	prev := readUnitStatusForManagedUnit
 	defer func() { readUnitStatusForManagedUnit = prev }()
-	readUnitStatusForManagedUnit = func(ctx context.Context, unit string) (unitStatus, error) {
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
 		_ = ctx
+		_ = scope
 		switch unit {
 		case gopherGatewayUnitName:
 			return unitStatus{LoadState: "loaded", ActiveState: "inactive"}, nil
@@ -78,7 +81,7 @@ func TestResolveManagedServiceUnitPrefersActiveUnitWhenBothInstalled(t *testing.
 		}
 	}
 
-	unit, err := resolveManagedServiceUnit(context.Background(), serviceTargetAuto)
+	unit, err := resolveManagedServiceUnit(context.Background(), serviceSystemdScope{}, serviceTargetAuto)
 	if err != nil {
 		t.Fatalf("resolveManagedServiceUnit() error: %v", err)
 	}
@@ -90,8 +93,9 @@ func TestResolveManagedServiceUnitPrefersActiveUnitWhenBothInstalled(t *testing.
 func TestResolveManagedServiceUnitErrorsWhenNoServiceInstalled(t *testing.T) {
 	prev := readUnitStatusForManagedUnit
 	defer func() { readUnitStatusForManagedUnit = prev }()
-	readUnitStatusForManagedUnit = func(ctx context.Context, unit string) (unitStatus, error) {
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
 		_ = ctx
+		_ = scope
 		switch unit {
 		case gopherGatewayUnitName, gopherNodeUnitName:
 			return unitStatus{LoadState: "not-found", ActiveState: "inactive"}, nil
@@ -100,7 +104,7 @@ func TestResolveManagedServiceUnitErrorsWhenNoServiceInstalled(t *testing.T) {
 		}
 	}
 
-	if _, err := resolveManagedServiceUnit(context.Background(), serviceTargetAuto); err == nil {
+	if _, err := resolveManagedServiceUnit(context.Background(), serviceSystemdScope{}, serviceTargetAuto); err == nil {
 		t.Fatalf("expected error when neither service is installed")
 	}
 }
@@ -108,8 +112,9 @@ func TestResolveManagedServiceUnitErrorsWhenNoServiceInstalled(t *testing.T) {
 func TestResolveManagedServiceUnitExplicitNodeRequiresInstall(t *testing.T) {
 	prev := readUnitStatusForManagedUnit
 	defer func() { readUnitStatusForManagedUnit = prev }()
-	readUnitStatusForManagedUnit = func(ctx context.Context, unit string) (unitStatus, error) {
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
 		_ = ctx
+		_ = scope
 		switch unit {
 		case gopherGatewayUnitName:
 			return unitStatus{LoadState: "loaded", ActiveState: "active"}, nil
@@ -120,7 +125,7 @@ func TestResolveManagedServiceUnitExplicitNodeRequiresInstall(t *testing.T) {
 		}
 	}
 
-	if _, err := resolveManagedServiceUnit(context.Background(), serviceTargetNode); err == nil {
+	if _, err := resolveManagedServiceUnit(context.Background(), serviceSystemdScope{}, serviceTargetNode); err == nil {
 		t.Fatalf("expected error when node service is not installed")
 	}
 }
@@ -128,8 +133,9 @@ func TestResolveManagedServiceUnitExplicitNodeRequiresInstall(t *testing.T) {
 func TestResolveManagedServiceUnitExplicitNodeWhenInstalled(t *testing.T) {
 	prev := readUnitStatusForManagedUnit
 	defer func() { readUnitStatusForManagedUnit = prev }()
-	readUnitStatusForManagedUnit = func(ctx context.Context, unit string) (unitStatus, error) {
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
 		_ = ctx
+		_ = scope
 		switch unit {
 		case gopherGatewayUnitName:
 			return unitStatus{LoadState: "loaded", ActiveState: "inactive"}, nil
@@ -140,7 +146,7 @@ func TestResolveManagedServiceUnitExplicitNodeWhenInstalled(t *testing.T) {
 		}
 	}
 
-	unit, err := resolveManagedServiceUnit(context.Background(), serviceTargetNode)
+	unit, err := resolveManagedServiceUnit(context.Background(), serviceSystemdScope{}, serviceTargetNode)
 	if err != nil {
 		t.Fatalf("resolveManagedServiceUnit(node) error: %v", err)
 	}
@@ -190,7 +196,7 @@ func TestLinuxServiceUninstallIgnoresMissingUnitsAndFiles(t *testing.T) {
 		if len(args) == 0 {
 			return nil
 		}
-		if args[0] == "daemon-reload" {
+		if args[len(args)-1] == "daemon-reload" {
 			return nil
 		}
 		return errors.New("Unit gopher-gateway.service not loaded.")
@@ -246,5 +252,35 @@ func TestEnsureGatewayConfigFilePreservesExistingFile(t *testing.T) {
 	}
 	if string(content) != string(initial) {
 		t.Fatalf("expected existing config preserved, got %q", string(content))
+	}
+}
+
+func TestResolveServiceSystemdScopeUsesUserScopeWhenNotRoot(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	defer func() { serviceGetEUIDForLinux = prevGetEUID }()
+	serviceGetEUIDForLinux = func() int { return 1000 }
+
+	scope := resolveServiceSystemdScope()
+	if !scope.user {
+		t.Fatalf("expected user scope for non-root user")
+	}
+	args := scope.systemctlArgs("status", "gopher-gateway.service")
+	if len(args) == 0 || args[0] != "--user" {
+		t.Fatalf("expected --user prefixed args, got %#v", args)
+	}
+}
+
+func TestResolveServiceSystemdScopeUsesSystemScopeWhenRoot(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	defer func() { serviceGetEUIDForLinux = prevGetEUID }()
+	serviceGetEUIDForLinux = func() int { return 0 }
+
+	scope := resolveServiceSystemdScope()
+	if scope.user {
+		t.Fatalf("expected system scope for root user")
+	}
+	args := scope.systemctlArgs("status", "gopher-gateway.service")
+	if len(args) == 0 || args[0] == "--user" {
+		t.Fatalf("expected system-scope args without --user, got %#v", args)
 	}
 }

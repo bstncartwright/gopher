@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +56,7 @@ var runJournalctlForService = func(ctx context.Context, args []string, stdout, s
 }
 var serviceGetEUIDForLinux = os.Geteuid
 var serviceUserHomeDir = os.UserHomeDir
+var releaseVersionPattern = regexp.MustCompile(`\bv\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b`)
 
 type serviceSystemdScope struct {
 	user bool
@@ -787,6 +789,13 @@ func readBinaryDetails(binaryName string) (path string, version string, sha stri
 }
 
 func readBinaryVersion(path string) string {
+	versionText := ""
+	versionCmd := exec.Command(path, "--version")
+	versionOutput, versionErr := versionCmd.CombinedOutput()
+	if versionErr == nil {
+		versionText = strings.TrimSpace(string(versionOutput))
+	}
+
 	cmd := exec.Command("go", "version", "-m", path)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -801,24 +810,33 @@ func readBinaryVersion(path string) string {
 				revision = strings.TrimPrefix(line, "build\tvcs.revision=")
 			}
 		}
-		if revision != "" && moduleLine != "" {
-			return fmt.Sprintf("%s @ %s", moduleLine, revision)
-		}
 		if moduleLine != "" {
-			return moduleLine
+			return formatBinaryVersionWithRelease(moduleLine, revision, extractReleaseVersion(versionText))
 		}
 	}
 
-	name := filepath.Base(path)
-	versionCmd := exec.Command(path, "--version")
-	output, err = versionCmd.CombinedOutput()
-	if err == nil {
-		text := strings.TrimSpace(string(output))
-		if text != "" {
-			return text
-		}
+	if versionText != "" {
+		return versionText
 	}
+	name := filepath.Base(path)
 	return name
+}
+
+func formatBinaryVersionWithRelease(moduleLine string, revision string, release string) string {
+	base := strings.TrimSpace(moduleLine)
+	if strings.TrimSpace(revision) != "" {
+		base = fmt.Sprintf("%s @ %s", base, strings.TrimSpace(revision))
+	}
+	release = strings.TrimSpace(release)
+	if release == "" || strings.Contains(base, release) {
+		return base
+	}
+	return fmt.Sprintf("%s (release %s)", base, release)
+}
+
+func extractReleaseVersion(versionText string) string {
+	match := releaseVersionPattern.FindString(strings.TrimSpace(versionText))
+	return strings.TrimSpace(match)
 }
 
 func readFileSHA256(path string) string {

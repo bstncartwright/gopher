@@ -286,6 +286,41 @@ func TestResolveServiceSystemdScopeUsesSystemScopeWhenRoot(t *testing.T) {
 	}
 }
 
+func TestExtractReleaseVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "gopher output", in: "gopher v0.1.75", want: "v0.1.75"},
+		{name: "nats output", in: "nats-server: v2.10.7", want: "v2.10.7"},
+		{name: "no version", in: "unknown", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractReleaseVersion(tt.in); got != tt.want {
+				t.Fatalf("extractReleaseVersion(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatBinaryVersionWithRelease(t *testing.T) {
+	got := formatBinaryVersionWithRelease(
+		"github.com/bstncartwright/gopher\tv0.0.0-20260225173712-8ea24608f92d",
+		"8ea24608f92d4a56ffebb8a68ca4b79c60e01f75",
+		"v0.1.75",
+	)
+	if !strings.Contains(got, "release v0.1.75") {
+		t.Fatalf("expected release tag in formatted version, got %q", got)
+	}
+
+	got = formatBinaryVersionWithRelease("github.com/bstncartwright/gopher\tv0.1.75", "", "v0.1.75")
+	if strings.Count(got, "v0.1.75") != 1 {
+		t.Fatalf("expected release tag not duplicated, got %q", got)
+	}
+}
+
 func TestLinuxServiceLogsUsesUserScopeAndNodeRole(t *testing.T) {
 	prevGetEUID := serviceGetEUIDForLinux
 	prevReadUnitStatus := readUnitStatusForManagedUnit

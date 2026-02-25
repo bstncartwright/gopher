@@ -190,16 +190,16 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 	printStatusValueLine(r.stdout, "nats version", valueOrUnknown(natsVersion))
 
 	if unit == gopherGatewayUnitName {
-		matrixLine, matrixWarning := readMatrixStatusLine(ctx, gatewayCfg, gatewayCfgErr)
+		telegramLine, telegramWarning := readTelegramStatusLine(ctx, gatewayCfg, gatewayCfgErr)
 		nodeLines, nodeWarning := readGatewayNodeStatusLines(ctx, gatewayCfg, gatewayCfgErr)
-		if matrixLine != "" || matrixWarning != "" || len(nodeLines) > 0 || nodeWarning != "" {
+		if telegramLine != "" || telegramWarning != "" || len(nodeLines) > 0 || nodeWarning != "" {
 			fmt.Fprintln(r.stdout, "")
 			printStatusSectionHeader(r.stdout, "gateway runtime")
-			if matrixLine != "" {
-				printStatusExternalLine(r.stdout, matrixLine, "INFO")
+			if telegramLine != "" {
+				printStatusExternalLine(r.stdout, telegramLine, "INFO")
 			}
-			if matrixWarning != "" {
-				printStatusExternalLine(r.stdout, matrixWarning, "WARN")
+			if telegramWarning != "" {
+				printStatusExternalLine(r.stdout, telegramWarning, "WARN")
 			}
 			for _, line := range nodeLines {
 				printStatusExternalLine(r.stdout, line, "INFO")
@@ -275,71 +275,22 @@ func statusBadgeWithFallback(detail string, fallback string) string {
 	}
 }
 
-type matrixRuntimeMetrics struct {
-	LastInboundTxnAt       string `json:"last_inbound_txn_at"`
-	LastOutboundSuccessAt  string `json:"last_outbound_success_at"`
-	PresenceEnabled        bool   `json:"presence_enabled"`
-	PresenceState          string `json:"presence_state"`
-	PresenceLastSuccessAt  string `json:"presence_last_success_at"`
-	PresenceFailures       uint64 `json:"presence_failures"`
-	PresenceLastError      string `json:"presence_last_error"`
-	QueueDepth             int    `json:"queue_depth"`
-	OutboundRetries        uint64 `json:"outbound_retries"`
-	OutboundDropped        uint64 `json:"outbound_dropped"`
-	OutboundReplayPending  int    `json:"outbound_replay_pending"`
-	OutboundTransientErrs  uint64 `json:"outbound_transient_errors"`
-	OutboundPermanentErrs  uint64 `json:"outbound_permanent_errors"`
-	DuplicateTxnSeen       uint64 `json:"duplicate_txn_seen"`
-	DuplicateEventsSkipped uint64 `json:"duplicate_events_skipped"`
-	ReplayEventsProcessed  uint64 `json:"replay_events_processed"`
-	TraceRoomsCreated      uint64 `json:"trace_rooms_created_total"`
-	TracePublishSuccess    uint64 `json:"trace_publish_success_total"`
-	TracePublishFailure    uint64 `json:"trace_publish_failure_total"`
-	TraceInboundIgnored    uint64 `json:"trace_events_ignored_inbound_total"`
-	InboundFailures        uint64 `json:"inbound_failures"`
-}
-
-func readMatrixStatusLine(ctx context.Context, cfg config.GatewayConfig, cfgErr error) (line string, warning string) {
-	if cfgErr != nil || !cfg.Matrix.Enabled {
+func readTelegramStatusLine(_ context.Context, cfg config.GatewayConfig, cfgErr error) (line string, warning string) {
+	if cfgErr != nil || !cfg.Telegram.Enabled {
 		return "", ""
 	}
-	addr := strings.TrimSpace(cfg.Matrix.ListenAddr)
-	if addr == "" {
-		addr = "127.0.0.1:29328"
-	}
-	url := fmt.Sprintf("http://%s/_gopher/matrix/metrics", addr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", fmt.Sprintf("matrix bridge: warning (invalid probe request: %v)", err)
-	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: configured but listener not reachable at %s", addr)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: metrics endpoint returned %s", resp.Status)
-	}
-	var metrics matrixRuntimeMetrics
-	if err := json.NewDecoder(resp.Body).Decode(&metrics); err != nil {
-		return "matrix bridge: degraded", fmt.Sprintf("matrix warning: unable to decode metrics (%v)", err)
+	if strings.TrimSpace(cfg.Telegram.AllowedUserID) == "" || strings.TrimSpace(cfg.Telegram.AllowedChatID) == "" {
+		return "telegram bridge: degraded", "telegram warning: allowed_user_id and allowed_chat_id should be configured"
 	}
 	line = fmt.Sprintf(
-		"matrix bridge:   healthy (queue=%d retries=%d dropped=%d replay_pending=%d inbound_failures=%d presence=%s)",
-		metrics.QueueDepth,
-		metrics.OutboundRetries,
-		metrics.OutboundDropped,
-		metrics.OutboundReplayPending,
-		metrics.InboundFailures,
-		matrixPresenceSummary(metrics),
+		"telegram bridge: healthy (poll_interval=%s poll_timeout=%s allowed_user_id=%s allowed_chat_id=%s)",
+		cfg.Telegram.PollInterval,
+		cfg.Telegram.PollTimeout,
+		cfg.Telegram.AllowedUserID,
+		cfg.Telegram.AllowedChatID,
 	)
-	if strings.TrimSpace(metrics.LastInboundTxnAt) != "" || strings.TrimSpace(metrics.LastOutboundSuccessAt) != "" {
-		warning = fmt.Sprintf(
-			"matrix activity: inbound=%s outbound=%s",
-			valueOrUnknown(metrics.LastInboundTxnAt),
-			valueOrUnknown(metrics.LastOutboundSuccessAt),
-		)
+	if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
+		warning = "telegram warning: bot_token is empty"
 	}
 	return line, warning
 }
@@ -397,20 +348,6 @@ func readGatewayNodeStatusLines(ctx context.Context, cfg config.GatewayConfig, c
 		))
 	}
 	return lines, ""
-}
-
-func matrixPresenceSummary(metrics matrixRuntimeMetrics) string {
-	if !metrics.PresenceEnabled {
-		return "disabled"
-	}
-	state := strings.TrimSpace(metrics.PresenceState)
-	if state == "" {
-		state = "unknown"
-	}
-	if strings.TrimSpace(metrics.PresenceLastError) != "" {
-		return fmt.Sprintf("%s (failures=%d)", state, metrics.PresenceFailures)
-	}
-	return state
 }
 
 func formatSchedulerCapabilities(capabilities []scheduler.Capability) string {

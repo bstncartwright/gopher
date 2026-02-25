@@ -29,7 +29,7 @@
       <article class="card sessions">
         <header class="section-header">
           <h2>Sessions</h2>
-          <p>{{if .HasSessionStore}}Live matrix-backed session runtime{{else}}Limited mode (session runtime unavailable){{end}}</p>
+          <p>{{if .HasSessionStore}}Live session runtime{{else}}Limited mode (session runtime unavailable){{end}}</p>
         </header>
         <div id="sessions-list" hx-get="/_gopher/panel/fragments/sessions" hx-trigger="load, every 5s">
           <div class="loading">Loading sessions...</div>

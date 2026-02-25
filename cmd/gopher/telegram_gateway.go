@@ -1,0 +1,266 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/bstncartwright/gopher/pkg/config"
+	"github.com/bstncartwright/gopher/pkg/gateway"
+	sessionrt "github.com/bstncartwright/gopher/pkg/session"
+	storepkg "github.com/bstncartwright/gopher/pkg/store"
+	"github.com/bstncartwright/gopher/pkg/transport"
+	telegramtransport "github.com/bstncartwright/gopher/pkg/transport/telegram"
+)
+
+type telegramDMBridge struct {
+	transport *telegramtransport.Transport
+	manager   sessionrt.SessionManager
+	pipeline  *gateway.DMPipeline
+	cron      *gateway.CronRunner
+	heartbeat *gateway.HeartbeatRunner
+	bindings  gateway.ConversationBindingStore
+	store     interface {
+		sessionrt.EventStore
+		sessionrt.SessionRegistryStore
+	}
+	cancel context.CancelFunc
+}
+
+func startTelegramDMBridgeWithRuntime(
+	ctx context.Context,
+	cfg config.GatewayConfig,
+	workspace string,
+	agentRuntime *gatewayAgentRuntime,
+	executor sessionrt.AgentExecutor,
+	logger *log.Logger,
+) (*telegramDMBridge, error) {
+	var err error
+	slog.Info("telegram_gateway: starting dm bridge", "workspace", workspace)
+	if agentRuntime == nil {
+		agentRuntime, err = loadGatewayAgentRuntime(workspace)
+		if err != nil {
+			return nil, fmt.Errorf("load gateway agents: %w", err)
+		}
+	}
+	if executor == nil {
+		executor = agentRuntime.Executor
+	}
+	dataDir := resolveGatewayDataDir(workspace)
+	storeDir := filepath.Join(dataDir, "sessions")
+	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: storeDir})
+	if err != nil {
+		return nil, fmt.Errorf("create session store: %w", err)
+	}
+	bindingStorePath := filepath.Join(storeDir, "conversation_bindings.json")
+	bindingStore, err := gateway.NewFileConversationBindingStore(bindingStorePath)
+	if err != nil {
+		return nil, fmt.Errorf("create conversation binding store: %w", err)
+	}
+
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:          store,
+		Executor:       executor,
+		AgentSelector:  gatewayMessageTargetSelector(agentRuntime.DefaultActorID),
+		RecoverOnStart: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create session manager: %w", err)
+	}
+
+	var cronRunner *gateway.CronRunner
+	if cfg.Cron.Enabled {
+		dispatcher, err := gateway.NewSessionCronDispatcher(manager)
+		if err != nil {
+			return nil, fmt.Errorf("create cron dispatcher: %w", err)
+		}
+		cronFilePath := filepath.Join(dataDir, "cron", "jobs.json")
+		cronStore, err := gateway.NewFileCronStore(cronFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("create cron store: %w", err)
+		}
+		cronService, err := gateway.NewCronService(gateway.CronServiceOptions{
+			Store:              cronStore,
+			Dispatcher:         dispatcher,
+			DefaultTimezone:    cfg.Cron.DefaultTimezone,
+			CatchupOnStartOnce: true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create cron service: %w", err)
+		}
+		cronTool := newGatewayCronToolService(cronService)
+		for _, agent := range agentRuntime.Agents {
+			agent.Cron = cronTool
+		}
+		cronRunner, err = gateway.NewCronRunner(gateway.CronRunnerOptions{
+			Service:      cronService,
+			PollInterval: cfg.Cron.PollInterval,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create cron runner: %w", err)
+		}
+		if err := cronRunner.Start(ctx); err != nil {
+			return nil, fmt.Errorf("start cron runner: %w", err)
+		}
+	}
+
+	telegramBridge, err := telegramtransport.New(telegramtransport.Options{
+		BotToken:      cfg.Telegram.BotToken,
+		PollInterval:  cfg.Telegram.PollInterval,
+		PollTimeout:   cfg.Telegram.PollTimeout,
+		AllowedUserID: cfg.Telegram.AllowedUserID,
+		AllowedChatID: cfg.Telegram.AllowedChatID,
+		OffsetPath:    filepath.Join(dataDir, "telegram", "offset.json"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create telegram transport: %w", err)
+	}
+
+	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
+		Manager:       manager,
+		Transport:     telegramBridge,
+		AgentID:       agentRuntime.DefaultActorID,
+		Conversations: gateway.NewConversationSessionMap(),
+		Bindings:      bindingStore,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create telegram dm pipeline: %w", err)
+	}
+
+	delegationTool := newGatewaySessionDelegationToolService(manager, agentRuntime.Agents, dataDir, logger)
+	for _, agent := range agentRuntime.Agents {
+		agent.Delegation = delegationTool
+	}
+
+	heartbeatSchedules := collectHeartbeatSchedules(agentRuntime)
+	heartbeatRunner, err := gateway.NewHeartbeatRunner(gateway.HeartbeatRunnerOptions{
+		Manager:   manager,
+		Pipeline:  pipeline,
+		Schedules: heartbeatSchedules,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create heartbeat runner: %w", err)
+	}
+	if err := heartbeatRunner.Start(ctx); err != nil {
+		return nil, fmt.Errorf("start heartbeat runner: %w", err)
+	}
+	heartbeatTool := newGatewayHeartbeatToolService(agentRuntime.Agents, heartbeatRunner)
+	for _, agent := range agentRuntime.Agents {
+		agent.HeartbeatService = heartbeatTool
+	}
+
+	// Wrap inbound processing with durable telegram ingress audit logging.
+	telegramBridge.SetInboundHandler(func(handlerCtx context.Context, inbound transport.InboundMessage) error {
+		recordTelegramInbound(dataDir, inbound)
+		return pipeline.HandleInbound(handlerCtx, inbound)
+	})
+
+	bridge := &telegramDMBridge{
+		transport: telegramBridge,
+		manager:   manager,
+		pipeline:  pipeline,
+		cron:      cronRunner,
+		heartbeat: heartbeatRunner,
+		bindings:  bindingStore,
+		store:     store,
+	}
+	bridgeCtx, cancel := context.WithCancel(ctx)
+	bridge.cancel = cancel
+	go bridge.runSupervisor(bridgeCtx, logger)
+	return bridge, nil
+}
+
+func (b *telegramDMBridge) runSupervisor(ctx context.Context, logger *log.Logger) {
+	attempt := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		attempt++
+		err := b.transport.Start(ctx)
+		if err == nil {
+			if ctx.Err() != nil {
+				return
+			}
+		} else if logger != nil {
+			logger.Printf("telegram bridge degraded attempt=%d err=%v", attempt, err)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		delay := channelBridgeRetryDelay(attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func channelBridgeRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	base := 500 * time.Millisecond
+	maxDelay := 30 * time.Second
+	delay := base * time.Duration(1<<max(0, attempt-1))
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	return delay
+}
+
+func (b *telegramDMBridge) Stop() {
+	if b == nil {
+		return
+	}
+	if b.cancel != nil {
+		b.cancel()
+	}
+	if b.cron != nil {
+		b.cron.Stop()
+	}
+	if b.heartbeat != nil {
+		b.heartbeat.Stop()
+	}
+	if b.transport != nil {
+		_ = b.transport.Stop()
+	}
+}
+
+func recordTelegramInbound(dataDir string, inbound transport.InboundMessage) {
+	dataDir = filepath.Clean(strings.TrimSpace(dataDir))
+	if dataDir == "" {
+		return
+	}
+	path := filepath.Join(dataDir, "control", "inbound_telegram.jsonl")
+	payload := map[string]any{
+		"ts":                 time.Now().UTC().Format(time.RFC3339Nano),
+		"actor":              "human_telegram",
+		"conversation_id":    inbound.ConversationID,
+		"conversation_name":  inbound.ConversationName,
+		"sender_id":          inbound.SenderID,
+		"event_id":           inbound.EventID,
+		"raw_text":           inbound.Text,
+		"interpreted_intent": "",
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(blob, '\n'))
+}

@@ -715,7 +715,7 @@ func TestDMPipelineCreatesTraceConversationAndPublishesTraceEvents(t *testing.T)
 	}
 	foundTraceNotice := false
 	for _, message := range fake.sentMessages() {
-		if strings.Contains(message.Text, "Trace channel (read-only): https://matrix.to/#/") {
+		if strings.Contains(message.Text, "Trace channel (read-only): ") {
 			if message.ThreadRootEventID != "$dm-event-1" {
 				t.Fatalf("trace notice thread root = %q, want $dm-event-1", message.ThreadRootEventID)
 			}
@@ -752,7 +752,7 @@ func TestDMPipelineIgnoresTraceRoomInboundMessages(t *testing.T) {
 	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: "agent:a", Type: sessionrt.ActorAgent},
-			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -977,7 +977,7 @@ func TestDMPipelineIgnoresManagedSenderOutsideDelegationRoom(t *testing.T) {
 	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: "writer", Type: sessionrt.ActorAgent},
-			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -1029,7 +1029,7 @@ func TestDMPipelineAcceptsManagedSenderInDelegationRoom(t *testing.T) {
 	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: "writer", Type: sessionrt.ActorAgent},
-			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -1093,7 +1093,7 @@ func TestDMPipelineDelegationSupportsTraceChannel(t *testing.T) {
 	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: "writer", Type: sessionrt.ActorAgent},
-			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -1141,7 +1141,7 @@ func TestDMPipelineDelegationSupportsTraceChannel(t *testing.T) {
 	}
 	foundTraceNotice := false
 	for _, message := range fake.sentMessages() {
-		if strings.Contains(message.Text, "Trace channel (read-only): https://matrix.to/#/") {
+		if strings.Contains(message.Text, "Trace channel (read-only): ") {
 			foundTraceNotice = true
 			break
 		}
@@ -1552,7 +1552,7 @@ func TestDMPipelineRebindsConversationWhenExistingSessionIsInactive(t *testing.T
 	stale, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: "agent:a", Type: sessionrt.ActorAgent},
-			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -1621,7 +1621,7 @@ func TestDMPipelineRebindInactiveSessionPreservesBoundRoute(t *testing.T) {
 	stale, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: "milo", Type: sessionrt.ActorAgent},
-			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -1715,7 +1715,7 @@ func TestDMPipelineReplacesActiveSessionWhenAgentRouteMismatches(t *testing.T) {
 	active, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: "gateway-agent", Type: sessionrt.ActorAgent},
-			{ID: "matrix:@user:hs", Type: sessionrt.ActorHuman},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -2323,7 +2323,7 @@ func TestDMPipelineTraceOffStopsPublishAndTraceOnResumes(t *testing.T) {
 	}
 	foundOn := false
 	for _, message := range fake.sentMessages() {
-		if strings.Contains(message.Text, "Trace channel (read-only): https://matrix.to/#/") && message.ThreadRootEventID == "$evt-on" {
+		if strings.Contains(message.Text, "Trace channel (read-only): ") && message.ThreadRootEventID == "$evt-on" {
 			foundOn = true
 		}
 	}
@@ -2361,13 +2361,13 @@ func TestFallbackReplyForErrorSanitizesSensitiveDetails(t *testing.T) {
 	}
 }
 
-func TestTraceConversationReadyMessageContainsMatrixToLink(t *testing.T) {
+func TestTraceConversationReadyMessageIncludesConversationID(t *testing.T) {
 	got := traceConversationReadyMessage("!trace:example.com")
-	if !strings.Contains(got, "Trace channel (read-only): https://matrix.to/#/") {
+	if !strings.Contains(got, "Trace channel (read-only): ") {
 		t.Fatalf("trace notice = %q", got)
 	}
-	if !strings.Contains(got, "%21trace:example.com") {
-		t.Fatalf("trace notice missing escaped room id: %q", got)
+	if !strings.Contains(got, "!trace:example.com") {
+		t.Fatalf("trace notice missing conversation id: %q", got)
 	}
 	if empty := traceConversationReadyMessage("   "); empty != "" {
 		t.Fatalf("empty trace notice = %q, want empty", empty)

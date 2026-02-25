@@ -32,7 +32,7 @@ type tracePublishMetrics interface {
 	RecordTracePublishFailure()
 }
 
-type MatrixTracePublisher struct {
+type TraceEventPublisher struct {
 	sender                traceMessageSender
 	maxChars              int
 	includeProgressDeltas bool
@@ -41,29 +41,29 @@ type MatrixTracePublisher struct {
 	deltaPosted           map[sessionrt.SessionID]bool
 }
 
-type MatrixTracePublisherOptions struct {
+type TraceEventPublisherOptions struct {
 	MaxChars              int
 	IncludeProgressDeltas bool
 }
 
-func NewMatrixTracePublisher(sender traceMessageSender) *MatrixTracePublisher {
-	return NewMatrixTracePublisherWithOptions(sender, MatrixTracePublisherOptions{
+func NewTraceEventPublisher(sender traceMessageSender) *TraceEventPublisher {
+	return NewTraceEventPublisherWithOptions(sender, TraceEventPublisherOptions{
 		MaxChars: defaultTraceMessageMaxChars,
 	})
 }
 
-func NewMatrixTracePublisherWithMaxChars(sender traceMessageSender, maxChars int) *MatrixTracePublisher {
-	return NewMatrixTracePublisherWithOptions(sender, MatrixTracePublisherOptions{
+func NewTraceEventPublisherWithMaxChars(sender traceMessageSender, maxChars int) *TraceEventPublisher {
+	return NewTraceEventPublisherWithOptions(sender, TraceEventPublisherOptions{
 		MaxChars: maxChars,
 	})
 }
 
-func NewMatrixTracePublisherWithOptions(sender traceMessageSender, opts MatrixTracePublisherOptions) *MatrixTracePublisher {
+func NewTraceEventPublisherWithOptions(sender traceMessageSender, opts TraceEventPublisherOptions) *TraceEventPublisher {
 	maxChars := opts.MaxChars
 	if maxChars <= 0 {
 		maxChars = defaultTraceMessageMaxChars
 	}
-	return &MatrixTracePublisher{
+	return &TraceEventPublisher{
 		sender:                sender,
 		maxChars:              maxChars,
 		includeProgressDeltas: opts.IncludeProgressDeltas,
@@ -72,7 +72,7 @@ func NewMatrixTracePublisherWithOptions(sender traceMessageSender, opts MatrixTr
 	}
 }
 
-func (p *MatrixTracePublisher) PublishEvent(ctx context.Context, traceConversationID string, event sessionrt.Event) error {
+func (p *TraceEventPublisher) PublishEvent(ctx context.Context, traceConversationID string, event sessionrt.Event) error {
 	if p == nil || p.sender == nil {
 		return nil
 	}
@@ -135,7 +135,7 @@ func (p *MatrixTracePublisher) PublishEvent(ctx context.Context, traceConversati
 	return nil
 }
 
-func (p *MatrixTracePublisher) sendTraceMessage(ctx context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error) {
+func (p *TraceEventPublisher) sendTraceMessage(ctx context.Context, message transport.OutboundMessage) (transport.OutboundSendResult, error) {
 	if senderWithResult, ok := p.sender.(traceMessageSenderWithResult); ok {
 		return senderWithResult.SendMessageWithResult(ctx, message)
 	}
@@ -145,7 +145,7 @@ func (p *MatrixTracePublisher) sendTraceMessage(ctx context.Context, message tra
 	return transport.OutboundSendResult{}, nil
 }
 
-func (p *MatrixTracePublisher) sessionThreadRoot(sessionID sessionrt.SessionID) string {
+func (p *TraceEventPublisher) sessionThreadRoot(sessionID sessionrt.SessionID) string {
 	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
 	if p == nil || sessionID == "" {
 		return ""
@@ -155,7 +155,7 @@ func (p *MatrixTracePublisher) sessionThreadRoot(sessionID sessionrt.SessionID) 
 	return strings.TrimSpace(p.threads[sessionID])
 }
 
-func (p *MatrixTracePublisher) setSessionThreadRoot(sessionID sessionrt.SessionID, eventID string) {
+func (p *TraceEventPublisher) setSessionThreadRoot(sessionID sessionrt.SessionID, eventID string) {
 	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
 	eventID = strings.TrimSpace(eventID)
 	if p == nil || sessionID == "" || eventID == "" {
@@ -166,7 +166,7 @@ func (p *MatrixTracePublisher) setSessionThreadRoot(sessionID sessionrt.SessionI
 	p.threads[sessionID] = eventID
 }
 
-func (p *MatrixTracePublisher) clearSessionThreadRoot(sessionID sessionrt.SessionID) {
+func (p *TraceEventPublisher) clearSessionThreadRoot(sessionID sessionrt.SessionID) {
 	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
 	if p == nil || sessionID == "" {
 		return
@@ -176,7 +176,7 @@ func (p *MatrixTracePublisher) clearSessionThreadRoot(sessionID sessionrt.Sessio
 	delete(p.threads, sessionID)
 }
 
-func (p *MatrixTracePublisher) sessionDeltaPosted(sessionID sessionrt.SessionID) bool {
+func (p *TraceEventPublisher) sessionDeltaPosted(sessionID sessionrt.SessionID) bool {
 	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
 	if p == nil || sessionID == "" {
 		return false
@@ -186,7 +186,7 @@ func (p *MatrixTracePublisher) sessionDeltaPosted(sessionID sessionrt.SessionID)
 	return p.deltaPosted[sessionID]
 }
 
-func (p *MatrixTracePublisher) markSessionDeltaPosted(sessionID sessionrt.SessionID) {
+func (p *TraceEventPublisher) markSessionDeltaPosted(sessionID sessionrt.SessionID) {
 	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
 	if p == nil || sessionID == "" {
 		return
@@ -196,7 +196,7 @@ func (p *MatrixTracePublisher) markSessionDeltaPosted(sessionID sessionrt.Sessio
 	p.deltaPosted[sessionID] = true
 }
 
-func (p *MatrixTracePublisher) clearSessionDeltaPosted(sessionID sessionrt.SessionID) {
+func (p *TraceEventPublisher) clearSessionDeltaPosted(sessionID sessionrt.SessionID) {
 	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
 	if p == nil || sessionID == "" {
 		return

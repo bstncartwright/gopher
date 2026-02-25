@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +50,7 @@ type ServerOptions struct {
 	Store           SessionStore
 	SessionMetadata SessionMetadataResolver
 	NodeSnapshot    func() []scheduler.NodeInfo
+	ControlDir      string
 }
 
 type Server struct {
@@ -55,6 +58,7 @@ type Server struct {
 	store           SessionStore
 	sessionMetadata SessionMetadataResolver
 	nodeSnapshot    func() []scheduler.NodeInfo
+	controlDir      string
 	templates       *template.Template
 	assets          fs.FS
 }
@@ -64,8 +68,13 @@ type pageData struct {
 }
 
 type overviewData struct {
-	Now   string
-	Nodes []overviewNode
+	Now           string
+	Nodes         []overviewNode
+	HasControl    bool
+	ExecSummary   controlSummary
+	WaitingItems  []controlWaitingItem
+	Delegations   []controlDelegation
+	RecentActions []controlActionRecord
 }
 
 type overviewNode struct {
@@ -74,6 +83,38 @@ type overviewNode struct {
 	HeartbeatAt   string
 	Capabilities  string
 	IsGatewayNode bool
+}
+
+type controlSummary struct {
+	Active    int
+	Paused    int
+	Completed int
+	Failed    int
+	Waiting   int
+	Delegated int
+}
+
+type controlWaitingItem struct {
+	SessionID string
+	Reason    string
+	UpdatedAt string
+}
+
+type controlDelegation struct {
+	DelegationID    string
+	SourceSessionID string
+	SourceAgentID   string
+	TargetAgentID   string
+	Status          string
+	UpdatedAt       string
+}
+
+type controlActionRecord struct {
+	Action    string
+	SessionID string
+	OK        bool
+	UpdatedAt string
+	Error     string
 }
 
 type sessionsData struct {
@@ -137,6 +178,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		store:           opts.Store,
 		sessionMetadata: opts.SessionMetadata,
 		nodeSnapshot:    nodeSnapshot,
+		controlDir:      strings.TrimSpace(opts.ControlDir),
 		templates:       tpl,
 		assets:          assetsFS,
 	}, nil
@@ -244,16 +286,22 @@ func (s *Server) handleOverview(w http.ResponseWriter, _ *http.Request) {
 			IsGatewayNode: node.IsGateway,
 		})
 	}
+	summary, waiting, delegations, actions := s.loadControlOverview()
 	s.renderTemplate(w, "overview.html", overviewData{
-		Now:   time.Now().UTC().Format(time.RFC3339),
-		Nodes: rows,
+		Now:           time.Now().UTC().Format(time.RFC3339),
+		Nodes:         rows,
+		HasControl:    s.controlDir != "",
+		ExecSummary:   summary,
+		WaitingItems:  waiting,
+		Delegations:   delegations,
+		RecentActions: actions,
 	})
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	data := sessionsData{HasSessionStore: s.store != nil}
 	if s.store == nil {
-		data.Error = "Session runtime is unavailable in this mode (matrix disabled)."
+		data.Error = "Session runtime is unavailable in this mode."
 		s.renderTemplate(w, "sessions.html", data)
 		return
 	}
@@ -588,5 +636,133 @@ func sessionStatusText(status sessionrt.SessionStatus) string {
 		return "failed"
 	default:
 		return "unknown"
+	}
+}
+
+func (s *Server) loadControlOverview() (controlSummary, []controlWaitingItem, []controlDelegation, []controlActionRecord) {
+	if s == nil || strings.TrimSpace(s.controlDir) == "" {
+		return controlSummary{}, nil, nil, nil
+	}
+	indexPath := filepath.Join(s.controlDir, "session_index.json")
+	indexBlob, err := os.ReadFile(indexPath)
+	if err != nil {
+		return controlSummary{}, nil, nil, nil
+	}
+	index := map[string]any{}
+	if err := json.Unmarshal(indexBlob, &index); err != nil {
+		return controlSummary{}, nil, nil, nil
+	}
+	summary := controlSummary{}
+	if rawSummary, ok := index["summary"].(map[string]any); ok {
+		summary.Active = int(asInt64(rawSummary["active"]))
+		summary.Paused = int(asInt64(rawSummary["paused"]))
+		summary.Completed = int(asInt64(rawSummary["completed"]))
+		summary.Failed = int(asInt64(rawSummary["failed"]))
+		summary.Waiting = int(asInt64(rawSummary["waiting"]))
+		summary.Delegated = int(asInt64(rawSummary["delegated"]))
+	}
+	waiting := make([]controlWaitingItem, 0)
+	if rawSessions, ok := index["sessions"].([]any); ok {
+		for _, raw := range rawSessions {
+			session, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			waitingOnHuman, _ := session["waiting_on_human"].(bool)
+			if !waitingOnHuman {
+				continue
+			}
+			waiting = append(waiting, controlWaitingItem{
+				SessionID: strings.TrimSpace(asString(session["session_id"])),
+				Reason:    strings.TrimSpace(asString(session["waiting_reason"])),
+				UpdatedAt: strings.TrimSpace(asString(session["updated_at"])),
+			})
+		}
+	}
+	delegations := readControlDelegations(filepath.Join(s.controlDir, "delegations.jsonl"), 10)
+	actions := readControlActions(filepath.Join(s.controlDir, "actions", "applied.jsonl"), 10)
+	return summary, waiting, delegations, actions
+}
+
+func readControlDelegations(path string, limit int) []controlDelegation {
+	records := make([]controlDelegation, 0)
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return records
+	}
+	lines := strings.Split(strings.TrimSpace(string(blob)), "\n")
+	for i := len(lines) - 1; i >= 0 && len(records) < limit; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		item := map[string]any{}
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			continue
+		}
+		records = append(records, controlDelegation{
+			DelegationID:    asString(item["delegation_id"]),
+			SourceSessionID: asString(item["source_session_id"]),
+			SourceAgentID:   asString(item["source_agent_id"]),
+			TargetAgentID:   asString(item["target_agent_id"]),
+			Status:          asString(item["status"]),
+			UpdatedAt:       asString(item["ts"]),
+		})
+	}
+	return records
+}
+
+func readControlActions(path string, limit int) []controlActionRecord {
+	records := make([]controlActionRecord, 0)
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return records
+	}
+	lines := strings.Split(strings.TrimSpace(string(blob)), "\n")
+	for i := len(lines) - 1; i >= 0 && len(records) < limit; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		item := map[string]any{}
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			continue
+		}
+		ok, _ := item["ok"].(bool)
+		records = append(records, controlActionRecord{
+			Action:    strings.TrimSpace(asString(item["action"])),
+			SessionID: strings.TrimSpace(asString(item["session_id"])),
+			OK:        ok,
+			UpdatedAt: strings.TrimSpace(asString(item["ts"])),
+			Error:     strings.TrimSpace(asString(item["error"])),
+		})
+	}
+	return records
+}
+
+func asString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		return fmt.Sprintf("%v", value)
+	}
+}
+
+func asInt64(value any) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
 	}
 }

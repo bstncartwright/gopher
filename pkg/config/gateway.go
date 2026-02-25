@@ -33,7 +33,7 @@ type GatewayConfig struct {
 	HeartbeatInterval time.Duration
 	PruneInterval     time.Duration
 	Capabilities      []scheduler.Capability
-	Matrix            MatrixConfig
+	Telegram          TelegramConfig
 	Panel             PanelConfig
 	Cron              CronConfig
 	Update            UpdateConfig
@@ -41,20 +41,13 @@ type GatewayConfig struct {
 	LocalConfigPath   string
 }
 
-type MatrixConfig struct {
-	Enabled           bool
-	HomeserverURL     string
-	AppserviceID      string
-	ASToken           string
-	HSToken           string
-	ListenAddr        string
-	BotUserID         string
-	TraceEnabled      bool
-	ProgressUpdates   bool
-	RichTextEnabled   bool
-	PresenceEnabled   bool
-	PresenceInterval  time.Duration
-	PresenceStatusMsg string
+type TelegramConfig struct {
+	Enabled       bool
+	BotToken      string
+	PollInterval  time.Duration
+	PollTimeout   time.Duration
+	AllowedUserID string
+	AllowedChatID string
 }
 
 type PanelConfig struct {
@@ -78,36 +71,29 @@ type UpdateConfig struct {
 }
 
 type GatewayOverrides struct {
-	NodeID                  *string
-	GatewayNodeID           *string
-	NATSURL                 *string
-	HeartbeatInterval       *time.Duration
-	PruneInterval           *time.Duration
-	Capabilities            *[]scheduler.Capability
-	MatrixEnabled           *bool
-	MatrixHomeserver        *string
-	MatrixAppservice        *string
-	MatrixASToken           *string
-	MatrixHSToken           *string
-	MatrixListenAddr        *string
-	MatrixBotUserID         *string
-	MatrixTraceEnabled      *bool
-	MatrixProgressUpdates   *bool
-	MatrixRichTextEnabled   *bool
-	MatrixPresenceEnabled   *bool
-	MatrixPresenceInterval  *time.Duration
-	MatrixPresenceStatusMsg *string
-	PanelListenAddr         *string
-	PanelCaptureThinking    *bool
-	CronEnabled             *bool
-	CronPollInterval        *time.Duration
-	CronTimezone            *string
-	UpdateEnabled           *bool
-	UpdateRepoOwner         *string
-	UpdateRepoName          *string
-	UpdateChannel           *string
-	UpdateCheckInterval     *time.Duration
-	UpdateAssetPattern      *string
+	NodeID                *string
+	GatewayNodeID         *string
+	NATSURL               *string
+	HeartbeatInterval     *time.Duration
+	PruneInterval         *time.Duration
+	Capabilities          *[]scheduler.Capability
+	TelegramEnabled       *bool
+	TelegramBotToken      *string
+	TelegramPollInterval  *time.Duration
+	TelegramPollTimeout   *time.Duration
+	TelegramAllowedUserID *string
+	TelegramAllowedChatID *string
+	PanelListenAddr       *string
+	PanelCaptureThinking  *bool
+	CronEnabled           *bool
+	CronPollInterval      *time.Duration
+	CronTimezone          *string
+	UpdateEnabled         *bool
+	UpdateRepoOwner       *string
+	UpdateRepoName        *string
+	UpdateChannel         *string
+	UpdateCheckInterval   *time.Duration
+	UpdateAssetPattern    *string
 }
 
 type GatewayLoadOptions struct {
@@ -127,7 +113,7 @@ type rawGatewayConfig struct {
 	NATS         *rawNATSConfig      `toml:"nats"`
 	Runtime      *rawRuntimeConfig   `toml:"runtime"`
 	Capabilities []rawCapabilityItem `toml:"capabilities"`
-	Matrix       *rawMatrixConfig    `toml:"matrix"`
+	Telegram     *rawTelegramConfig  `toml:"telegram"`
 	Panel        *rawPanelConfig     `toml:"panel"`
 	Cron         *rawCronConfig      `toml:"cron"`
 	Update       *rawUpdateConfig    `toml:"update"`
@@ -149,20 +135,13 @@ type rawCapabilityItem struct {
 	Name string `toml:"name"`
 }
 
-type rawMatrixConfig struct {
-	Enabled           *bool   `toml:"enabled"`
-	HomeserverURL     *string `toml:"homeserver_url"`
-	AppserviceID      *string `toml:"appservice_id"`
-	ASToken           *string `toml:"as_token"`
-	HSToken           *string `toml:"hs_token"`
-	ListenAddr        *string `toml:"listen_addr"`
-	BotUserID         *string `toml:"bot_user_id"`
-	TraceEnabled      *bool   `toml:"trace_enabled"`
-	ProgressUpdates   *bool   `toml:"progress_updates_enabled"`
-	RichTextEnabled   *bool   `toml:"rich_text_enabled"`
-	PresenceEnabled   *bool   `toml:"presence_enabled"`
-	PresenceInterval  *string `toml:"presence_interval"`
-	PresenceStatusMsg *string `toml:"presence_status_msg"`
+type rawTelegramConfig struct {
+	Enabled       *bool   `toml:"enabled"`
+	BotToken      *string `toml:"bot_token"`
+	PollInterval  *string `toml:"poll_interval"`
+	PollTimeout   *string `toml:"poll_timeout"`
+	AllowedUserID *string `toml:"allowed_user_id"`
+	AllowedChatID *string `toml:"allowed_chat_id"`
 }
 
 type rawPanelConfig struct {
@@ -274,20 +253,13 @@ prune_interval = "3s"
 kind = "agent"
 name = "agent"
 
-[gateway.matrix]
+[gateway.telegram]
 enabled = false
-homeserver_url = "http://127.0.0.1:8008"
-appservice_id = "gopher"
-as_token = "replace-as-token"
-hs_token = "replace-hs-token"
-listen_addr = "127.0.0.1:29328"
-bot_user_id = "@gopher:localhost"
-trace_enabled = true
-progress_updates_enabled = true
-rich_text_enabled = true
-presence_enabled = true
-presence_interval = "60s"
-presence_status_msg = ""
+bot_token = "replace-telegram-bot-token"
+poll_interval = "2s"
+poll_timeout = "30s"
+allowed_user_id = ""
+allowed_chat_id = ""
 
 [gateway.panel]
 listen_addr = "127.0.0.1:29329"
@@ -344,20 +316,13 @@ func defaultGatewayConfig() GatewayConfig {
 		Capabilities: []scheduler.Capability{
 			{Kind: scheduler.CapabilityAgent, Name: "agent"},
 		},
-		Matrix: MatrixConfig{
-			Enabled:           false,
-			HomeserverURL:     "",
-			AppserviceID:      "gopher",
-			ASToken:           "",
-			HSToken:           "",
-			ListenAddr:        "127.0.0.1:29328",
-			BotUserID:         "",
-			TraceEnabled:      true,
-			ProgressUpdates:   true,
-			RichTextEnabled:   true,
-			PresenceEnabled:   true,
-			PresenceInterval:  60 * time.Second,
-			PresenceStatusMsg: "",
+		Telegram: TelegramConfig{
+			Enabled:       false,
+			BotToken:      "",
+			PollInterval:  2 * time.Second,
+			PollTimeout:   30 * time.Second,
+			AllowedUserID: "",
+			AllowedChatID: "",
 		},
 		Panel: PanelConfig{
 			ListenAddr:      "127.0.0.1:29329",
@@ -479,49 +444,32 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 		}
 		cfg.Capabilities = caps
 	}
-	if gateway.Matrix != nil {
-		if gateway.Matrix.Enabled != nil {
-			cfg.Matrix.Enabled = *gateway.Matrix.Enabled
+	if gateway.Telegram != nil {
+		if gateway.Telegram.Enabled != nil {
+			cfg.Telegram.Enabled = *gateway.Telegram.Enabled
 		}
-		if gateway.Matrix.HomeserverURL != nil {
-			cfg.Matrix.HomeserverURL = strings.TrimSpace(*gateway.Matrix.HomeserverURL)
+		if gateway.Telegram.BotToken != nil {
+			cfg.Telegram.BotToken = strings.TrimSpace(*gateway.Telegram.BotToken)
 		}
-		if gateway.Matrix.AppserviceID != nil {
-			cfg.Matrix.AppserviceID = strings.TrimSpace(*gateway.Matrix.AppserviceID)
-		}
-		if gateway.Matrix.ASToken != nil {
-			cfg.Matrix.ASToken = strings.TrimSpace(*gateway.Matrix.ASToken)
-		}
-		if gateway.Matrix.HSToken != nil {
-			cfg.Matrix.HSToken = strings.TrimSpace(*gateway.Matrix.HSToken)
-		}
-		if gateway.Matrix.ListenAddr != nil {
-			cfg.Matrix.ListenAddr = strings.TrimSpace(*gateway.Matrix.ListenAddr)
-		}
-		if gateway.Matrix.BotUserID != nil {
-			cfg.Matrix.BotUserID = strings.TrimSpace(*gateway.Matrix.BotUserID)
-		}
-		if gateway.Matrix.TraceEnabled != nil {
-			cfg.Matrix.TraceEnabled = *gateway.Matrix.TraceEnabled
-		}
-		if gateway.Matrix.ProgressUpdates != nil {
-			cfg.Matrix.ProgressUpdates = *gateway.Matrix.ProgressUpdates
-		}
-		if gateway.Matrix.RichTextEnabled != nil {
-			cfg.Matrix.RichTextEnabled = *gateway.Matrix.RichTextEnabled
-		}
-		if gateway.Matrix.PresenceEnabled != nil {
-			cfg.Matrix.PresenceEnabled = *gateway.Matrix.PresenceEnabled
-		}
-		if gateway.Matrix.PresenceInterval != nil {
-			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.Matrix.PresenceInterval))
+		if gateway.Telegram.PollInterval != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.Telegram.PollInterval))
 			if err != nil {
-				return fmt.Errorf("invalid gateway.matrix.presence_interval: %w", err)
+				return fmt.Errorf("invalid gateway.telegram.poll_interval: %w", err)
 			}
-			cfg.Matrix.PresenceInterval = duration
+			cfg.Telegram.PollInterval = duration
 		}
-		if gateway.Matrix.PresenceStatusMsg != nil {
-			cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(*gateway.Matrix.PresenceStatusMsg)
+		if gateway.Telegram.PollTimeout != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.Telegram.PollTimeout))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.telegram.poll_timeout: %w", err)
+			}
+			cfg.Telegram.PollTimeout = duration
+		}
+		if gateway.Telegram.AllowedUserID != nil {
+			cfg.Telegram.AllowedUserID = strings.TrimSpace(*gateway.Telegram.AllowedUserID)
+		}
+		if gateway.Telegram.AllowedChatID != nil {
+			cfg.Telegram.AllowedChatID = strings.TrimSpace(*gateway.Telegram.AllowedChatID)
 		}
 	}
 	if gateway.Panel != nil {
@@ -627,68 +575,35 @@ func applyGatewayEnv(cfg *GatewayConfig, env map[string]string) error {
 		}
 		cfg.Capabilities = caps
 	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_ENABLED"]; ok {
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_ENABLED"]; ok {
 		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
-			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_ENABLED: %w", err)
+			return fmt.Errorf("invalid GOPHER_GATEWAY_TELEGRAM_ENABLED: %w", err)
 		}
-		cfg.Matrix.Enabled = enabled
+		cfg.Telegram.Enabled = enabled
 	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_HOMESERVER_URL"]; ok {
-		cfg.Matrix.HomeserverURL = strings.TrimSpace(value)
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_BOT_TOKEN"]; ok {
+		cfg.Telegram.BotToken = strings.TrimSpace(value)
 	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_APPSERVICE_ID"]; ok {
-		cfg.Matrix.AppserviceID = strings.TrimSpace(value)
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_AS_TOKEN"]; ok {
-		cfg.Matrix.ASToken = strings.TrimSpace(value)
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_HS_TOKEN"]; ok {
-		cfg.Matrix.HSToken = strings.TrimSpace(value)
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_LISTEN_ADDR"]; ok {
-		cfg.Matrix.ListenAddr = strings.TrimSpace(value)
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_BOT_USER_ID"]; ok {
-		cfg.Matrix.BotUserID = strings.TrimSpace(value)
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_TRACE_ENABLED"]; ok {
-		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
-		if err != nil {
-			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_TRACE_ENABLED: %w", err)
-		}
-		cfg.Matrix.TraceEnabled = enabled
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_PROGRESS_UPDATES_ENABLED"]; ok {
-		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
-		if err != nil {
-			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_PROGRESS_UPDATES_ENABLED: %w", err)
-		}
-		cfg.Matrix.ProgressUpdates = enabled
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED"]; ok {
-		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
-		if err != nil {
-			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED: %w", err)
-		}
-		cfg.Matrix.RichTextEnabled = enabled
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED"]; ok {
-		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
-		if err != nil {
-			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED: %w", err)
-		}
-		cfg.Matrix.PresenceEnabled = enabled
-	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL"]; ok {
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_POLL_INTERVAL"]; ok {
 		duration, err := time.ParseDuration(strings.TrimSpace(value))
 		if err != nil {
-			return fmt.Errorf("invalid GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL: %w", err)
+			return fmt.Errorf("invalid GOPHER_GATEWAY_TELEGRAM_POLL_INTERVAL: %w", err)
 		}
-		cfg.Matrix.PresenceInterval = duration
+		cfg.Telegram.PollInterval = duration
 	}
-	if value, ok := env["GOPHER_GATEWAY_MATRIX_PRESENCE_STATUS_MSG"]; ok {
-		cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(value)
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_POLL_TIMEOUT"]; ok {
+		duration, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("invalid GOPHER_GATEWAY_TELEGRAM_POLL_TIMEOUT: %w", err)
+		}
+		cfg.Telegram.PollTimeout = duration
+	}
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_ALLOWED_USER_ID"]; ok {
+		cfg.Telegram.AllowedUserID = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_ALLOWED_CHAT_ID"]; ok {
+		cfg.Telegram.AllowedChatID = strings.TrimSpace(value)
 	}
 	if value, ok := env["GOPHER_GATEWAY_PANEL_LISTEN_ADDR"]; ok {
 		cfg.Panel.ListenAddr = strings.TrimSpace(value)
@@ -765,44 +680,23 @@ func applyGatewayOverrides(cfg *GatewayConfig, overrides GatewayOverrides) error
 	if overrides.Capabilities != nil {
 		cfg.Capabilities = append([]scheduler.Capability(nil), (*overrides.Capabilities)...)
 	}
-	if overrides.MatrixEnabled != nil {
-		cfg.Matrix.Enabled = *overrides.MatrixEnabled
+	if overrides.TelegramEnabled != nil {
+		cfg.Telegram.Enabled = *overrides.TelegramEnabled
 	}
-	if overrides.MatrixHomeserver != nil {
-		cfg.Matrix.HomeserverURL = strings.TrimSpace(*overrides.MatrixHomeserver)
+	if overrides.TelegramBotToken != nil {
+		cfg.Telegram.BotToken = strings.TrimSpace(*overrides.TelegramBotToken)
 	}
-	if overrides.MatrixAppservice != nil {
-		cfg.Matrix.AppserviceID = strings.TrimSpace(*overrides.MatrixAppservice)
+	if overrides.TelegramPollInterval != nil {
+		cfg.Telegram.PollInterval = *overrides.TelegramPollInterval
 	}
-	if overrides.MatrixASToken != nil {
-		cfg.Matrix.ASToken = strings.TrimSpace(*overrides.MatrixASToken)
+	if overrides.TelegramPollTimeout != nil {
+		cfg.Telegram.PollTimeout = *overrides.TelegramPollTimeout
 	}
-	if overrides.MatrixHSToken != nil {
-		cfg.Matrix.HSToken = strings.TrimSpace(*overrides.MatrixHSToken)
+	if overrides.TelegramAllowedUserID != nil {
+		cfg.Telegram.AllowedUserID = strings.TrimSpace(*overrides.TelegramAllowedUserID)
 	}
-	if overrides.MatrixListenAddr != nil {
-		cfg.Matrix.ListenAddr = strings.TrimSpace(*overrides.MatrixListenAddr)
-	}
-	if overrides.MatrixBotUserID != nil {
-		cfg.Matrix.BotUserID = strings.TrimSpace(*overrides.MatrixBotUserID)
-	}
-	if overrides.MatrixTraceEnabled != nil {
-		cfg.Matrix.TraceEnabled = *overrides.MatrixTraceEnabled
-	}
-	if overrides.MatrixProgressUpdates != nil {
-		cfg.Matrix.ProgressUpdates = *overrides.MatrixProgressUpdates
-	}
-	if overrides.MatrixRichTextEnabled != nil {
-		cfg.Matrix.RichTextEnabled = *overrides.MatrixRichTextEnabled
-	}
-	if overrides.MatrixPresenceEnabled != nil {
-		cfg.Matrix.PresenceEnabled = *overrides.MatrixPresenceEnabled
-	}
-	if overrides.MatrixPresenceInterval != nil {
-		cfg.Matrix.PresenceInterval = *overrides.MatrixPresenceInterval
-	}
-	if overrides.MatrixPresenceStatusMsg != nil {
-		cfg.Matrix.PresenceStatusMsg = strings.TrimSpace(*overrides.MatrixPresenceStatusMsg)
+	if overrides.TelegramAllowedChatID != nil {
+		cfg.Telegram.AllowedChatID = strings.TrimSpace(*overrides.TelegramAllowedChatID)
 	}
 	if overrides.PanelListenAddr != nil {
 		cfg.Panel.ListenAddr = strings.TrimSpace(*overrides.PanelListenAddr)
@@ -885,27 +779,21 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 			return fmt.Errorf("gateway capability name is required")
 		}
 	}
-	if cfg.Matrix.Enabled {
-		if strings.TrimSpace(cfg.Matrix.HomeserverURL) == "" {
-			return fmt.Errorf("gateway.matrix.homeserver_url is required when matrix is enabled")
+	if cfg.Telegram.Enabled {
+		if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
+			return fmt.Errorf("gateway.telegram.bot_token is required when telegram is enabled")
 		}
-		if _, err := url.Parse(strings.TrimSpace(cfg.Matrix.HomeserverURL)); err != nil {
-			return fmt.Errorf("gateway.matrix.homeserver_url is invalid: %w", err)
+		if cfg.Telegram.PollInterval <= 0 {
+			return fmt.Errorf("gateway.telegram.poll_interval must be > 0 when telegram is enabled")
 		}
-		if strings.TrimSpace(cfg.Matrix.AppserviceID) == "" {
-			return fmt.Errorf("gateway.matrix.appservice_id is required when matrix is enabled")
+		if cfg.Telegram.PollTimeout <= 0 {
+			return fmt.Errorf("gateway.telegram.poll_timeout must be > 0 when telegram is enabled")
 		}
-		if strings.TrimSpace(cfg.Matrix.ASToken) == "" {
-			return fmt.Errorf("gateway.matrix.as_token is required when matrix is enabled")
+		if strings.TrimSpace(cfg.Telegram.AllowedUserID) == "" {
+			return fmt.Errorf("gateway.telegram.allowed_user_id is required when telegram is enabled")
 		}
-		if strings.TrimSpace(cfg.Matrix.HSToken) == "" {
-			return fmt.Errorf("gateway.matrix.hs_token is required when matrix is enabled")
-		}
-		if strings.TrimSpace(cfg.Matrix.ListenAddr) == "" {
-			return fmt.Errorf("gateway.matrix.listen_addr is required when matrix is enabled")
-		}
-		if cfg.Matrix.PresenceEnabled && cfg.Matrix.PresenceInterval <= 0 {
-			return fmt.Errorf("gateway.matrix.presence_interval must be > 0 when matrix presence is enabled")
+		if strings.TrimSpace(cfg.Telegram.AllowedChatID) == "" {
+			return fmt.Errorf("gateway.telegram.allowed_chat_id is required when telegram is enabled")
 		}
 	}
 	if err := validateLoopbackListenAddr(strings.TrimSpace(cfg.Panel.ListenAddr), "gateway.panel.listen_addr"); err != nil {
@@ -980,19 +868,12 @@ func hasGatewayOverrides(overrides GatewayOverrides) bool {
 		overrides.HeartbeatInterval != nil ||
 		overrides.PruneInterval != nil ||
 		overrides.Capabilities != nil ||
-		overrides.MatrixEnabled != nil ||
-		overrides.MatrixHomeserver != nil ||
-		overrides.MatrixAppservice != nil ||
-		overrides.MatrixASToken != nil ||
-		overrides.MatrixHSToken != nil ||
-		overrides.MatrixListenAddr != nil ||
-		overrides.MatrixBotUserID != nil ||
-		overrides.MatrixTraceEnabled != nil ||
-		overrides.MatrixProgressUpdates != nil ||
-		overrides.MatrixRichTextEnabled != nil ||
-		overrides.MatrixPresenceEnabled != nil ||
-		overrides.MatrixPresenceInterval != nil ||
-		overrides.MatrixPresenceStatusMsg != nil ||
+		overrides.TelegramEnabled != nil ||
+		overrides.TelegramBotToken != nil ||
+		overrides.TelegramPollInterval != nil ||
+		overrides.TelegramPollTimeout != nil ||
+		overrides.TelegramAllowedUserID != nil ||
+		overrides.TelegramAllowedChatID != nil ||
 		overrides.PanelListenAddr != nil ||
 		overrides.PanelCaptureThinking != nil ||
 		overrides.CronEnabled != nil ||

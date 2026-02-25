@@ -23,7 +23,7 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 		"--registry-path", registryPath,
 		"--workspace-root", workspaceRoot,
 		"--id", "planner",
-		"--matrix-user", "@planner:example.com",
+		"--user-id", "tg:planner",
 	}, &out, &out); err != nil {
 		t.Fatalf("create planner failed: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 	}, &listOut, &listOut); err != nil {
 		t.Fatalf("list failed: %v", err)
 	}
-	if got := listOut.String(); !strings.Contains(got, "planner | active | @planner:example.com") {
+	if got := listOut.String(); !strings.Contains(got, "planner | active | tg:planner") {
 		t.Fatalf("unexpected list output: %s", got)
 	}
 
@@ -77,7 +77,7 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 		"--registry-path", registryPath,
 		"--workspace-root", workspaceRoot,
 		"--id", "builder",
-		"--matrix-user", "@builder:example.com",
+		"--user-id", "tg:builder",
 	}, &out, &out); err != nil {
 		t.Fatalf("create builder failed: %v", err)
 	}
@@ -115,19 +115,10 @@ func TestAgentCreateValidatesInputs(t *testing.T) {
 	err := runAgentSubcommand([]string{
 		"create",
 		"--id", "bad/id",
-		"--matrix-user", "@planner:example.com",
+		"--user-id", "tg:planner",
 	}, &out, &out)
 	if err == nil {
 		t.Fatalf("expected invalid id error")
-	}
-
-	err = runAgentSubcommand([]string{
-		"create",
-		"--id", "planner",
-		"--matrix-user", "planner:example.com",
-	}, &out, &out)
-	if err == nil {
-		t.Fatalf("expected invalid matrix user id error")
 	}
 }
 
@@ -159,7 +150,7 @@ func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
 		"--registry-path", registryPath,
 		"--workspace-root", workspaceRoot,
 		"--id", "writer",
-		"--matrix-user", "@writer:example.com",
+		"--user-id", "tg:writer",
 	}, &out, &out); err != nil {
 		t.Fatalf("create writer failed: %v", err)
 	}

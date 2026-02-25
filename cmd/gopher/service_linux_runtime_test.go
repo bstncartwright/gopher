@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bstncartwright/gopher/pkg/config"
 )
 
 func TestResolveManagedServiceUnitPrefersInstalledNodeWhenGatewayMissing(t *testing.T) {
@@ -204,5 +207,44 @@ func TestLinuxServiceUninstallIgnoresMissingUnitsAndFiles(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "uninstalled gopher-gateway.service") {
 		t.Fatalf("expected uninstall success output, got %q", out.String())
+	}
+}
+
+func TestEnsureGatewayConfigFileCreatesDefaultWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "etc", "gopher", "gopher.toml")
+
+	if err := ensureGatewayConfigFile(target); err != nil {
+		t.Fatalf("ensureGatewayConfigFile() error: %v", err)
+	}
+
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read created config: %v", err)
+	}
+	defaultContent := config.DefaultGatewayTOML()
+	if string(content) != defaultContent {
+		t.Fatalf("created config did not match default template")
+	}
+}
+
+func TestEnsureGatewayConfigFilePreservesExistingFile(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "gopher.toml")
+	initial := []byte("[gateway]\nnode_id = \"custom\"\n")
+	if err := os.WriteFile(target, initial, 0o644); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	if err := ensureGatewayConfigFile(target); err != nil {
+		t.Fatalf("ensureGatewayConfigFile() error: %v", err)
+	}
+
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(content) != string(initial) {
+		t.Fatalf("expected existing config preserved, got %q", string(content))
 	}
 }

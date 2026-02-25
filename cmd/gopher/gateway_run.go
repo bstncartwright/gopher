@@ -290,7 +290,15 @@ func wantsHelp(args []string) bool {
 }
 
 func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, sources []string, stderr io.Writer) error {
-	logger := log.New(stderr, "", log.LstdFlags)
+	workspace, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve workspace directory: %w", err)
+	}
+	logger, cleanupLogs, err := setupProcessLogging(workspace, "gateway", stderr)
+	if err != nil {
+		return err
+	}
+	defer cleanupLogs()
 
 	slog.Info("gateway_run: starting gateway", "node_id", cfg.NodeID, "gateway_id", cfg.GatewayNodeID)
 	client, err := fabricts.NewClient(fabricts.ClientOptions{
@@ -306,11 +314,6 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	defer client.Close()
 	slog.Debug("gateway_run: nats client created", "url", cfg.NATSURL)
 
-	workspace, err := os.Getwd()
-	if err != nil {
-		slog.Error("gateway_run: failed to resolve workspace", "error", err)
-		return fmt.Errorf("resolve workspace directory: %w", err)
-	}
 	agentRuntime, err := loadGatewayAgentRuntimeWithOptions(workspace, agentRuntimeOptions{
 		CaptureDeltas:   true,
 		CaptureThinking: cfg.Panel.CaptureThinking,

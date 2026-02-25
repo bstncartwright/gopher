@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -217,7 +216,15 @@ func parseNodeRunFlags(args []string) (nodeRunInputs, error) {
 }
 
 func runNodeWithContext(ctx context.Context, cfg config.NodeConfig, sources []string, stderr io.Writer) error {
-	logger := log.New(stderr, "", log.LstdFlags)
+	workspace, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve workspace directory: %w", err)
+	}
+	logger, cleanupLogs, err := setupProcessLogging(workspace, "node", stderr)
+	if err != nil {
+		return err
+	}
+	defer cleanupLogs()
 
 	client, err := fabricts.NewClient(fabricts.ClientOptions{
 		URL:            cfg.NATSURL,
@@ -230,10 +237,6 @@ func runNodeWithContext(ctx context.Context, cfg config.NodeConfig, sources []st
 	}
 	defer client.Close()
 
-	workspace, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolve workspace directory: %w", err)
-	}
 	runtimeExecutor, err := loadAgentRuntime(workspace)
 	if err != nil {
 		return err

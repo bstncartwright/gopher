@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -44,6 +46,14 @@ var newNodeAdminClient = func(opts fabricts.ClientOptions) (fabricts.Fabric, fun
 	}
 	return client, client.Close, nil
 }
+
+var (
+	runNodeSelfUpdate = func(ctx context.Context, stdout, stderr io.Writer) error {
+		_ = ctx
+		return runUpdateSubcommand([]string{"--no-service-restart"}, stdout, stderr)
+	}
+	nodeBinaryVersionForAdmin = currentBinaryVersion
+)
 
 type nodeRunInputs struct {
 	ConfigPath string
@@ -260,6 +270,7 @@ func runNodeWithContext(ctx context.Context, cfg config.NodeConfig, sources []st
 	runtime, err := node.NewRuntime(node.RuntimeOptions{
 		NodeID:            cfg.NodeID,
 		IsGateway:         false,
+		Version:           currentBinaryVersion(),
 		Capabilities:      cfg.Capabilities,
 		Fabric:            client,
 		Executor:          runtimeExecutor.Executor,
@@ -308,6 +319,8 @@ func (s *nodeAdminService) HandleAdmin(req node.AdminRequest) node.AdminResponse
 		return s.handleConfigure(req.Configure)
 	case string(node.AdminActionRestart):
 		return s.handleRestart()
+	case string(node.AdminActionUpdate):
+		return s.handleUpdate(req.Update)
 	default:
 		return node.AdminResponse{OK: false, Error: fmt.Sprintf("unsupported action %q", req.Action)}
 	}
@@ -369,6 +382,36 @@ func (s *nodeAdminService) handleRestart() node.AdminResponse {
 		trigger("remote admin restart request")
 	}(s.requestRestart)
 	return node.AdminResponse{OK: true, RestartRequested: true}
+}
+
+func (s *nodeAdminService) handleUpdate(req *node.AdminUpdateRequest) node.AdminResponse {
+	targetVersion := ""
+	if req != nil && req.TargetVersion != nil {
+		targetVersion = strings.TrimSpace(*req.TargetVersion)
+	}
+	currentVersion := strings.TrimSpace(nodeBinaryVersionForAdmin())
+	if targetVersion != "" && currentVersion == targetVersion {
+		return node.AdminResponse{OK: true}
+	}
+
+	go func() {
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		if err := runNodeSelfUpdate(context.Background(), &out, &errOut); err != nil {
+			slog.Warn("node_admin: update request failed",
+				"target_version", targetVersion,
+				"current_version", currentVersion,
+				"error", err,
+				"stderr", strings.TrimSpace(errOut.String()),
+			)
+			return
+		}
+		if s.requestRestart != nil {
+			s.requestRestart("remote admin update request")
+		}
+	}()
+
+	return node.AdminResponse{OK: true, UpdateRequested: true}
 }
 
 func newNodeAdminService(cfg config.NodeConfig, workingDir string, requestRestart func(string)) (*nodeAdminService, error) {

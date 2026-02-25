@@ -142,6 +142,43 @@ func TestRunUpdateSubcommandAutoDetectsGatewayServiceName(t *testing.T) {
 	}
 }
 
+func TestRunUpdateSubcommandNoServiceRestartDisablesAutoDetection(t *testing.T) {
+	restore := stubUpdateDependencies(t)
+	defer restore()
+
+	binaryVersion = "v1.2.3"
+	latestReleaseForUpdate = func(ctx context.Context, owner, repo, token string) (update.Release, error) {
+		_ = ctx
+		_ = owner
+		_ = repo
+		_ = token
+		return update.Release{
+			TagName: "v1.2.4",
+			Assets: []update.ReleaseAsset{
+				{Name: "gopher-" + runtime.GOOS + "-" + runtime.GOARCH, URL: "https://example.test/asset"},
+			},
+		}, nil
+	}
+	executablePathForUpdate = func() (string, error) {
+		return "/tmp/gopher", nil
+	}
+	defaultServiceNameForUpdate = func() string {
+		return "gopher-gateway.service"
+	}
+	applyReleaseForUpdate = func(ctx context.Context, opts update.ApplyOptions) error {
+		_ = ctx
+		if opts.ServiceName != "" {
+			t.Fatalf("service name = %q, want empty when --no-service-restart is set", opts.ServiceName)
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runUpdateSubcommand([]string{"--github-token", "token", "--no-service-restart"}, &out, io.Discard); err != nil {
+		t.Fatalf("runUpdateSubcommand() error: %v", err)
+	}
+}
+
 func TestRunUpdateSubcommandRejectsUnknownBinaryVersion(t *testing.T) {
 	restore := stubUpdateDependencies(t)
 	defer restore()

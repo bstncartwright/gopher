@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bstncartwright/gopher/pkg/config"
 	fabricts "github.com/bstncartwright/gopher/pkg/fabric/nats"
 	"github.com/bstncartwright/gopher/pkg/node"
 	"github.com/bstncartwright/gopher/pkg/scheduler"
@@ -334,6 +335,111 @@ func TestRunNodeRestartSubcommandWarnsWhenNodeDoesNotRejoin(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "warning: node node-remote did not re-register") {
 		t.Fatalf("stderr missing warning line: %q", stderr.String())
+	}
+}
+
+func TestNodeAdminServiceHandleUpdateRequestsFetchAndRestart(t *testing.T) {
+	cfg, _, err := config.LoadNodeConfig(config.NodeLoadOptions{WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("LoadNodeConfig() error: %v", err)
+	}
+	restarts := make(chan string, 1)
+	service, err := newNodeAdminService(cfg, t.TempDir(), func(reason string) {
+		restarts <- strings.TrimSpace(reason)
+	})
+	if err != nil {
+		t.Fatalf("newNodeAdminService() error: %v", err)
+	}
+
+	prevUpdate := runNodeSelfUpdate
+	prevVersion := nodeBinaryVersionForAdmin
+	defer func() {
+		runNodeSelfUpdate = prevUpdate
+		nodeBinaryVersionForAdmin = prevVersion
+	}()
+
+	updateCalls := make(chan struct{}, 1)
+	runNodeSelfUpdate = func(ctx context.Context, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = stdout
+		_ = stderr
+		updateCalls <- struct{}{}
+		return nil
+	}
+	nodeBinaryVersionForAdmin = func() string { return "v1.2.2" }
+
+	target := "v1.2.3"
+	response := service.HandleAdmin(node.AdminRequest{
+		Action: node.AdminActionUpdate,
+		Update: &node.AdminUpdateRequest{TargetVersion: &target},
+	})
+	if !response.OK || !response.UpdateRequested {
+		t.Fatalf("unexpected update response: %#v", response)
+	}
+
+	select {
+	case <-updateCalls:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for update call")
+	}
+	select {
+	case reason := <-restarts:
+		if !strings.Contains(reason, "update request") {
+			t.Fatalf("restart reason = %q, want update request", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for restart request")
+	}
+}
+
+func TestNodeAdminServiceHandleUpdateSkipsWhenAlreadyOnTargetVersion(t *testing.T) {
+	cfg, _, err := config.LoadNodeConfig(config.NodeLoadOptions{WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("LoadNodeConfig() error: %v", err)
+	}
+	restarts := make(chan string, 1)
+	service, err := newNodeAdminService(cfg, t.TempDir(), func(reason string) {
+		restarts <- reason
+	})
+	if err != nil {
+		t.Fatalf("newNodeAdminService() error: %v", err)
+	}
+
+	prevUpdate := runNodeSelfUpdate
+	prevVersion := nodeBinaryVersionForAdmin
+	defer func() {
+		runNodeSelfUpdate = prevUpdate
+		nodeBinaryVersionForAdmin = prevVersion
+	}()
+
+	updateCalled := false
+	runNodeSelfUpdate = func(ctx context.Context, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = stdout
+		_ = stderr
+		updateCalled = true
+		return nil
+	}
+	nodeBinaryVersionForAdmin = func() string { return "v1.2.3" }
+
+	target := "v1.2.3"
+	response := service.HandleAdmin(node.AdminRequest{
+		Action: node.AdminActionUpdate,
+		Update: &node.AdminUpdateRequest{TargetVersion: &target},
+	})
+	if !response.OK {
+		t.Fatalf("expected OK response, got %#v", response)
+	}
+	if response.UpdateRequested {
+		t.Fatalf("expected update to be skipped, got %#v", response)
+	}
+	if updateCalled {
+		t.Fatalf("did not expect update command to run when already current")
+	}
+	select {
+	case reason := <-restarts:
+		t.Fatalf("unexpected restart request: %q", reason)
+	case <-time.After(120 * time.Millisecond):
 	}
 }
 

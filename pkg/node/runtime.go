@@ -32,6 +32,7 @@ type ExecutionResponse struct {
 type CapabilityAnnouncement struct {
 	NodeID       string                 `json:"node_id"`
 	IsGateway    bool                   `json:"is_gateway"`
+	Version      string                 `json:"version,omitempty"`
 	Capabilities []scheduler.Capability `json:"capabilities"`
 	Timestamp    time.Time              `json:"timestamp"`
 }
@@ -39,6 +40,7 @@ type CapabilityAnnouncement struct {
 type Heartbeat struct {
 	NodeID       string                 `json:"node_id"`
 	IsGateway    bool                   `json:"is_gateway"`
+	Version      string                 `json:"version,omitempty"`
 	Capabilities []scheduler.Capability `json:"capabilities"`
 	Timestamp    time.Time              `json:"timestamp"`
 }
@@ -46,6 +48,7 @@ type Heartbeat struct {
 type RuntimeOptions struct {
 	NodeID            string
 	IsGateway         bool
+	Version           string
 	Capabilities      []scheduler.Capability
 	Fabric            fabricts.Fabric
 	Executor          sessionrt.AgentExecutor
@@ -57,6 +60,7 @@ type RuntimeOptions struct {
 type Runtime struct {
 	nodeID       string
 	isGateway    bool
+	version      string
 	fabric       fabricts.Fabric
 	executor     sessionrt.AgentExecutor
 	adminHandler AdminHandler
@@ -97,15 +101,21 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
+	version := strings.TrimSpace(opts.Version)
+	if version == "" {
+		version = "dev"
+	}
 	slog.Info("node_runtime: creating runtime",
 		"node_id", nodeID,
 		"is_gateway", opts.IsGateway,
+		"version", version,
 		"capabilities_count", len(opts.Capabilities),
 		"heartbeat_interval", interval,
 	)
 	return &Runtime{
 		nodeID:         nodeID,
 		isGateway:      opts.IsGateway,
+		version:        version,
 		capabilities:   append([]scheduler.Capability(nil), opts.Capabilities...),
 		fabric:         opts.Fabric,
 		executor:       opts.Executor,
@@ -215,6 +225,7 @@ func (r *Runtime) publishCapabilities(ctx context.Context) error {
 	announcement := CapabilityAnnouncement{
 		NodeID:       r.nodeID,
 		IsGateway:    r.isGateway,
+		Version:      r.version,
 		Capabilities: capabilities,
 		Timestamp:    r.now().UTC(),
 	}
@@ -239,6 +250,7 @@ func (r *Runtime) publishHeartbeat(ctx context.Context) error {
 	heartbeat := Heartbeat{
 		NodeID:       r.nodeID,
 		IsGateway:    r.isGateway,
+		Version:      r.version,
 		Capabilities: capabilities,
 		Timestamp:    r.now().UTC(),
 	}

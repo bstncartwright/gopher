@@ -481,14 +481,19 @@ func readGatewayNodeStatusLines(ctx context.Context, cfg config.GatewayConfig, c
 		if nodeID == "" {
 			nodeID = "unknown"
 		}
+		version := strings.TrimSpace(node.Version)
+		if version == "" {
+			version = "unknown"
+		}
 		heartbeat := "-"
 		if !node.LastHeartbeat.IsZero() {
 			heartbeat = node.LastHeartbeat.UTC().Format(time.RFC3339)
 		}
 		lines = append(lines, fmt.Sprintf(
-			"  - %s (%s) heartbeat=%s capabilities=%s",
+			"  - %s (%s) version=%s heartbeat=%s capabilities=%s",
 			nodeID,
 			schedulerNodeRole(node.IsGateway),
+			version,
 			heartbeat,
 			formatSchedulerCapabilities(node.Capabilities),
 		))

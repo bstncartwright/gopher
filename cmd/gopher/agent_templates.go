@@ -123,9 +123,7 @@ Fill this in during onboarding:
 - Name:
 - Role:
 - Style/Vibe:
-- Avatar Personality (optional):
 - Signature emoji:
-- Avatar (optional path/URL/data URI):
 
 This defines your default self-presentation in user-facing responses.
 `

@@ -12,20 +12,39 @@ import (
 type Message = ai.Message
 
 type AgentConfig struct {
-	AgentID                 string          `json:"agent_id"`
-	Name                    string          `json:"name"`
-	Role                    string          `json:"role"`
-	ModelPolicy             string          `json:"model_policy"`
-	Execution               ExecutionConfig `json:"execution"`
-	EnabledTools            []string        `json:"enabled_tools"`
-	DisableDefaultSearchMCP bool            `json:"disable_default_search_mcp"`
-	SkillsPaths             []string        `json:"skills_paths"`
-	MaxContextMessages      int             `json:"max_context_messages"`
-	BootstrapMaxChars       int             `json:"bootstrap_max_chars"`
-	BootstrapTotalMaxChars  int             `json:"bootstrap_total_max_chars"`
-	UserTimezone            string          `json:"user_timezone"`
-	TimeFormat              string          `json:"time_format"`
-	Heartbeat               HeartbeatConfig `json:"heartbeat"`
+	AgentID                 string                  `json:"agent_id"`
+	Name                    string                  `json:"name"`
+	Role                    string                  `json:"role"`
+	ModelPolicy             string                  `json:"model_policy"`
+	Execution               ExecutionConfig         `json:"execution"`
+	EnabledTools            []string                `json:"enabled_tools"`
+	DisableDefaultSearchMCP bool                    `json:"disable_default_search_mcp"`
+	SkillsPaths             []string                `json:"skills_paths"`
+	MaxContextMessages      int                     `json:"max_context_messages"`
+	BootstrapMaxChars       int                     `json:"bootstrap_max_chars"`
+	BootstrapTotalMaxChars  int                     `json:"bootstrap_total_max_chars"`
+	UserTimezone            string                  `json:"user_timezone"`
+	TimeFormat              string                  `json:"time_format"`
+	Heartbeat               HeartbeatConfig         `json:"heartbeat"`
+	ContextManagement       ContextManagementConfig `json:"context_management,omitempty"`
+}
+
+type ContextManagementConfig struct {
+	EnablePruning       *bool `json:"enable_pruning,omitempty"`
+	EnableCompaction    *bool `json:"enable_compaction,omitempty"`
+	EnableOverflowRetry *bool `json:"enable_overflow_retry,omitempty"`
+}
+
+func (c ContextManagementConfig) PruningEnabled() bool {
+	return c.EnablePruning == nil || *c.EnablePruning
+}
+
+func (c ContextManagementConfig) CompactionEnabled() bool {
+	return c.EnableCompaction == nil || *c.EnableCompaction
+}
+
+func (c ContextManagementConfig) OverflowRetryEnabled() bool {
+	return c.EnableOverflowRetry == nil || *c.EnableOverflowRetry
 }
 
 type ExecutionConfig struct {
@@ -86,6 +105,7 @@ type Agent struct {
 	Heartbeat             AgentHeartbeat
 	KnownAgents           []string
 	CaptureThinkingDeltas bool
+	SessionMemoryFlusher  SessionMemoryFlusher
 
 	skills         []Skill
 	model          ai.Model
@@ -102,9 +122,15 @@ type Skill struct {
 }
 
 type Session struct {
-	ID           string
-	Messages     []Message
-	WorkingState map[string]any
+	ID                     string
+	Messages               []Message
+	WorkingState           map[string]any
+	CompactionSummaries    []string
+	LastContextDiagnostics ctxbundle.ContextDiagnostics
+}
+
+type SessionMemoryFlusher interface {
+	FlushSession(ctx context.Context, sessionID string) error
 }
 
 type Attachment struct {

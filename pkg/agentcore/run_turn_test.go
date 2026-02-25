@@ -179,3 +179,49 @@ func TestRunTurnThinkingDeltaCaptureToggle(t *testing.T) {
 		})
 	}
 }
+
+func TestRunTurnRetriesOnceOnContextOverflow(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	overflow := ai.NewAssistantMessage(agent.model)
+	overflow.StopReason = ai.StopReasonError
+	overflow.ErrorMessage = "too many tokens for context window"
+	overflow.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: ""}}
+
+	success := ai.NewAssistantMessage(agent.model)
+	success.StopReason = ai.StopReasonStop
+	success.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "recovered"}}
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{assistant: overflow},
+			{assistant: success},
+		},
+	}
+
+	session := agent.NewSession()
+	session.Messages = []ai.Message{
+		{Role: ai.RoleUser, Content: "message one", Timestamp: 1},
+		{Role: ai.RoleAssistant, Content: []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "message two"}}, Timestamp: 2},
+		{Role: ai.RoleUser, Content: "message three", Timestamp: 3},
+		{Role: ai.RoleAssistant, Content: []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "message four"}}, Timestamp: 4},
+	}
+
+	result, err := agent.RunTurn(context.Background(), session, TurnInput{UserMessage: "final ask"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if result.FinalText != "recovered" {
+		t.Fatalf("final text = %q, want recovered", result.FinalText)
+	}
+	if provider, ok := agent.Provider.(*mockProvider); !ok || provider.calls != 2 {
+		t.Fatalf("expected 2 provider calls (overflow + retry), got %#v", agent.Provider)
+	}
+	if session.LastContextDiagnostics.OverflowRetries != 1 {
+		t.Fatalf("overflow retries = %d, want 1", session.LastContextDiagnostics.OverflowRetries)
+	}
+}

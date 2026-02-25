@@ -11,19 +11,28 @@ import (
 )
 
 type ContextRequest struct {
-	BaseSystemPrompt string
-	Messages         []ai.Message
-	Retrieved        []memory.MemoryRecord
-	CurrentTask      string
-	MaxTokens        int
-	MaxMemories      int
+	BaseSystemPrompt    string
+	Messages            []ai.Message
+	Retrieved           []memory.MemoryRecord
+	CompactionSummaries []string
+	CurrentTask         string
+	MaxTokens           int
+	MaxMemories         int
+	EnablePruning       bool
+	EnableCompaction    bool
+	BootstrapTokens     int
+	WorkingTokens       int
+	OverflowRetries     int
+	Warnings            []string
 }
 
 type ContextBundle struct {
-	SystemPrompt  string
-	Messages      []ai.Message
-	Sources       []memory.MemoryRecord
-	TokenEstimate int
+	SystemPrompt         string
+	Messages             []ai.Message
+	Sources              []memory.MemoryRecord
+	TokenEstimate        int
+	Diagnostics          ContextDiagnostics
+	NewCompactionSummary string
 }
 
 type Assembler interface {
@@ -75,6 +84,7 @@ func (a *DefaultAssembler) Build(ctx context.Context, input ContextRequest) (Con
 	basePrompt := strings.TrimSpace(input.BaseSystemPrompt)
 	messages := cloneMessages(input.Messages)
 	memories := cloneRecords(input.Retrieved)
+	compactionSummaries := cloneStrings(input.CompactionSummaries)
 
 	maxTokens := input.MaxTokens
 	if maxTokens <= 0 {
@@ -85,28 +95,136 @@ func (a *DefaultAssembler) Build(ctx context.Context, input ContextRequest) (Con
 		maxMemories = a.maxMemoryRecords
 	}
 
-	tokensUsed := EstimateTextTokens(basePrompt)
-	tokensUsed += EstimateTextTokens(input.CurrentTask)
-	tokensUsed += EstimateMessagesTokens(messages)
+	diagnostics := ContextDiagnostics{
+		ModelContextWindow: maxTokens,
+		ReserveTokens:      ComputeReserveTokens(maxTokens),
+		OverflowRetries:    input.OverflowRetries,
+		BootstrapLane: LaneDiagnostics{
+			UsedTokens: input.BootstrapTokens,
+			CapTokens:  maxTokens,
+		},
+		WorkingMemoryLane: LaneDiagnostics{
+			UsedTokens: input.WorkingTokens,
+			CapTokens:  maxTokens,
+		},
+	}
+	diagnostics.Warnings = append(diagnostics.Warnings, cloneStrings(input.Warnings)...)
 
-	availableForMemory := maxTokens - tokensUsed - a.safetyMargin
-	selected, memoryTokens := SelectMemoriesForBudget(memories, availableForMemory, maxMemories)
+	if input.EnablePruning {
+		pruned, pruneActions := PruneMessages(messages, PruneOptions{})
+		messages = pruned
+		diagnostics.PruneActions = append(diagnostics.PruneActions, pruneActions...)
+	}
 
-	systemPrompt := basePrompt
-	if len(selected) > 0 {
-		memorySection := renderMemorySection(selected)
-		if strings.TrimSpace(memorySection) != "" {
-			systemPrompt = strings.TrimSpace(basePrompt + "\n\n" + memorySection)
-			tokensUsed += EstimateTextTokens(memorySection)
+	usable := maxTokens - diagnostics.ReserveTokens
+	if usable <= 0 {
+		usable = maxTokens
+	}
+	if usable <= 0 {
+		usable = a.defaultMaxTokens
+	}
+
+	recentCap := percentOf(usable, 45)
+	memoryCap := percentOf(usable, 15)
+	compactionCap := percentOf(usable, 8)
+
+	if recentCap <= 0 {
+		recentCap = usable
+	}
+
+	selectedCompactions, compactionSection, compactionTokens := selectCompactionSummariesForBudget(compactionSummaries, compactionCap)
+	newCompaction := ""
+
+	selectedMemories, memoryTokens := SelectMemoriesForBudget(memories, memoryCap, maxMemories)
+	memorySection := renderMemorySection(selectedMemories)
+	memorySectionTokens := EstimateTextTokens(memorySection)
+
+	baseTokens := EstimateTextTokens(basePrompt)
+	remainingForMessages := maxTokens - diagnostics.ReserveTokens - baseTokens - memorySectionTokens - compactionTokens - a.safetyMargin
+	if remainingForMessages < 0 {
+		// Shed compaction context first, then memory context.
+		for remainingForMessages < 0 && len(selectedCompactions) > 0 {
+			selectedCompactions = selectedCompactions[:len(selectedCompactions)-1]
+			compactionSection = renderCompactionSection(selectedCompactions)
+			compactionTokens = EstimateTextTokens(compactionSection)
+			remainingForMessages = maxTokens - diagnostics.ReserveTokens - baseTokens - memorySectionTokens - compactionTokens - a.safetyMargin
+		}
+		for remainingForMessages < 0 && len(selectedMemories) > 0 {
+			selectedMemories = selectedMemories[:len(selectedMemories)-1]
+			memorySection = renderMemorySection(selectedMemories)
+			memorySectionTokens = EstimateTextTokens(memorySection)
+			remainingForMessages = maxTokens - diagnostics.ReserveTokens - baseTokens - memorySectionTokens - compactionTokens - a.safetyMargin
 		}
 	}
-	tokensUsed += memoryTokens
+	if remainingForMessages < 0 {
+		remainingForMessages = 0
+	}
+
+	messageBudget := recentCap
+	if remainingForMessages < messageBudget {
+		messageBudget = remainingForMessages
+	}
+	if remainingForMessages > messageBudget {
+		messageBudget = remainingForMessages
+	}
+
+	selectedMessages, droppedMessages, messageTokens := SelectMessagesForBudget(messages, messageBudget)
+	if input.EnableCompaction && len(droppedMessages) > 0 {
+		compacted := BuildCompactionSummary(droppedMessages)
+		if strings.TrimSpace(compacted.Summary) != "" {
+			newCompaction = compacted.Summary
+			selectedCompactions = prependSummary(selectedCompactions, newCompaction, 3)
+			compactionSection = renderCompactionSection(selectedCompactions)
+			compactionTokens = EstimateTextTokens(compactionSection)
+			diagnostics.CompactionActions = append(diagnostics.CompactionActions, compacted.Actions...)
+		}
+	}
+
+	systemPrompt := basePrompt
+	if strings.TrimSpace(compactionSection) != "" {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + compactionSection)
+	}
+	if strings.TrimSpace(memorySection) != "" {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + memorySection)
+	}
+
+	tokensUsed := EstimateTextTokens(systemPrompt) + messageTokens
+
+	diagnostics.SystemLane = LaneDiagnostics{
+		UsedTokens: EstimateTextTokens(basePrompt),
+		CapTokens:  maxTokens - diagnostics.ReserveTokens,
+	}
+	diagnostics.RecentMessagesLane = LaneDiagnostics{
+		UsedTokens: messageTokens,
+		CapTokens:  messageBudget,
+	}
+	diagnostics.RetrievedMemoryLane = LaneDiagnostics{
+		UsedTokens: memoryTokens,
+		CapTokens:  memoryCap,
+	}
+	diagnostics.CompactionSummaryLane = LaneDiagnostics{
+		UsedTokens: compactionTokens,
+		CapTokens:  compactionCap,
+	}
+	diagnostics.EstimatedInputTokens = tokensUsed
+	if diagnostics.EstimatedInputTokens > maxTokens-diagnostics.ReserveTokens {
+		diagnostics.Warnings = append(diagnostics.Warnings, "estimated input tokens exceed non-reserve budget")
+	}
+	for _, record := range selectedMemories {
+		diagnostics.SelectedMemoryIDs = append(diagnostics.SelectedMemoryIDs, record.ID)
+		diagnostics.SelectedMemoryTypes = append(diagnostics.SelectedMemoryTypes, record.Type.String())
+	}
+	if len(droppedMessages) > 0 {
+		diagnostics.Warnings = append(diagnostics.Warnings, fmt.Sprintf("dropped %d older messages for budget", len(droppedMessages)))
+	}
 
 	return ContextBundle{
-		SystemPrompt:  systemPrompt,
-		Messages:      messages,
-		Sources:       selected,
-		TokenEstimate: tokensUsed,
+		SystemPrompt:         systemPrompt,
+		Messages:             selectedMessages,
+		Sources:              selectedMemories,
+		TokenEstimate:        tokensUsed,
+		Diagnostics:          diagnostics,
+		NewCompactionSummary: newCompaction,
 	}, nil
 }
 
@@ -130,6 +248,146 @@ func renderMemorySection(records []memory.MemoryRecord) string {
 		return ""
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderCompactionSection(summaries []string) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	lines := []string{"### compacted history"}
+	for _, summary := range summaries {
+		trimmed := strings.TrimSpace(summary)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > 720 {
+			trimmed = trimmed[:717] + "..."
+		}
+		lines = append(lines, "- "+strings.ReplaceAll(trimmed, "\n", " | "))
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func selectCompactionSummariesForBudget(summaries []string, capTokens int) ([]string, string, int) {
+	if capTokens <= 0 || len(summaries) == 0 {
+		return nil, "", 0
+	}
+	selected := make([]string, 0, len(summaries))
+	used := 0
+	for _, summary := range summaries {
+		trimmed := strings.TrimSpace(summary)
+		if trimmed == "" {
+			continue
+		}
+		cost := EstimateTextTokens(trimmed)
+		if used+cost > capTokens {
+			continue
+		}
+		selected = append(selected, trimmed)
+		used += cost
+	}
+	section := renderCompactionSection(selected)
+	return selected, section, EstimateTextTokens(section)
+}
+
+func SelectMessagesForBudget(messages []ai.Message, availableTokens int) ([]ai.Message, []ai.Message, int) {
+	if len(messages) == 0 {
+		return nil, nil, 0
+	}
+	if availableTokens <= 0 {
+		// Keep the latest user message even when budget collapses.
+		idx := lastUserMessageIndex(messages)
+		if idx < 0 {
+			idx = len(messages) - 1
+		}
+		selected := cloneMessages(messages[idx:])
+		dropped := cloneMessages(messages[:idx])
+		return selected, dropped, EstimateMessagesTokens(selected)
+	}
+
+	start := len(messages)
+	used := 0
+	for start > 0 {
+		chunkStart := start - 1
+		if messages[chunkStart].Role == ai.RoleToolResult && chunkStart > 0 && assistantHasToolCalls(messages[chunkStart-1]) {
+			chunkStart--
+		}
+		chunk := messages[chunkStart:start]
+		chunkTokens := EstimateMessagesTokens(chunk)
+		if used+chunkTokens > availableTokens {
+			break
+		}
+		used += chunkTokens
+		start = chunkStart
+	}
+	if start == len(messages) {
+		idx := lastUserMessageIndex(messages)
+		if idx < 0 {
+			idx = len(messages) - 1
+		}
+		selected := cloneMessages(messages[idx:])
+		dropped := cloneMessages(messages[:idx])
+		return selected, dropped, EstimateMessagesTokens(selected)
+	}
+
+	selected := cloneMessages(messages[start:])
+	dropped := cloneMessages(messages[:start])
+	return selected, dropped, used
+}
+
+func assistantHasToolCalls(msg ai.Message) bool {
+	if msg.Role != ai.RoleAssistant {
+		return false
+	}
+	blocks, ok := msg.ContentBlocks()
+	if !ok {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type == ai.ContentTypeToolCall {
+			return true
+		}
+	}
+	return false
+}
+
+func lastUserMessageIndex(messages []ai.Message) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == ai.RoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
+func percentOf(value int, percentage int) int {
+	if value <= 0 || percentage <= 0 {
+		return 0
+	}
+	return (value * percentage) / 100
+}
+
+func prependSummary(summaries []string, summary string, max int) []string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return summaries
+	}
+	out := make([]string, 0, len(summaries)+1)
+	out = append(out, summary)
+	for _, item := range summaries {
+		item = strings.TrimSpace(item)
+		if item == "" || item == summary {
+			continue
+		}
+		out = append(out, item)
+		if max > 0 && len(out) >= max {
+			break
+		}
+	}
+	return out
 }
 
 func formatMetadata(metadata map[string]string) string {
@@ -196,6 +454,15 @@ func cloneEmbedding(in []float32) []float32 {
 		return nil
 	}
 	out := make([]float32, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
 	copy(out, in)
 	return out
 }

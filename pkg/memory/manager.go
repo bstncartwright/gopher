@@ -28,20 +28,22 @@ type MemoryManager interface {
 }
 
 type ManagerOptions struct {
-	Store     Store
-	Retriever Retriever
-	Embedder  Embedder
-	Now       func() time.Time
-	FailOpen  bool
+	Store            Store
+	Retriever        Retriever
+	Embedder         Embedder
+	Now              func() time.Time
+	FailOpenRetrieve bool
+	FailOpenStore    bool
 }
 
 type Manager struct {
-	store     Store
-	retriever Retriever
-	embedder  Embedder
-	now       func() time.Time
-	failOpen  bool
-	counter   atomic.Uint64
+	store            Store
+	retriever        Retriever
+	embedder         Embedder
+	now              func() time.Time
+	failOpenRetrieve bool
+	failOpenStore    bool
+	counter          atomic.Uint64
 }
 
 var _ MemoryManager = (*Manager)(nil)
@@ -55,11 +57,12 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		nowFn = time.Now
 	}
 	return &Manager{
-		store:     opts.Store,
-		retriever: opts.Retriever,
-		embedder:  opts.Embedder,
-		now:       nowFn,
-		failOpen:  opts.FailOpen,
+		store:            opts.Store,
+		retriever:        opts.Retriever,
+		embedder:         opts.Embedder,
+		now:              nowFn,
+		failOpenRetrieve: opts.FailOpenRetrieve,
+		failOpenStore:    opts.FailOpenStore,
 	}, nil
 }
 
@@ -75,7 +78,7 @@ func (m *Manager) Store(ctx context.Context, record MemoryRecord) error {
 	if len(record.Embedding) == 0 && m.embedder != nil && strings.TrimSpace(record.Content) != "" {
 		embedding, err := m.embedder.Embed(ctx, record.Content)
 		if err != nil {
-			if m.failOpen {
+			if m.failOpenStore {
 				return nil
 			}
 			return fmt.Errorf("embed memory content: %w", err)
@@ -84,7 +87,7 @@ func (m *Manager) Store(ctx context.Context, record MemoryRecord) error {
 	}
 
 	if err := m.store.Store(ctx, record); err != nil {
-		if m.failOpen {
+		if m.failOpenStore {
 			return nil
 		}
 		return err
@@ -104,7 +107,7 @@ func (m *Manager) Retrieve(ctx context.Context, query MemoryQuery) ([]MemoryReco
 			embedding, err := m.embedder.Embed(ctx, combined)
 			if err == nil {
 				query.QueryEmbedding = embedding
-			} else if !m.failOpen {
+			} else if !m.failOpenRetrieve {
 				return nil, fmt.Errorf("embed retrieval query: %w", err)
 			}
 		}
@@ -113,7 +116,7 @@ func (m *Manager) Retrieve(ctx context.Context, query MemoryQuery) ([]MemoryReco
 	if m.retriever != nil {
 		records, err := m.retriever.Retrieve(ctx, m.store, query)
 		if err != nil {
-			if m.failOpen {
+			if m.failOpenRetrieve {
 				return nil, nil
 			}
 			return nil, err
@@ -123,7 +126,7 @@ func (m *Manager) Retrieve(ctx context.Context, query MemoryQuery) ([]MemoryReco
 
 	records, err := m.store.List(ctx, query)
 	if err != nil {
-		if m.failOpen {
+		if m.failOpenRetrieve {
 			return nil, nil
 		}
 		return nil, err

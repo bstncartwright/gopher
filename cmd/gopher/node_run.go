@@ -102,9 +102,13 @@ func runNodeSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		workspace, err := resolveRuntimeWorkspace(workingDir, cfg.PrimaryConfigPath, cfg.LocalConfigPath)
+		if err != nil {
+			return err
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runNodeWithContext(ctx, cfg, sources, stderr)
+		return runNodeWithContext(ctx, cfg, sources, workspace, stderr)
 	case "configure":
 		if wantsHelp(args[1:]) {
 			printNodeUsage(stdout)
@@ -215,10 +219,10 @@ func parseNodeRunFlags(args []string) (nodeRunInputs, error) {
 	return inputs, nil
 }
 
-func runNodeWithContext(ctx context.Context, cfg config.NodeConfig, sources []string, stderr io.Writer) error {
-	workspace, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolve workspace directory: %w", err)
+func runNodeWithContext(ctx context.Context, cfg config.NodeConfig, sources []string, workspace string, stderr io.Writer) error {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return fmt.Errorf("resolve workspace directory: workspace is required")
 	}
 	logger, cleanupLogs, err := setupProcessLogging(workspace, "node", stderr)
 	if err != nil {

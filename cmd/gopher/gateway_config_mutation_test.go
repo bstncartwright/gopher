@@ -42,4 +42,3 @@ func TestSetGatewayTelegramEnabled(t *testing.T) {
 		t.Fatalf("expected no-op when target value already set")
 	}
 }
-

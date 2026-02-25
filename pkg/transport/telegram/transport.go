@@ -9,12 +9,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/transport"
+	"log/slog"
 )
 
 const (
@@ -101,6 +103,16 @@ func New(opts Options) (*Transport, error) {
 	if apiBaseURL == "" {
 		apiBaseURL = "https://api.telegram.org"
 	}
+	slog.Info(
+		"telegram transport: initializing",
+		"bot_token_tail", tokenSuffix(token),
+		"poll_interval", pollInterval,
+		"poll_timeout", pollTimeout,
+		"api_base_url", apiBaseURL,
+		"allowed_user_id_set", opts.AllowedUserID != "",
+		"allowed_chat_id_set", opts.AllowedChatID != "",
+		"offset_path", strings.TrimSpace(opts.OffsetPath),
+	)
 	return &Transport{
 		botToken:      token,
 		pollInterval:  pollInterval,
@@ -122,36 +134,46 @@ func (t *Transport) Start(ctx context.Context) error {
 	if t.runCancel != nil {
 		t.runMu.Unlock()
 		cancel()
+		slog.Info("telegram transport: start ignored; already running")
 		return nil
 	}
 	t.runCancel = cancel
 	t.runMu.Unlock()
 	defer t.clearRunCancel()
 
+	slog.Info("telegram transport: starting poll loop", "api_base_url", t.apiBaseURL)
 	offset, err := t.loadOffset()
 	if err != nil {
+		slog.Error("telegram transport: failed to load offset", "error", err)
 		return err
 	}
+	slog.Info("telegram transport: loaded offset", "offset", offset)
 	for {
 		if runCtx.Err() != nil {
 			return nil
 		}
 		nextOffset, err := t.pollAndDispatch(runCtx, offset)
 		if err != nil {
+			slog.Error("telegram transport: poll failed", "error", err, "offset", offset, "next_offset", nextOffset)
 			return err
 		}
 		if nextOffset > offset {
 			offset = nextOffset
+			slog.Debug("telegram transport: advancing offset", "next_offset", offset)
 			if err := t.persistOffset(offset); err != nil {
+				slog.Error("telegram transport: failed to persist offset", "error", err, "offset", offset)
 				return err
 			}
+			slog.Debug("telegram transport: persisted offset", "offset", offset)
 		}
 		timer := time.NewTimer(t.pollInterval)
 		select {
 		case <-runCtx.Done():
 			timer.Stop()
+			slog.Info("telegram transport: poll loop stopped")
 			return nil
 		case <-timer.C:
+			slog.Debug("telegram transport: poll interval elapsed", "poll_interval", t.pollInterval)
 		}
 	}
 }
@@ -183,12 +205,14 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 		text = formatAttachmentNotice(message.Attachments)
 	}
 	if text == "" {
+		slog.Debug("telegram transport: send message skipped due empty text", "conversation_id", message.ConversationID, "attachments", len(message.Attachments))
 		return nil
 	}
 	payload := map[string]any{
 		"chat_id": chatID,
 		"text":    text,
 	}
+	slog.Info("telegram transport: sending message", "conversation_id", message.ConversationID, "chat_id", chatID, "attachment_count", len(message.Attachments))
 	return t.sendAPI(ctx, "sendMessage", payload)
 }
 
@@ -204,11 +228,13 @@ func (t *Transport) SendTyping(ctx context.Context, conversationID string, typin
 		"chat_id": chatID,
 		"action":  "typing",
 	}
+	slog.Debug("telegram transport: sending typing indicator", "conversation_id", conversationID, "chat_id", chatID)
 	return t.sendAPI(ctx, "sendChatAction", payload)
 }
 
 func (t *Transport) pollAndDispatch(ctx context.Context, offset int64) (int64, error) {
 	endpoint := fmt.Sprintf("%s/bot%s/getUpdates", t.apiBaseURL, url.PathEscape(t.botToken))
+	logEndpoint := fmt.Sprintf("%s/getUpdates", t.apiBaseURL)
 	params := url.Values{}
 	params.Set("timeout", strconv.Itoa(int(t.pollTimeout.Seconds())))
 	if offset > 0 {
@@ -218,6 +244,13 @@ func (t *Transport) pollAndDispatch(ctx context.Context, offset int64) (int64, e
 	if err != nil {
 		return offset, fmt.Errorf("build telegram getUpdates request: %w", err)
 	}
+	slog.Debug(
+		"telegram transport: poll request",
+		"api_url", logEndpoint,
+		"offset", offset,
+		"timeout", t.pollTimeout.String(),
+		"poll_interval", t.pollInterval,
+	)
 	response, err := t.client.Do(request)
 	if err != nil {
 		return offset, fmt.Errorf("send telegram getUpdates request: %w", err)
@@ -242,27 +275,38 @@ func (t *Transport) pollAndDispatch(ctx context.Context, offset int64) (int64, e
 			return offset, err
 		}
 	}
+	slog.Info(
+		"telegram transport: poll completed",
+		"result_count", len(payload.Result),
+		"offset", offset,
+		"next_offset", nextOffset,
+	)
 	return nextOffset, nil
 }
 
 func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) error {
 	if event.Message == nil || event.Message.From == nil || event.Message.Chat == nil {
+		slog.Debug("telegram transport: dropping event: missing message metadata", "update_id", event.UpdateID)
 		return nil
 	}
 	messageText := strings.TrimSpace(event.Message.Text)
 	if messageText == "" {
+		slog.Debug("telegram transport: dropping event: empty message text", "update_id", event.UpdateID, "chat_id", event.Message.Chat.ID, "user_id", event.Message.From.ID)
 		return nil
 	}
 	userID := strconv.FormatInt(event.Message.From.ID, 10)
 	chatID := strconv.FormatInt(event.Message.Chat.ID, 10)
 	if t.allowedUserID != "" && userID != t.allowedUserID {
+		slog.Info("telegram transport: ignoring message from unauthorized user", "update_id", event.UpdateID, "user_id", userID, "chat_id", chatID)
 		return nil
 	}
 	if t.allowedChatID != "" && chatID != t.allowedChatID {
+		slog.Info("telegram transport: ignoring message from unauthorized chat", "update_id", event.UpdateID, "chat_id", chatID)
 		return nil
 	}
 	handler := t.getHandler()
 	if handler == nil {
+		slog.Warn("telegram transport: no inbound handler configured", "update_id", event.UpdateID, "chat_id", chatID, "user_id", userID)
 		return nil
 	}
 	conversationName := strings.TrimSpace(event.Message.Chat.Title)
@@ -272,6 +316,14 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 	if conversationName == "" {
 		conversationName = "telegram-chat-" + chatID
 	}
+	slog.Info(
+		"telegram transport: dispatching inbound message",
+		"update_id", event.UpdateID,
+		"conversation_id", "telegram:"+chatID,
+		"sender_id", "telegram-user:"+userID,
+		"conversation_name", conversationName,
+		"text_length", len(messageText),
+	)
 	return handler(ctx, transport.InboundMessage{
 		ConversationID:   "telegram:" + chatID,
 		ConversationName: conversationName,
@@ -300,6 +352,7 @@ func (t *Transport) sendAPI(ctx context.Context, method string, payload map[stri
 		return fmt.Errorf("build telegram %s request: %w", method, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	slog.Debug("telegram transport: sending API request", "method", method, "payload_keys", mapKeys(payload), "chat_id", payload["chat_id"])
 	response, err := t.client.Do(request)
 	if err != nil {
 		return fmt.Errorf("send telegram %s request: %w", method, err)
@@ -315,6 +368,7 @@ func (t *Transport) sendAPI(ctx context.Context, method string, payload map[stri
 	if !parsed.OK {
 		return fmt.Errorf("telegram %s returned ok=false", method)
 	}
+	slog.Debug("telegram transport: api request successful", "method", method, "payload_keys", mapKeys(payload))
 	return nil
 }
 
@@ -332,16 +386,19 @@ func (t *Transport) clearRunCancel() {
 
 func (t *Transport) loadOffset() (int64, error) {
 	if strings.TrimSpace(t.offsetPath) == "" {
+		slog.Debug("telegram transport: offset persistence disabled", "offset_path", "")
 		return 0, nil
 	}
 	blob, err := os.ReadFile(t.offsetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
+			slog.Info("telegram transport: no persisted offset found", "offset_path", t.offsetPath)
 			return 0, nil
 		}
 		return 0, fmt.Errorf("read telegram offset: %w", err)
 	}
 	if strings.TrimSpace(string(blob)) == "" {
+		slog.Info("telegram transport: persisted offset file is empty", "offset_path", t.offsetPath)
 		return 0, nil
 	}
 	var payload struct {
@@ -350,6 +407,7 @@ func (t *Transport) loadOffset() (int64, error) {
 	if err := json.Unmarshal(blob, &payload); err != nil {
 		return 0, fmt.Errorf("decode telegram offset: %w", err)
 	}
+	slog.Info("telegram transport: loaded persisted offset", "offset", payload.Offset, "offset_path", t.offsetPath)
 	if payload.Offset < 0 {
 		return 0, nil
 	}
@@ -360,6 +418,7 @@ func (t *Transport) persistOffset(offset int64) error {
 	if strings.TrimSpace(t.offsetPath) == "" {
 		return nil
 	}
+	slog.Debug("telegram transport: persisting offset", "offset", offset, "offset_path", t.offsetPath)
 	blob, err := json.Marshal(map[string]any{
 		"offset": offset,
 	})
@@ -376,7 +435,28 @@ func (t *Transport) persistOffset(offset int64) error {
 	if err := os.Rename(tmpPath, t.offsetPath); err != nil {
 		return fmt.Errorf("replace telegram offset file: %w", err)
 	}
+	slog.Debug("telegram transport: offset persisted", "offset", offset, "offset_path", t.offsetPath)
 	return nil
+}
+
+func tokenSuffix(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	if len(token) <= 8 {
+		return strings.Repeat("*", len(token))
+	}
+	return strings.Repeat("*", len(token)-8) + token[len(token)-4:]
+}
+
+func mapKeys(payload map[string]any) []string {
+	keys := make([]string, 0, len(payload))
+	for key := range payload {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func parseConversationChatID(conversationID string) (string, error) {

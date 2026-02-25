@@ -168,9 +168,27 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", workingDir, err)
 	}
+	if strings.TrimSpace(opts.EnvPath) != "" {
+		if err := ensureEnvFile(opts.EnvPath); err != nil {
+			return err
+		}
+	}
 	if role == "gateway" {
 		if err := ensureGatewayConfigFile(opts.ConfigPath); err != nil {
 			return err
+		}
+		token, err := resolveTelegramTokenForAutoEnable(opts.EnvPath)
+		if err != nil {
+			return fmt.Errorf("resolve telegram token for auto-enable: %w", err)
+		}
+		if strings.TrimSpace(token) != "" {
+			enabled, err := setGatewayTelegramEnabled(opts.ConfigPath, true)
+			if err != nil {
+				return fmt.Errorf("auto-enable gateway telegram in %s: %w", opts.ConfigPath, err)
+			}
+			if enabled {
+				fmt.Fprintf(r.stdout, "enabled gateway telegram in %s because %s is set\n", opts.ConfigPath, telegramBotTokenEnvKey)
+			}
 		}
 	}
 	if err := os.WriteFile(filepath.Join(unitDir, unitName), []byte(unit), 0o644); err != nil {
@@ -180,11 +198,6 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if role == "gateway" {
 		updatesEnabled, err = r.installUpdaterUnits(opts, unitDir)
 		if err != nil {
-			return err
-		}
-	}
-	if strings.TrimSpace(opts.EnvPath) != "" {
-		if err := ensureEnvFile(opts.EnvPath); err != nil {
 			return err
 		}
 	}
@@ -675,6 +688,21 @@ func ensureGatewayConfigFile(path string) error {
 		return fmt.Errorf("write default gateway config %s: %w", target, err)
 	}
 	return nil
+}
+
+func resolveTelegramTokenForAutoEnable(envPath string) (string, error) {
+	if value := strings.TrimSpace(os.Getenv(telegramBotTokenEnvKey)); value != "" {
+		return value, nil
+	}
+	path := strings.TrimSpace(envPath)
+	if path == "" {
+		return "", nil
+	}
+	values, err := readEnvFileMap(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(values[telegramBotTokenEnvKey]), nil
 }
 
 func (r *linuxServiceRuntime) installUpdaterUnits(opts serviceInstallOptions, unitDir string) (bool, error) {

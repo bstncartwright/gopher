@@ -34,8 +34,12 @@ func TestRunOnboardingSubcommandNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read gateway config: %v", err)
 	}
-	if !strings.Contains(string(gatewayBlob), "[gateway]") {
+	gatewayText := string(gatewayBlob)
+	if !strings.Contains(gatewayText, "[gateway]") {
 		t.Fatalf("gateway config missing defaults: %s", string(gatewayBlob))
+	}
+	if !strings.Contains(gatewayText, "[gateway.telegram]") || !strings.Contains(gatewayText, "enabled = true") {
+		t.Fatalf("expected onboarding to auto-enable telegram when token exists: %s", gatewayText)
 	}
 
 	nodeBlob, err := os.ReadFile(nodePath)

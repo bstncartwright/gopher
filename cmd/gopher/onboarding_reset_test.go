@@ -25,7 +25,6 @@ func TestRunOnboardingSubcommandNonInteractive(t *testing.T) {
 		"--auth-provider", "zai",
 		"--auth-api-key", "zai-key",
 		"--telegram-bot-token", "bot-token",
-		"--telegram-chat-id", "12345",
 	}, strings.NewReader(""), &out, &out)
 	if err != nil {
 		t.Fatalf("runOnboardingSubcommand() error: %v", err)
@@ -57,9 +56,6 @@ func TestRunOnboardingSubcommandNonInteractive(t *testing.T) {
 	}
 	if !strings.Contains(envText, "GOPHER_TELEGRAM_BOT_TOKEN=bot-token") {
 		t.Fatalf("expected telegram bot token in env: %s", envText)
-	}
-	if !strings.Contains(envText, "GOPHER_TELEGRAM_CHAT_ID=12345") {
-		t.Fatalf("expected telegram chat id in env: %s", envText)
 	}
 }
 

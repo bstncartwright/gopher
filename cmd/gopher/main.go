@@ -50,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runFactoryResetSubcommand(args[1:], stdout, stderr)
 	case "onboard":
 		return runOnboardingSubcommand(args[1:], os.Stdin, stdout, stderr)
+	case "pair":
+		return runPairSubcommand(args[1:], stdout, stderr)
 	case "update":
 		return runUpdateSubcommand(args[1:], stdout, stderr)
 	default:
@@ -77,6 +79,7 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  agent ...             manage agent registry and workspaces")
 	fmt.Fprintln(out, "  auth ...              manage provider auth env settings")
 	fmt.Fprintln(out, "  onboard               write defaults and configure auth/telegram")
+	fmt.Fprintln(out, "  pair                  manage telegram pairing (status/approve)")
 	fmt.Fprintln(out, "  reset                 delete config and memory while preserving auth")
 	fmt.Fprintln(out, "  update                check and apply binary updates")
 	fmt.Fprintln(out, "  version               print binary version")

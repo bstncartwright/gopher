@@ -190,7 +190,8 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 	printStatusValueLine(r.stdout, "nats version", valueOrUnknown(natsVersion))
 
 	if unit == gopherGatewayUnitName {
-		telegramLine, telegramWarning := readTelegramStatusLine(ctx, gatewayCfg, gatewayCfgErr)
+		telegramDataDir := resolveGatewayDataDir(resolveServiceWorkingDir())
+		telegramLine, telegramWarning := readTelegramStatusLine(ctx, telegramDataDir, gatewayCfg, gatewayCfgErr)
 		nodeLines, nodeWarning := readGatewayNodeStatusLines(ctx, gatewayCfg, gatewayCfgErr)
 		if telegramLine != "" || telegramWarning != "" || len(nodeLines) > 0 || nodeWarning != "" {
 			fmt.Fprintln(r.stdout, "")
@@ -275,19 +276,25 @@ func statusBadgeWithFallback(detail string, fallback string) string {
 	}
 }
 
-func readTelegramStatusLine(_ context.Context, cfg config.GatewayConfig, cfgErr error) (line string, warning string) {
+func readTelegramStatusLine(_ context.Context, dataDir string, cfg config.GatewayConfig, cfgErr error) (line string, warning string) {
 	if cfgErr != nil || !cfg.Telegram.Enabled {
 		return "", ""
 	}
-	if strings.TrimSpace(cfg.Telegram.AllowedUserID) == "" || strings.TrimSpace(cfg.Telegram.AllowedChatID) == "" {
-		return "telegram bridge: degraded", "telegram warning: allowed_user_id and allowed_chat_id should be configured"
+	pairedChatID := strings.TrimSpace(cfg.Telegram.AllowedChatID)
+	if dataDir != "" {
+		if state, err := readTelegramPairingState(dataDir); err == nil && strings.TrimSpace(state.PairedChatID) != "" {
+			pairedChatID = strings.TrimSpace(state.PairedChatID)
+		}
+	}
+	if pairedChatID == "" {
+		return "telegram bridge: waiting for pairing", "telegram warning: allowed_chat_id is empty; approve a pending pair with gopher pair approve"
 	}
 	line = fmt.Sprintf(
 		"telegram bridge: healthy (poll_interval=%s poll_timeout=%s allowed_user_id=%s allowed_chat_id=%s)",
 		cfg.Telegram.PollInterval,
 		cfg.Telegram.PollTimeout,
 		cfg.Telegram.AllowedUserID,
-		cfg.Telegram.AllowedChatID,
+		pairedChatID,
 	)
 	if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
 		warning = "telegram warning: bot_token is empty"

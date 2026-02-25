@@ -300,10 +300,6 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 		slog.Info("telegram transport: ignoring message from unauthorized user", "update_id", event.UpdateID, "user_id", userID, "chat_id", chatID)
 		return nil
 	}
-	if t.allowedChatID != "" && chatID != t.allowedChatID {
-		slog.Info("telegram transport: ignoring message from unauthorized chat", "update_id", event.UpdateID, "chat_id", chatID)
-		return nil
-	}
 	handler := t.getHandler()
 	if handler == nil {
 		slog.Warn("telegram transport: no inbound handler configured", "update_id", event.UpdateID, "chat_id", chatID, "user_id", userID)

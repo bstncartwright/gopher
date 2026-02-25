@@ -442,7 +442,9 @@ func parseDMCommand(text string) (dmCommand, bool) {
 
 func (p *DMPipeline) resetConversationSession(ctx context.Context, conversationID, conversationName, senderID string, agentID sessionrt.ActorID, recipientID string) error {
 	if existing, ok := p.lookupConversationSession(conversationID); ok {
-		if err := p.manager.CancelSession(ctx, existing); err != nil && err != sessionrt.ErrSessionNotFound {
+		if err := p.manager.CancelSession(ctx, existing); err != nil &&
+			err != sessionrt.ErrSessionNotFound &&
+			err != sessionrt.ErrSessionNotActive {
 			return fmt.Errorf("cancel previous session: %w", err)
 		}
 	}

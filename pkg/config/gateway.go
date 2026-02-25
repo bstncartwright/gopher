@@ -789,12 +789,6 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 		if cfg.Telegram.PollTimeout <= 0 {
 			return fmt.Errorf("gateway.telegram.poll_timeout must be > 0 when telegram is enabled")
 		}
-		if strings.TrimSpace(cfg.Telegram.AllowedUserID) == "" {
-			return fmt.Errorf("gateway.telegram.allowed_user_id is required when telegram is enabled")
-		}
-		if strings.TrimSpace(cfg.Telegram.AllowedChatID) == "" {
-			return fmt.Errorf("gateway.telegram.allowed_chat_id is required when telegram is enabled")
-		}
 	}
 	if err := validateLoopbackListenAddr(strings.TrimSpace(cfg.Panel.ListenAddr), "gateway.panel.listen_addr"); err != nil {
 		return err

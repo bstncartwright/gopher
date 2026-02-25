@@ -179,7 +179,7 @@ func startTelegramDMBridgeWithRuntime(
 			"event_id", inbound.EventID,
 		)
 		recordTelegramInbound(dataDir, inbound)
-		return pipeline.HandleInbound(handlerCtx, inbound)
+		return processTelegramInbound(handlerCtx, inbound, pipeline, telegramBridge, dataDir, cfg.Telegram.AllowedChatID, cfg.Telegram.AllowedUserID)
 	})
 
 	bridge := &telegramDMBridge{
@@ -196,6 +196,93 @@ func startTelegramDMBridgeWithRuntime(
 	slog.Info("telegram_gateway: dm bridge supervisor started", "workspace", workspace)
 	go bridge.runSupervisor(bridgeCtx, logger)
 	return bridge, nil
+}
+
+func processTelegramInbound(
+	ctx context.Context,
+	inbound transport.InboundMessage,
+	pipeline telegramPairingPipeline,
+	bridge telegramPairingTransport,
+	dataDir string,
+	defaultPairedChatID string,
+	defaultPairedUserID string,
+) error {
+	chatID := parseTelegramConversationID(inbound.ConversationID)
+	userID := parseTelegramSenderID(inbound.SenderID)
+	if chatID == "" || userID == "" {
+		return nil
+	}
+
+	state, err := readTelegramPairingState(dataDir)
+	if err != nil {
+		return err
+	}
+
+	effectiveChatID := strings.TrimSpace(state.PairedChatID)
+	effectiveUserID := strings.TrimSpace(state.PairedUserID)
+	if effectiveChatID == "" {
+		effectiveChatID = strings.TrimSpace(defaultPairedChatID)
+	}
+	if effectiveUserID == "" {
+		effectiveUserID = strings.TrimSpace(defaultPairedUserID)
+	}
+	if effectiveUserID != "" && userID != effectiveUserID {
+		return nil
+	}
+	if state.Pending != nil && effectiveChatID != "" {
+		state.Pending = nil
+		if err := writeTelegramPairingState(dataDir, state); err != nil {
+			return err
+		}
+	}
+
+	if effectiveChatID == "" {
+		if err := upsertPendingTelegramPairing(dataDir, telegramPairRequest{
+			ChatID:         chatID,
+			UserID:         userID,
+			Conversation:   inbound.ConversationName,
+			SenderUsername: strings.TrimPrefix(inbound.SenderID, "telegram-user:"),
+			RequestedAt:    "",
+			LastSeenAt:     "",
+		}); err != nil {
+			return err
+		}
+		return bridge.SendMessage(ctx, transport.OutboundMessage{
+			ConversationID: inbound.ConversationID,
+			Text:           "device needs to be paired",
+		})
+	}
+
+	if chatID != effectiveChatID {
+		return nil
+	}
+	return pipeline.HandleInbound(ctx, inbound)
+}
+
+type telegramPairingPipeline interface {
+	HandleInbound(context.Context, transport.InboundMessage) error
+}
+
+type telegramPairingTransport interface {
+	SendMessage(context.Context, transport.OutboundMessage) error
+}
+
+func parseTelegramConversationID(conversationID string) string {
+	conversationID = strings.TrimSpace(conversationID)
+	prefix := "telegram:"
+	if !strings.HasPrefix(conversationID, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(conversationID, prefix))
+}
+
+func parseTelegramSenderID(senderID string) string {
+	senderID = strings.TrimSpace(senderID)
+	prefix := "telegram-user:"
+	if !strings.HasPrefix(senderID, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(senderID, prefix))
 }
 
 func (b *telegramDMBridge) runSupervisor(ctx context.Context, logger *log.Logger) {

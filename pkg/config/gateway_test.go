@@ -170,6 +170,32 @@ allowed_chat_id = "2002"
 	}
 }
 
+func TestLoadGatewayConfigAcceptsLegacyTelegramTokenEnvKey(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+bot_token = ""
+poll_interval = "2s"
+poll_timeout = "30s"
+`)
+	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env: map[string]string{
+			"GOPHER_TELEGRAM_BOT_TOKEN": "legacy-token",
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadGatewayConfig() error: %v", err)
+	}
+	if cfg.Telegram.BotToken != "legacy-token" {
+		t.Fatalf("telegram token = %q, want legacy-token", cfg.Telegram.BotToken)
+	}
+}
+
 func TestLoadGatewayConfigRejectsInvalidTelegramPollTimeout(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "gopher.toml"), `

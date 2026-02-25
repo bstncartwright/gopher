@@ -253,6 +253,54 @@ func TestRunUpdateSubcommandPermissionErrorRetriesWithSudo(t *testing.T) {
 	}
 }
 
+func TestRunUpdateSubcommandPermissionErrorReturnsSudoRetryError(t *testing.T) {
+	restore := stubUpdateDependencies(t)
+	defer restore()
+
+	binaryVersion = "v1.2.3"
+	latestReleaseForUpdate = func(ctx context.Context, owner, repo, token string) (update.Release, error) {
+		_ = ctx
+		_ = owner
+		_ = repo
+		_ = token
+		return update.Release{
+			TagName: "v1.2.4",
+			Assets: []update.ReleaseAsset{
+				{Name: "gopher-" + runtime.GOOS + "-" + runtime.GOARCH, URL: "https://example.test/asset"},
+			},
+		}, nil
+	}
+	executablePathForUpdate = func() (string, error) {
+		return "/usr/local/bin/gopher", nil
+	}
+	shouldPromptSudoForUpdate = func() bool { return true }
+	envLookupForUpdate = func(key string) string {
+		_ = key
+		return ""
+	}
+	applyReleaseForUpdate = func(ctx context.Context, opts update.ApplyOptions) error {
+		_ = ctx
+		_ = opts
+		return fmt.Errorf("write temporary update binary: %w", os.ErrPermission)
+	}
+
+	retryWithSudoForUpdate = func(ctx context.Context, updateArgs []string, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = updateArgs
+		_ = stdout
+		_ = stderr
+		return fmt.Errorf("run sudo update command: exit status 1")
+	}
+
+	err := runUpdateSubcommand([]string{"--github-token", "token"}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatalf("expected sudo retry failure")
+	}
+	if !strings.Contains(err.Error(), "run sudo update command") {
+		t.Fatalf("expected sudo retry error, got: %v", err)
+	}
+}
+
 func TestRunUpdateSubcommandSystemctlPermissionErrorRetriesWithSudo(t *testing.T) {
 	restore := stubUpdateDependencies(t)
 	defer restore()
@@ -309,6 +357,28 @@ func TestRunUpdateSubcommandSystemctlPermissionErrorRetriesWithSudo(t *testing.T
 	}
 }
 
+func TestInferDefaultServiceNameForUpdateRequiresActiveService(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-specific behavior")
+	}
+
+	const serviceName = "gopher-gateway.service"
+	serviceIsActiveForUpdate = func(name string) bool {
+		if name != serviceName {
+			t.Fatalf("unexpected service name: %q", name)
+		}
+		return false
+	}
+	t.Cleanup(func() {
+		serviceIsActiveForUpdate = isSystemdServiceActive
+	})
+
+	service := inferDefaultServiceNameForUpdate()
+	if service != "" {
+		t.Fatalf("service = %q, want empty when service is inactive", service)
+	}
+}
+
 func stubUpdateDependencies(t *testing.T) func() {
 	t.Helper()
 
@@ -322,6 +392,7 @@ func stubUpdateDependencies(t *testing.T) func() {
 	prevRetryWithSudo := retryWithSudoForUpdate
 	prevEnvLookup := envLookupForUpdate
 	prevDefaultServiceName := defaultServiceNameForUpdate
+	prevServiceIsActive := serviceIsActiveForUpdate
 
 	return func() {
 		binaryVersion = prevVersion
@@ -334,5 +405,6 @@ func stubUpdateDependencies(t *testing.T) func() {
 		retryWithSudoForUpdate = prevRetryWithSudo
 		envLookupForUpdate = prevEnvLookup
 		defaultServiceNameForUpdate = prevDefaultServiceName
+		serviceIsActiveForUpdate = prevServiceIsActive
 	}
 }

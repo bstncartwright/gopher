@@ -38,6 +38,7 @@ var (
 	retryWithSudoForUpdate        = rerunUpdateWithSudo
 	envLookupForUpdate            = os.Getenv
 	defaultServiceNameForUpdate   = inferDefaultServiceNameForUpdate
+	serviceIsActiveForUpdate      = isSystemdServiceActive
 )
 
 type noopRunner struct{}
@@ -143,6 +144,8 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 				}
 				if retryErr := retryWithSudoForUpdate(ctx, args, stdout, stderr); retryErr == nil {
 					return nil
+				} else {
+					return retryErr
 				}
 			}
 			commandName := filepath.Base(os.Args[0])
@@ -196,10 +199,21 @@ func inferDefaultServiceNameForUpdate() string {
 		filepath.Join("/usr/lib/systemd/system", gatewayServiceName),
 	} {
 		if _, err := os.Stat(path); err == nil {
-			return gatewayServiceName
+			if serviceIsActiveForUpdate(gatewayServiceName) {
+				return gatewayServiceName
+			}
+			return ""
 		}
 	}
 	return ""
+}
+
+func isSystemdServiceActive(serviceName string) bool {
+	if strings.TrimSpace(serviceName) == "" {
+		return false
+	}
+	err := exec.Command("systemctl", "is-active", "--quiet", strings.TrimSpace(serviceName)).Run()
+	return err == nil
 }
 
 func isInteractiveTerminal() bool {

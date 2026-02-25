@@ -46,6 +46,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runAgentSubcommand(args[1:], stdout, stderr)
 	case "auth":
 		return runAuthSubcommand(args[1:], stdout, stderr)
+	case "reset":
+		return runFactoryResetSubcommand(args[1:], stdout, stderr)
+	case "onboard":
+		return runOnboardingSubcommand(args[1:], os.Stdin, stdout, stderr)
 	case "update":
 		return runUpdateSubcommand(args[1:], stdout, stderr)
 	default:
@@ -72,6 +76,8 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  logs                  show gopher service logs")
 	fmt.Fprintln(out, "  agent ...             manage agent registry and workspaces")
 	fmt.Fprintln(out, "  auth ...              manage provider auth env settings")
+	fmt.Fprintln(out, "  onboard               write defaults and configure auth/telegram")
+	fmt.Fprintln(out, "  reset                 delete config and memory while preserving auth")
 	fmt.Fprintln(out, "  update                check and apply binary updates")
 	fmt.Fprintln(out, "  version               print binary version")
 	fmt.Fprintln(out, "  service ...           install and manage linux systemd service")

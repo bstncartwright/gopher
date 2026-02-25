@@ -151,6 +151,8 @@ gopher node restart --target-node node-1
 gopher help
 gopher gateway run --help
 gopher node run --help
+gopher onboard --help
+gopher reset --yes
 ```
 
 gateway config is loaded from `gopher.toml` in the working directory (`gopher.local.toml` overrides). node config is loaded from `node.toml` (`node.local.toml` overrides). env vars `GOPHER_*` override config.
@@ -228,6 +230,29 @@ manual fallback is still supported:
 
 ```bash
 gopher auth set --env-file /etc/gopher/gopher.env --key OPENAI_CODEX_TOKEN --value "<token>"
+```
+
+## setup + reset
+
+`gopher onboard` bootstraps local defaults and lets you configure auth + telegram env values.
+
+```bash
+# interactive
+gopher onboard
+
+# non-interactive
+gopher onboard \
+  --non-interactive \
+  --auth-provider zai \
+  --auth-api-key "$ZAI_API_KEY" \
+  --telegram-bot-token "$GOPHER_TELEGRAM_BOT_TOKEN" \
+  --telegram-chat-id "$GOPHER_TELEGRAM_CHAT_ID"
+```
+
+`gopher reset` removes config and runtime memory/state while preserving the auth env file.
+
+```bash
+gopher reset --yes
 ```
 
 ## agent registry cli

@@ -572,6 +572,17 @@ func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions)
 		}
 		unit = resolvedUnit
 	}
+	if scope.user {
+		logPath, ok := resolveServiceLogPath(unit)
+		if ok {
+			if _, statErr := os.Stat(logPath); statErr == nil {
+				if r.stderr != nil {
+					fmt.Fprintf(r.stderr, "using runtime log file: %s\n", logPath)
+				}
+				return runTailForService(ctx, logPath, lines, opts.Follow, r.stdout, r.stderr)
+			}
+		}
+	}
 	args := []string{"-u", unit, "--no-pager", "-n", fmt.Sprintf("%d", lines)}
 	if opts.Follow {
 		args = append(args, "-f")

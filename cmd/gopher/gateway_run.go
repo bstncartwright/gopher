@@ -115,9 +115,13 @@ func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		workspace, err := resolveRuntimeWorkspace(workingDir, cfg.PrimaryConfigPath, cfg.LocalConfigPath)
+		if err != nil {
+			return err
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runGatewayWithContext(ctx, cfg, sources, stderr)
+		return runGatewayWithContext(ctx, cfg, sources, workspace, stderr)
 	case "config":
 		return runGatewayConfigSubcommand(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -289,10 +293,10 @@ func wantsHelp(args []string) bool {
 	return false
 }
 
-func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, sources []string, stderr io.Writer) error {
-	workspace, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolve workspace directory: %w", err)
+func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, sources []string, workspace string, stderr io.Writer) error {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return fmt.Errorf("resolve workspace directory: workspace is required")
 	}
 	logger, cleanupLogs, err := setupProcessLogging(workspace, "gateway", stderr)
 	if err != nil {

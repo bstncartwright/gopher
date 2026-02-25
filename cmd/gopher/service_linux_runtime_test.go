@@ -3,8 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -139,5 +143,66 @@ func TestResolveManagedServiceUnitExplicitNodeWhenInstalled(t *testing.T) {
 	}
 	if unit != gopherNodeUnitName {
 		t.Fatalf("unit = %q, want %q", unit, gopherNodeUnitName)
+	}
+}
+
+func TestLinuxServiceUninstallReturnsPermissionErrors(t *testing.T) {
+	prevRunSystemctl := runSystemctlForService
+	prevRemoveFile := removeFileForService
+	defer func() {
+		runSystemctlForService = prevRunSystemctl
+		removeFileForService = prevRemoveFile
+	}()
+
+	runSystemctlForService = func(ctx context.Context, args ...string) error {
+		_ = ctx
+		_ = args
+		return errors.New("systemctl disable failed: permission denied")
+	}
+	removeFileForService = func(path string) error {
+		_ = path
+		return nil
+	}
+
+	runtime := &linuxServiceRuntime{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	err := runtime.Uninstall(context.Background())
+	if err == nil {
+		t.Fatalf("expected uninstall error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Fatalf("expected permission-denied error, got: %v", err)
+	}
+}
+
+func TestLinuxServiceUninstallIgnoresMissingUnitsAndFiles(t *testing.T) {
+	prevRunSystemctl := runSystemctlForService
+	prevRemoveFile := removeFileForService
+	defer func() {
+		runSystemctlForService = prevRunSystemctl
+		removeFileForService = prevRemoveFile
+	}()
+
+	runSystemctlForService = func(ctx context.Context, args ...string) error {
+		_ = ctx
+		if len(args) == 0 {
+			return nil
+		}
+		if args[0] == "daemon-reload" {
+			return nil
+		}
+		return errors.New("Unit gopher-gateway.service not loaded.")
+	}
+	removeFileForService = func(path string) error {
+		_ = path
+		return os.ErrNotExist
+	}
+
+	var out bytes.Buffer
+	runtime := &linuxServiceRuntime{stdout: &out, stderr: &bytes.Buffer{}}
+	if err := runtime.Uninstall(context.Background()); err != nil {
+		t.Fatalf("expected uninstall success, got: %v", err)
+	}
+	if !strings.Contains(out.String(), "uninstalled gopher-gateway.service") {
+		t.Fatalf("expected uninstall success output, got %q", out.String())
 	}
 }

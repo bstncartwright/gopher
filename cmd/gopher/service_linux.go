@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,10 @@ var loadGatewayConfigForStatus = func() (config.GatewayConfig, error) {
 	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: defaultServiceGatewayConfigPath()})
 	return cfg, err
 }
+var runSystemctlForService = func(ctx context.Context, args ...string) error {
+	return systemctlRunner{}.Run(ctx, "systemctl", args...)
+}
+var removeFileForService = os.Remove
 
 func defaultServiceRuntime(stdout, stderr io.Writer) serviceRuntime {
 	return &linuxServiceRuntime{stdout: stdout, stderr: stderr}
@@ -141,16 +146,52 @@ func resolveServiceWorkingDir() string {
 }
 
 func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {
-	runner := systemctlRunner{}
-	_ = runner.Run(ctx, "systemctl", "disable", "--now", "gopher-gateway-update.timer")
-	_ = runner.Run(ctx, "systemctl", "disable", "--now", "gopher-gateway-update.service")
-	_ = runner.Run(ctx, "systemctl", "disable", "--now", "gopher-gateway.service")
-	_ = os.Remove("/etc/systemd/system/gopher-gateway-update.timer")
-	_ = os.Remove("/etc/systemd/system/gopher-gateway-update.service")
-	_ = os.Remove("/etc/systemd/system/gopher-gateway.service")
-	_ = runner.Run(ctx, "systemctl", "daemon-reload")
+	var errs []error
+	run := func(action string, err error) {
+		if err == nil {
+			return
+		}
+		if shouldIgnoreUninstallError(err) {
+			return
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", action, err))
+	}
+
+	run("disable timer", runSystemctlForService(ctx, "disable", "--now", "gopher-gateway-update.timer"))
+	run("disable update service", runSystemctlForService(ctx, "disable", "--now", "gopher-gateway-update.service"))
+	run("disable gateway service", runSystemctlForService(ctx, "disable", "--now", "gopher-gateway.service"))
+	run("remove timer unit", removeFileForService("/etc/systemd/system/gopher-gateway-update.timer"))
+	run("remove update service unit", removeFileForService("/etc/systemd/system/gopher-gateway-update.service"))
+	run("remove gateway service unit", removeFileForService("/etc/systemd/system/gopher-gateway.service"))
+	run("reload systemd daemon", runSystemctlForService(ctx, "daemon-reload"))
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	fmt.Fprintln(r.stdout, "uninstalled gopher-gateway.service")
 	return nil
+}
+
+func shouldIgnoreUninstallError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	ignorePatterns := []string{
+		"unit gopher-gateway-update.timer not loaded",
+		"unit gopher-gateway-update.service not loaded",
+		"unit gopher-gateway.service not loaded",
+		"does not exist",
+		"not found",
+	}
+	for _, pattern := range ignorePatterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOptions) error {

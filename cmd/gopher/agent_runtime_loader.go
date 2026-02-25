@@ -11,6 +11,8 @@ import (
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
+const defaultAgentWorkspaceID = "main"
+
 type agentRuntime struct {
 	Executor       sessionrt.AgentExecutor
 	DefaultActorID sessionrt.ActorID
@@ -128,9 +130,9 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 	}
 
 	if len(out) == 0 {
-		defaultWorkspace := filepath.Join(agentsRoot, "default")
-		if err := ensureAgentWorkspace("default", defaultWorkspace); err != nil {
-			return nil, fmt.Errorf("create default agent workspace %s: %w", defaultWorkspace, err)
+		defaultWorkspace := filepath.Join(agentsRoot, defaultAgentWorkspaceID)
+		if err := ensureAgentWorkspace(defaultAgentWorkspaceID, defaultWorkspace); err != nil {
+			return nil, fmt.Errorf("create main agent workspace %s: %w", defaultWorkspace, err)
 		}
 		addCandidate(defaultWorkspace)
 	}

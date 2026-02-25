@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -11,11 +12,12 @@ import (
 
 type fakePairingPipeline struct {
 	calls int
+	err   error
 }
 
 func (f *fakePairingPipeline) HandleInbound(context.Context, transport.InboundMessage) error {
 	f.calls++
-	return nil
+	return f.err
 }
 
 type fakePairingTransport struct {
@@ -137,6 +139,54 @@ func TestProcessTelegramInboundOnlyPairedChatIsHandled(t *testing.T) {
 	}
 	if state.Pending != nil {
 		t.Fatalf("pending should be cleared, got %#v", state.Pending)
+	}
+}
+
+func TestHandleTelegramInboundWithErrorReply(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	if err := writeTelegramPairingState(dataDir, telegramPairingState{
+		PairedChatID: "777",
+		PairedUserID: "123",
+	}); err != nil {
+		t.Fatalf("writeTelegramPairingState() error: %v", err)
+	}
+	pipeline := &fakePairingPipeline{err: errors.New("create session: timeout")}
+	bridge := &fakePairingTransport{}
+
+	err := handleTelegramInboundWithErrorReply(
+		context.Background(),
+		transport.InboundMessage{
+			ConversationID:   "telegram:777",
+			ConversationName: "ops",
+			SenderID:         "telegram-user:123",
+			EventID:          "1",
+			Text:             "hello",
+		},
+		pipeline,
+		bridge,
+		dataDir,
+		"",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("handleTelegramInboundWithErrorReply() error: %v", err)
+	}
+	if pipeline.calls != 1 {
+		t.Fatalf("pipeline calls = %d, want 1", pipeline.calls)
+	}
+	if len(bridge.messages) != 1 {
+		t.Fatalf("bridge send calls = %d, want 1", len(bridge.messages))
+	}
+	if got := bridge.messages[0].ConversationID; got != "telegram:777" {
+		t.Fatalf("bridge conversation id = %q, want telegram:777", got)
+	}
+	if got := bridge.messages[0].Text; !strings.Contains(got, "I ran into an error while processing that message") {
+		t.Fatalf("bridge reply = %q, want fallback error message", got)
+	}
+	if got := bridge.messages[0].Text; !strings.Contains(got, "create session: timeout") {
+		t.Fatalf("bridge reply = %q, want error details", got)
 	}
 }
 

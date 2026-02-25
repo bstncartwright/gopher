@@ -54,6 +54,19 @@ var runJournalctlForService = func(ctx context.Context, args []string, stdout, s
 	cmd.Stderr = stderr
 	return cmd.Run()
 }
+var runTailForService = func(ctx context.Context, path string, lines int, follow bool, stdout, stderr io.Writer) error {
+	if lines <= 0 {
+		lines = 200
+	}
+	args := []string{"-n", fmt.Sprintf("%d", lines), path}
+	if follow {
+		args = append([]string{"-f"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "tail", args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
 var serviceGetEUIDForLinux = os.Geteuid
 var serviceUserHomeDir = os.UserHomeDir
 var releaseVersionPattern = regexp.MustCompile(`\bv\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b`)
@@ -554,7 +567,37 @@ func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions)
 	if opts.Follow {
 		args = append(args, "-f")
 	}
-	return runJournalctlForService(ctx, scope.journalctlArgs(args...), r.stdout, r.stderr)
+	err := runJournalctlForService(ctx, scope.journalctlArgs(args...), r.stdout, r.stderr)
+	if err == nil || !scope.user {
+		return err
+	}
+	logPath, ok := resolveServiceLogPath(unit)
+	if !ok {
+		return err
+	}
+	if _, statErr := os.Stat(logPath); statErr != nil {
+		return err
+	}
+	if r.stderr != nil {
+		fmt.Fprintf(r.stderr, "journalctl unavailable, falling back to log file: %s\n", logPath)
+	}
+	return runTailForService(ctx, logPath, lines, opts.Follow, r.stdout, r.stderr)
+}
+
+func resolveServiceLogPath(unit string) (string, bool) {
+	workingDir := strings.TrimSpace(resolveServiceWorkingDir())
+	if workingDir == "" {
+		return "", false
+	}
+	logDir := filepath.Join(workingDir, "logs")
+	switch strings.TrimSpace(unit) {
+	case gopherGatewayUnitName:
+		return filepath.Join(logDir, "gateway.log"), true
+	case gopherNodeUnitName:
+		return filepath.Join(logDir, "node.log"), true
+	default:
+		return "", false
+	}
 }
 
 func ensureEnvFile(path string) error {

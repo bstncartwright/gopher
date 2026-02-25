@@ -179,7 +179,7 @@ func startTelegramDMBridgeWithRuntime(
 			"event_id", inbound.EventID,
 		)
 		recordTelegramInbound(dataDir, inbound)
-		return processTelegramInbound(handlerCtx, inbound, pipeline, telegramBridge, dataDir, cfg.Telegram.AllowedChatID, cfg.Telegram.AllowedUserID)
+		return handleTelegramInboundWithErrorReply(handlerCtx, inbound, pipeline, telegramBridge, dataDir, cfg.Telegram.AllowedChatID, cfg.Telegram.AllowedUserID)
 	})
 
 	bridge := &telegramDMBridge{
@@ -257,6 +257,53 @@ func processTelegramInbound(
 		return nil
 	}
 	return pipeline.HandleInbound(ctx, inbound)
+}
+
+const telegramInboundErrorReply = "I ran into an error while processing that message. Please try again."
+
+func handleTelegramInboundWithErrorReply(
+	ctx context.Context,
+	inbound transport.InboundMessage,
+	pipeline telegramPairingPipeline,
+	bridge telegramPairingTransport,
+	dataDir string,
+	defaultPairedChatID string,
+	defaultPairedUserID string,
+) error {
+	err := processTelegramInbound(ctx, inbound, pipeline, bridge, dataDir, defaultPairedChatID, defaultPairedUserID)
+	if err == nil {
+		return nil
+	}
+	slog.Error(
+		"telegram_gateway: failed to process inbound message",
+		"conversation_id", inbound.ConversationID,
+		"sender_id", inbound.SenderID,
+		"event_id", inbound.EventID,
+		"error", err,
+	)
+	reply := telegramInboundErrorReply
+	if detail := strings.TrimSpace(err.Error()); detail != "" {
+		detail = strings.Join(strings.Fields(detail), " ")
+		detailRunes := []rune(detail)
+		if len(detailRunes) > 180 {
+			detail = strings.TrimSpace(string(detailRunes[:180])) + "..."
+		}
+		reply += "\n\nDetails: " + detail
+	}
+	if sendErr := bridge.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: inbound.ConversationID,
+		Text:           reply,
+	}); sendErr != nil {
+		slog.Error(
+			"telegram_gateway: failed to send inbound error reply",
+			"conversation_id", inbound.ConversationID,
+			"sender_id", inbound.SenderID,
+			"event_id", inbound.EventID,
+			"error", sendErr,
+		)
+	}
+	// Swallow the handler error after notifying the user so this update is not retried indefinitely.
+	return nil
 }
 
 type telegramPairingPipeline interface {

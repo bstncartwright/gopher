@@ -70,7 +70,7 @@ func TestManagerStoreAutoIDsAndEmbeddings(t *testing.T) {
 
 func TestManagerRetrieveFailOpen(t *testing.T) {
 	store := &inMemoryStore{listErr: errors.New("db down")}
-	manager, err := NewManager(ManagerOptions{Store: store, FailOpen: true})
+	manager, err := NewManager(ManagerOptions{Store: store, FailOpenRetrieve: true})
 	if err != nil {
 		t.Fatalf("NewManager() error: %v", err)
 	}

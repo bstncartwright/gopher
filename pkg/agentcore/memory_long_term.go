@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -43,7 +44,7 @@ func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage
 		if turnErr != nil {
 			importance = 0.52
 		}
-		_ = a.LongTermMemory.Store(ctx, memory.MemoryRecord{
+		a.storeLongTermMemoryRecord(ctx, memory.MemoryRecord{
 			Type:      memory.MemoryEpisodic,
 			Scope:     scope,
 			SessionID: s.ID,
@@ -82,7 +83,7 @@ func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage
 		if !strings.EqualFold(status, string(ToolStatusOK)) {
 			importance = 0.46
 		}
-		_ = a.LongTermMemory.Store(ctx, memory.MemoryRecord{
+		a.storeLongTermMemoryRecord(ctx, memory.MemoryRecord{
 			Type:      memory.MemoryTool,
 			Scope:     scope,
 			SessionID: s.ID,
@@ -106,7 +107,7 @@ func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage
 			sequence,
 			squeezeWhitespace(finalText),
 		)
-		_ = a.LongTermMemory.Store(ctx, memory.MemoryRecord{
+		a.storeLongTermMemoryRecord(ctx, memory.MemoryRecord{
 			Type:       memory.MemoryProcedural,
 			Scope:      scope,
 			SessionID:  s.ID,
@@ -119,7 +120,7 @@ func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage
 	}
 
 	if fact, ok := parseRememberFact(userMessage); ok {
-		_ = a.LongTermMemory.Store(ctx, memory.MemoryRecord{
+		a.storeLongTermMemoryRecord(ctx, memory.MemoryRecord{
 			Type:       memory.MemorySemantic,
 			Scope:      scope,
 			SessionID:  s.ID,
@@ -129,6 +130,21 @@ func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage
 			Importance: 0.95,
 			Timestamp:  now,
 		})
+	}
+}
+
+func (a *Agent) storeLongTermMemoryRecord(ctx context.Context, record memory.MemoryRecord) {
+	if a == nil || a.LongTermMemory == nil {
+		return
+	}
+	if err := a.LongTermMemory.Store(ctx, record); err != nil {
+		slog.Warn("agent_memory: failed to persist long-term memory record",
+			"agent_id", a.ID,
+			"session_id", record.SessionID,
+			"type", record.Type.String(),
+			"importance", record.Importance,
+			"error", err,
+		)
 	}
 }
 

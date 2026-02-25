@@ -2,12 +2,14 @@ package agentcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
+	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
 )
 
 func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResult, error) {
@@ -68,7 +70,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 
 	emitter := newEventEmitter(a.ID, s.ID, a.Logger, onEvent)
 	slog.Debug("run_turn: building provider context", "agent_id", a.ID, "session_id", s.ID)
-	conversation, err := a.buildProviderContext(ctx, s, in.UserMessage, in.PromptMode)
+	conversation, diagnostics, err := a.buildProviderContextDetailed(ctx, s, in.UserMessage, in.PromptMode)
 	if err != nil {
 		turnErr = err
 		slog.Error("run_turn: failed to build provider context",
@@ -78,6 +80,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 		)
 		return TurnResult{Events: emitter.Events()}, err
 	}
+	s.LastContextDiagnostics = diagnostics
 	slog.Debug("run_turn: provider context built",
 		"agent_id", a.ID,
 		"session_id", s.ID,
@@ -87,6 +90,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 	)
 
 	runner := NewToolRunner(a)
+	overflowRetryUsed := 0
 	for round := 0; ; round++ {
 		roundStart := time.Now()
 		slog.Debug("run_turn: starting round",
@@ -135,6 +139,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 		}
 
 		toolCalls := make([]ai.ContentBlock, 0, 2)
+		streamErrors := make([]string, 0, 1)
 		textDeltaCount := 0
 		for event := range stream.Events() {
 			switch event.Type {
@@ -176,15 +181,14 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				if event.Error == nil {
 					continue
 				}
-				slog.Error("run_turn: received error from stream",
+				slog.Warn("run_turn: received stream error event",
 					"agent_id", a.ID,
 					"session_id", s.ID,
 					"round", round,
 					"error_message", event.Error.ErrorMessage,
 				)
-				if err := emitter.Emit(EventTypeError, map[string]any{"message": event.Error.ErrorMessage}); err != nil {
-					turnErr = err
-					return TurnResult{Events: emitter.Events()}, err
+				if strings.TrimSpace(event.Error.ErrorMessage) != "" {
+					streamErrors = append(streamErrors, strings.TrimSpace(event.Error.ErrorMessage))
 				}
 			}
 		}
@@ -204,12 +208,67 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				"round", round,
 				"error", err,
 			)
+			if a.shouldRetryContextOverflow(err.Error(), overflowRetryUsed) {
+				recovered, recoverErr := a.recoverFromContextOverflow(ctx, s, in, err.Error(), overflowRetryUsed+1)
+				if recoverErr == nil {
+					conversation = recovered
+					overflowRetryUsed++
+					slog.Warn("run_turn: recovered from context overflow, retrying round",
+						"agent_id", a.ID,
+						"session_id", s.ID,
+						"round", round,
+						"overflow_retry", overflowRetryUsed,
+					)
+					continue
+				}
+				err = recoverErr
+			}
+			if a.isOverflowMessage(err.Error()) {
+				err = a.contextOverflowError(err, s.LastContextDiagnostics)
+			}
 			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": err.Error()}); emitErr != nil {
 				turnErr = emitErr
 				return TurnResult{Events: emitter.Events()}, emitErr
 			}
 			turnErr = err
 			return TurnResult{Events: emitter.Events()}, err
+		}
+
+		if ai.IsContextOverflow(assistant, a.model.ContextWindow) && a.shouldRetryContextOverflow(assistant.ErrorMessage, overflowRetryUsed) {
+			recovered, recoverErr := a.recoverFromContextOverflow(ctx, s, in, assistant.ErrorMessage, overflowRetryUsed+1)
+			if recoverErr == nil {
+				conversation = recovered
+				overflowRetryUsed++
+				slog.Warn("run_turn: overflow detected in assistant result, retrying",
+					"agent_id", a.ID,
+					"session_id", s.ID,
+					"round", round,
+					"overflow_retry", overflowRetryUsed,
+				)
+				continue
+			}
+			err = recoverErr
+			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": err.Error()}); emitErr != nil {
+				turnErr = emitErr
+				return TurnResult{Events: emitter.Events()}, emitErr
+			}
+			turnErr = err
+			return TurnResult{Events: emitter.Events()}, err
+		}
+		if ai.IsContextOverflow(assistant, a.model.ContextWindow) {
+			err = a.contextOverflowError(errors.New(strings.TrimSpace(assistant.ErrorMessage)), s.LastContextDiagnostics)
+			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": err.Error()}); emitErr != nil {
+				turnErr = emitErr
+				return TurnResult{Events: emitter.Events()}, emitErr
+			}
+			turnErr = err
+			return TurnResult{Events: emitter.Events()}, err
+		}
+		if len(streamErrors) > 0 && strings.TrimSpace(assistant.ErrorMessage) == "" {
+			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": streamErrors[0]}); emitErr != nil {
+				turnErr = emitErr
+				return TurnResult{Events: emitter.Events()}, emitErr
+			}
 		}
 
 		slog.Debug("run_turn: stream result received",
@@ -352,6 +411,98 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 		// Persist conversation progress after each tool round so retries don't replay executed calls.
 		s.Messages = boundMessages(conversation.Messages, a.Config.MaxContextMessages)
 	}
+}
+
+func (a *Agent) shouldRetryContextOverflow(message string, retriesUsed int) bool {
+	if a == nil {
+		return false
+	}
+	if !a.Config.ContextManagement.OverflowRetryEnabled() {
+		return false
+	}
+	if retriesUsed >= 1 {
+		return false
+	}
+	candidate := ai.AssistantMessage{
+		StopReason:   ai.StopReasonError,
+		ErrorMessage: strings.TrimSpace(message),
+	}
+	return ai.IsContextOverflow(candidate, a.model.ContextWindow)
+}
+
+func (a *Agent) isOverflowMessage(message string) bool {
+	candidate := ai.AssistantMessage{
+		StopReason:   ai.StopReasonError,
+		ErrorMessage: strings.TrimSpace(message),
+	}
+	return ai.IsContextOverflow(candidate, a.model.ContextWindow)
+}
+
+func (a *Agent) recoverFromContextOverflow(ctx context.Context, s *Session, in TurnInput, reason string, retries int) (ai.Context, error) {
+	if a == nil || s == nil {
+		return ai.Context{}, fmt.Errorf("cannot recover context overflow without agent/session")
+	}
+	if a.SessionMemoryFlusher != nil {
+		if err := a.SessionMemoryFlusher.FlushSession(ctx, s.ID); err != nil {
+			s.LastContextDiagnostics.Warnings = append(s.LastContextDiagnostics.Warnings, "memory flush before compaction failed: "+err.Error())
+		}
+	}
+
+	if a.Config.ContextManagement.PruningEnabled() {
+		pruned, actions := ctxbundle.PruneMessages(s.Messages, ctxbundle.PruneOptions{})
+		s.Messages = pruned
+		s.LastContextDiagnostics.PruneActions = append(s.LastContextDiagnostics.PruneActions, actions...)
+	}
+
+	if a.Config.ContextManagement.CompactionEnabled() {
+		totalTokens := ctxbundle.EstimateMessagesTokens(s.Messages)
+		target := totalTokens / 2
+		if target < 1 {
+			target = 1
+		}
+		kept, dropped, _ := ctxbundle.SelectMessagesForBudget(s.Messages, target)
+		if len(dropped) > 0 {
+			s.Messages = kept
+			compaction := ctxbundle.BuildCompactionSummary(dropped)
+			if strings.TrimSpace(compaction.Summary) != "" {
+				s.CompactionSummaries = prependCompactionSummary(s.CompactionSummaries, compaction.Summary, 3)
+				s.LastContextDiagnostics.CompactionActions = append(s.LastContextDiagnostics.CompactionActions, compaction.Actions...)
+			}
+		}
+	}
+
+	warnings := []string{"context overflow detected: " + strings.TrimSpace(reason)}
+	conversation, diagnostics, err := a.buildProviderContextDetailedWithOptions(ctx, s, in.UserMessage, providerContextBuildOptions{
+		Mode:                normalizePromptMode(in.PromptMode),
+		CompactionSummaries: s.CompactionSummaries,
+		OverflowRetries:     retries,
+		Warnings:            warnings,
+	})
+	if err != nil {
+		return ai.Context{}, fmt.Errorf("overflow recovery failed: %w", err)
+	}
+	s.LastContextDiagnostics = diagnostics
+	return conversation, nil
+}
+
+func (a *Agent) contextOverflowError(cause error, diagnostics ctxbundle.ContextDiagnostics) error {
+	msg := strings.TrimSpace("context overflow after retry")
+	if cause != nil && strings.TrimSpace(cause.Error()) != "" {
+		msg = msg + ": " + strings.TrimSpace(cause.Error())
+	}
+	msg = msg + fmt.Sprintf(
+		" | estimated=%d reserve=%d model_window=%d recent=%d/%d memory=%d/%d compact=%d/%d",
+		diagnostics.EstimatedInputTokens,
+		diagnostics.ReserveTokens,
+		diagnostics.ModelContextWindow,
+		diagnostics.RecentMessagesLane.UsedTokens,
+		diagnostics.RecentMessagesLane.CapTokens,
+		diagnostics.RetrievedMemoryLane.UsedTokens,
+		diagnostics.RetrievedMemoryLane.CapTokens,
+		diagnostics.CompactionSummaryLane.UsedTokens,
+		diagnostics.CompactionSummaryLane.CapTokens,
+	)
+	return fmt.Errorf("%s", msg)
 }
 
 func getMapKeys(m map[string]any) []string {

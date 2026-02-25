@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -11,11 +12,15 @@ import (
 )
 
 type recordingManager struct {
-	mu      sync.Mutex
-	records []memory.MemoryRecord
+	mu       sync.Mutex
+	records  []memory.MemoryRecord
+	storeErr error
 }
 
 func (m *recordingManager) Store(_ context.Context, record memory.MemoryRecord) error {
+	if m.storeErr != nil {
+		return m.storeErr
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.records = append(m.records, record)
@@ -76,5 +81,57 @@ func TestSessionPublisherFlushesOnTerminalControl(t *testing.T) {
 	}
 	if len(stored) == 0 {
 		t.Fatalf("expected flushed memory records")
+	}
+}
+
+func TestSessionPublisherFlushSession(t *testing.T) {
+	manager := &recordingManager{}
+	publisher := NewSessionPublisher(SessionPublisherOptions{Manager: manager, FlushEvery: 1000})
+	now := time.Now().UTC()
+
+	if err := publisher.PublishEvent(context.Background(), sessionrt.Event{
+		SessionID: "sess-flush",
+		From:      "user:me",
+		Type:      sessionrt.EventMessage,
+		Payload:   sessionrt.Message{Role: sessionrt.RoleUser, Content: "remember: use tests"},
+		Seq:       1,
+		Timestamp: now,
+	}); err != nil {
+		t.Fatalf("PublishEvent() error: %v", err)
+	}
+	if err := publisher.FlushSession(context.Background(), "sess-flush"); err != nil {
+		t.Fatalf("FlushSession() error: %v", err)
+	}
+	stored, _ := manager.Retrieve(context.Background(), memory.MemoryQuery{Limit: 10})
+	if len(stored) == 0 {
+		t.Fatalf("expected memory records after explicit flush")
+	}
+}
+
+func TestSessionPublisherOnStoreErrorCallback(t *testing.T) {
+	manager := &recordingManager{storeErr: errors.New("write failed")}
+	var called bool
+	publisher := NewSessionPublisher(SessionPublisherOptions{
+		Manager:    manager,
+		FlushEvery: 1,
+		OnStoreError: func(_ context.Context, _ sessionrt.Event, _ memory.MemoryRecord, err error) {
+			if err != nil {
+				called = true
+			}
+		},
+	})
+	now := time.Now().UTC()
+	if err := publisher.PublishEvent(context.Background(), sessionrt.Event{
+		SessionID: "sess-error",
+		From:      "user:me",
+		Type:      sessionrt.EventMessage,
+		Payload:   sessionrt.Message{Role: sessionrt.RoleUser, Content: "remember: callback"},
+		Seq:       1,
+		Timestamp: now,
+	}); err != nil {
+		t.Fatalf("PublishEvent() error: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected OnStoreError callback to run")
 	}
 }

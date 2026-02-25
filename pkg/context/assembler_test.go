@@ -2,6 +2,7 @@ package context
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 )
 
 func TestAssemblerInjectsMemoriesWithinBudget(t *testing.T) {
-	assembler := NewAssembler(AssemblerOptions{DefaultMaxTokens: 200, SafetyMargin: 20, MaxMemoryRecords: 3})
+	assembler := NewAssembler(AssemblerOptions{DefaultMaxTokens: 400, SafetyMargin: 20, MaxMemoryRecords: 3})
 	bundle, err := assembler.Build(context.Background(), ContextRequest{
 		BaseSystemPrompt: "base",
 		Messages: []ai.Message{
@@ -22,7 +23,7 @@ func TestAssemblerInjectsMemoriesWithinBudget(t *testing.T) {
 			{ID: "3", Type: memory.MemoryTool, Scope: memory.ScopeGlobal, Content: "shell.exec worked"},
 		},
 		CurrentTask: "deploy",
-		MaxTokens:   200,
+		MaxTokens:   400,
 	})
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
@@ -35,5 +36,47 @@ func TestAssemblerInjectsMemoriesWithinBudget(t *testing.T) {
 	}
 	if !strings.Contains(bundle.SystemPrompt, "### retrieved memory") {
 		t.Fatalf("expected retrieved memory section in system prompt")
+	}
+}
+
+func TestAssemblerDiagnosticsDeterministic(t *testing.T) {
+	assembler := NewAssembler(AssemblerOptions{DefaultMaxTokens: 512, SafetyMargin: 16, MaxMemoryRecords: 4})
+	input := ContextRequest{
+		BaseSystemPrompt: "system prompt",
+		Messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "first", Timestamp: 1},
+			{Role: ai.RoleAssistant, Content: []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "ack"}}, Timestamp: 2},
+		},
+		Retrieved: []memory.MemoryRecord{
+			{ID: "m1", Type: memory.MemorySemantic, Scope: memory.ScopeGlobal, Content: "semantic memory"},
+			{ID: "m2", Type: memory.MemoryProcedural, Scope: memory.ScopeGlobal, Content: "procedural memory"},
+		},
+		CompactionSummaries: []string{"Compacted 2 older messages.\nKey user context: deploy carefully"},
+		CurrentTask:         "run deploy",
+		MaxTokens:           512,
+		EnablePruning:       true,
+		EnableCompaction:    true,
+		BootstrapTokens:     20,
+		WorkingTokens:       10,
+		OverflowRetries:     1,
+	}
+
+	a, err := assembler.Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	b, err := assembler.Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Build() second error: %v", err)
+	}
+
+	if !reflect.DeepEqual(a.Diagnostics, b.Diagnostics) {
+		t.Fatalf("expected deterministic diagnostics output")
+	}
+	if a.Diagnostics.ModelContextWindow != 512 {
+		t.Fatalf("model context window = %d, want 512", a.Diagnostics.ModelContextWindow)
+	}
+	if a.Diagnostics.RecentMessagesLane.UsedTokens <= 0 {
+		t.Fatalf("expected recent messages lane usage to be populated")
 	}
 }

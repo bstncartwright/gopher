@@ -53,7 +53,7 @@ name = "gpu"
 
 	overrideNodeID := "flag-node"
 	overrideHeartbeat := 11 * time.Second
-	overrideCaps := []scheduler.Capability{{Kind: scheduler.CapabilitySystem, Name: "matrix"}}
+	overrideCaps := []scheduler.Capability{{Kind: scheduler.CapabilitySystem, Name: "telegram"}}
 	cfg, _, err := LoadNodeConfig(NodeLoadOptions{
 		WorkingDir: dir,
 		Env: map[string]string{
@@ -81,8 +81,8 @@ name = "gpu"
 	if cfg.ConnectTimeout != 7*time.Second || cfg.ReconnectWait != 4*time.Second {
 		t.Fatalf("nats durations = %s/%s, want 7s/4s", cfg.ConnectTimeout, cfg.ReconnectWait)
 	}
-	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "matrix" {
-		t.Fatalf("capabilities = %#v, want system:matrix override", cfg.Capabilities)
+	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "telegram" {
+		t.Fatalf("capabilities = %#v, want system:telegram override", cfg.Capabilities)
 	}
 }
 

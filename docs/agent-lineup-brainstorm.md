@@ -95,7 +95,7 @@ Use one of these in each agent `config.json`:
 
 ## Practical Rollout
 
-1. Start with this matrix unchanged.
+1. Start with this lineup unchanged.
 2. Run for 3-7 days and log handoff quality between agents.
 3. Tune only one agent model at a time.
 4. Keep Codex reserved for Nora and Theo unless quality regresses elsewhere.

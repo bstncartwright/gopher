@@ -14,12 +14,12 @@ import (
 )
 
 type agentRecord struct {
-	AgentID      string `json:"agent_id"`
-	MatrixUserID string `json:"matrix_user_id"`
-	Workspace    string `json:"workspace_path"`
-	Status       string `json:"status"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	AgentID   string `json:"agent_id"`
+	UserID    string `json:"user_id"`
+	Workspace string `json:"workspace_path"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 var validAgentIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -45,7 +45,7 @@ func runAgentSubcommand(args []string, stdout, stderr io.Writer) error {
 
 func printAgentUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage:")
-	fmt.Fprintln(out, "  gopher agent create --id <agent_id> --matrix-user @<id>:<server> [--workspace <path>]")
+	fmt.Fprintln(out, "  gopher agent create --id <agent_id> [--user-id <id>] [--workspace <path>]")
 	fmt.Fprintln(out, "  gopher agent list")
 	fmt.Fprintln(out, "  gopher agent delete --id <agent_id> [--hard]")
 	fmt.Fprintln(out, "")
@@ -60,7 +60,7 @@ func runAgentCreate(args []string, out io.Writer) error {
 	registryPathFlag := flags.String("registry-path", "", "registry path")
 	workspaceRootFlag := flags.String("workspace-root", "", "workspace root")
 	agentID := flags.String("id", "", "agent id")
-	matrixUser := flags.String("matrix-user", "", "matrix user id")
+	userIDFlag := flags.String("user-id", "", "optional user id")
 	workspaceFlag := flags.String("workspace", "", "workspace path")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -73,10 +73,7 @@ func runAgentCreate(args []string, out io.Writer) error {
 	if err := validateAgentID(id); err != nil {
 		return err
 	}
-	matrixUserID := strings.TrimSpace(*matrixUser)
-	if err := validateMatrixUserID(matrixUserID); err != nil {
-		return err
-	}
+	userID := strings.TrimSpace(*userIDFlag)
 
 	registryPath, workspaceRoot, err := resolveAgentPaths(strings.TrimSpace(*registryPathFlag), strings.TrimSpace(*workspaceRootFlag))
 	if err != nil {
@@ -110,7 +107,7 @@ func runAgentCreate(args []string, out io.Writer) error {
 		if workspace == "" {
 			workspace = filepath.Join(workspaceRoot, id)
 		}
-		registry[i].MatrixUserID = matrixUserID
+		registry[i].UserID = userID
 		registry[i].Workspace = workspace
 		registry[i].Status = "active"
 		registry[i].UpdatedAt = now
@@ -126,12 +123,12 @@ func runAgentCreate(args []string, out io.Writer) error {
 	}
 	if !found {
 		registry = append(registry, agentRecord{
-			AgentID:      id,
-			MatrixUserID: matrixUserID,
-			Workspace:    workspace,
-			Status:       "active",
-			CreatedAt:    now,
-			UpdatedAt:    now,
+			AgentID:   id,
+			UserID:    userID,
+			Workspace: workspace,
+			Status:    "active",
+			CreatedAt: now,
+			UpdatedAt: now,
 		})
 	}
 
@@ -178,7 +175,7 @@ func runAgentList(args []string, out io.Writer) error {
 
 	fmt.Fprintln(out, "agents:")
 	for _, agent := range registry {
-		fmt.Fprintf(out, "  - %s | %s | %s | %s\n", agent.AgentID, agent.Status, agent.MatrixUserID, agent.Workspace)
+		fmt.Fprintf(out, "  - %s | %s | %s | %s\n", agent.AgentID, agent.Status, agent.UserID, agent.Workspace)
 	}
 	return nil
 }
@@ -252,16 +249,6 @@ func validateAgentID(id string) error {
 	}
 	if !validAgentIDPattern.MatchString(id) {
 		return fmt.Errorf("invalid agent id %q (allowed: letters, numbers, -, _)", id)
-	}
-	return nil
-}
-
-func validateMatrixUserID(matrixUser string) error {
-	if matrixUser == "" {
-		return fmt.Errorf("agent --matrix-user is required")
-	}
-	if !strings.HasPrefix(matrixUser, "@") || !strings.Contains(matrixUser, ":") {
-		return fmt.Errorf("invalid matrix user id %q", matrixUser)
 	}
 	return nil
 }

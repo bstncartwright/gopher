@@ -119,9 +119,9 @@ func TestRenderTraceEventCardsSupportsCoreEventTypes(t *testing.T) {
 	}
 }
 
-func TestMatrixTracePublisherSuppressesDeltaEvents(t *testing.T) {
+func TestTraceEventPublisherSuppressesDeltaEvents(t *testing.T) {
 	sender := &fakeTraceSender{}
-	publisher := NewMatrixTracePublisher(sender)
+	publisher := NewTraceEventPublisher(sender)
 	event := sessionrt.Event{
 		Seq:  99,
 		From: "agent:milo",
@@ -141,9 +141,9 @@ func TestMatrixTracePublisherSuppressesDeltaEvents(t *testing.T) {
 	}
 }
 
-func TestMatrixTracePublisherIncludesFirstProgressDeltaWhenEnabled(t *testing.T) {
+func TestTraceEventPublisherIncludesFirstProgressDeltaWhenEnabled(t *testing.T) {
 	sender := &fakeTraceSender{}
-	publisher := NewMatrixTracePublisherWithOptions(sender, MatrixTracePublisherOptions{
+	publisher := NewTraceEventPublisherWithOptions(sender, TraceEventPublisherOptions{
 		IncludeProgressDeltas: true,
 	})
 	delta := sessionrt.Event{
@@ -257,9 +257,9 @@ func TestRenderTraceEventCardsSplitsDeterministically(t *testing.T) {
 	}
 }
 
-func TestMatrixTracePublisherPublishesAndTracksMetrics(t *testing.T) {
+func TestTraceEventPublisherPublishesAndTracksMetrics(t *testing.T) {
 	sender := &fakeTraceSender{}
-	publisher := NewMatrixTracePublisherWithMaxChars(sender, 400)
+	publisher := NewTraceEventPublisherWithMaxChars(sender, 400)
 	event := sessionrt.Event{
 		Seq:  9,
 		From: "agent:milo",
@@ -280,9 +280,9 @@ func TestMatrixTracePublisherPublishesAndTracksMetrics(t *testing.T) {
 	}
 }
 
-func TestMatrixTracePublisherTracksFailure(t *testing.T) {
+func TestTraceEventPublisherTracksFailure(t *testing.T) {
 	sender := &fakeTraceSender{failOnCall: 1}
-	publisher := NewMatrixTracePublisher(sender)
+	publisher := NewTraceEventPublisher(sender)
 	event := sessionrt.Event{
 		Seq:  10,
 		From: "agent:milo",
@@ -301,11 +301,11 @@ func TestMatrixTracePublisherTracksFailure(t *testing.T) {
 	}
 }
 
-func TestMatrixTracePublisherThreadsEventsUnderUserTrigger(t *testing.T) {
+func TestTraceEventPublisherThreadsEventsUnderUserTrigger(t *testing.T) {
 	sender := &fakeTraceSenderWithResult{
 		eventIDs: []string{"$root", "$tool"},
 	}
-	publisher := NewMatrixTracePublisher(sender)
+	publisher := NewTraceEventPublisher(sender)
 	trigger := sessionrt.Event{
 		SessionID: "sess-1",
 		Seq:       11,

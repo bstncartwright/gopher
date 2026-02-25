@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -261,7 +260,7 @@ func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.Inboun
 	})
 	p.startProcessing(conversationID)
 
-	from := matrixActorID(inbound.SenderID)
+	from := externalActorID(inbound.SenderID)
 	if inbound.SenderManaged {
 		if managedActor, ok := p.actorForManagedSender(inbound.SenderID); ok {
 			from = managedActor
@@ -326,7 +325,7 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 			TriggerEventID:   inbound.EventID,
 		})
 		p.startProcessing(conversationID)
-		from := matrixActorID(inbound.SenderID)
+		from := externalActorID(inbound.SenderID)
 		if inbound.SenderManaged {
 			if managedActor, ok := p.actorForManagedSender(inbound.SenderID); ok {
 				from = managedActor
@@ -570,7 +569,7 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 	created, err := p.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: desiredAgentID, Type: sessionrt.ActorAgent},
-			{ID: matrixActorID(senderID), Type: sessionrt.ActorHuman},
+			{ID: externalActorID(senderID), Type: sessionrt.ActorHuman},
 		},
 	})
 	if err != nil {
@@ -1730,16 +1729,15 @@ func traceConversationReadyMessage(traceConversationID string) string {
 	if traceConversationID == "" {
 		return ""
 	}
-	link := "https://matrix.to/#/" + url.PathEscape(traceConversationID)
-	return "Trace channel (read-only): " + link
+	return "Trace channel (read-only): " + traceConversationID
 }
 
-func matrixActorID(sender string) sessionrt.ActorID {
+func externalActorID(sender string) sessionrt.ActorID {
 	sender = strings.TrimSpace(sender)
 	if sender == "" {
-		return "matrix:unknown"
+		return "external:unknown"
 	}
-	return sessionrt.ActorID("matrix:" + sender)
+	return sessionrt.ActorID("external:" + sender)
 }
 
 func normalizeRecipientAgents(in map[string]sessionrt.ActorID) map[string]sessionrt.ActorID {

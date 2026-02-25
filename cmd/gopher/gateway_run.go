@@ -142,18 +142,12 @@ func printGatewayUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --heartbeat-interval <dur>     override heartbeat interval")
 	fmt.Fprintln(out, "  --prune-interval <dur>         override prune interval")
 	fmt.Fprintln(out, "  --capability <kind:name>       repeatable capability override")
-	fmt.Fprintln(out, "  --matrix-enabled <bool>        override matrix transport enablement")
-	fmt.Fprintln(out, "  --matrix-homeserver-url <url>  override matrix homeserver url")
-	fmt.Fprintln(out, "  --matrix-appservice-id <id>    override matrix appservice id")
-	fmt.Fprintln(out, "  --matrix-as-token <token>      override matrix appservice token")
-	fmt.Fprintln(out, "  --matrix-hs-token <token>      override matrix homeserver token")
-	fmt.Fprintln(out, "  --matrix-listen-addr <addr>    override matrix appservice listen address")
-	fmt.Fprintln(out, "  --matrix-bot-user-id <mxid>    override matrix bot user id")
-	fmt.Fprintln(out, "  --matrix-progress-updates-enabled <bool> override matrix dm progress updates")
-	fmt.Fprintln(out, "  --matrix-rich-text-enabled <bool> override matrix markdown/html formatting")
-	fmt.Fprintln(out, "  --matrix-presence-enabled <bool> override matrix presence updates")
-	fmt.Fprintln(out, "  --matrix-presence-interval <dur> override matrix presence keepalive interval")
-	fmt.Fprintln(out, "  --matrix-presence-status-msg <text> override matrix presence status message")
+	fmt.Fprintln(out, "  --telegram-enabled <bool>      override telegram transport enablement")
+	fmt.Fprintln(out, "  --telegram-bot-token <token>   override telegram bot token")
+	fmt.Fprintln(out, "  --telegram-poll-interval <dur> override telegram poll loop interval")
+	fmt.Fprintln(out, "  --telegram-poll-timeout <dur>  override telegram getUpdates timeout")
+	fmt.Fprintln(out, "  --telegram-allowed-user-id <id> override authorized telegram user id")
+	fmt.Fprintln(out, "  --telegram-allowed-chat-id <id> override authorized telegram chat id")
 	fmt.Fprintln(out, "  --panel-listen-addr <addr>     override observability panel listen address")
 	fmt.Fprintln(out, "  --panel-capture-thinking <bool> override panel thinking capture")
 	fmt.Fprintln(out, "  --cron-enabled <bool>          override cron subsystem enablement")
@@ -174,10 +168,7 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	flags.SetOutput(io.Discard)
 
 	var rawCaps capabilityFlag
-	var matrixEnabled boolOverrideFlag
-	var matrixProgressUpdates boolOverrideFlag
-	var matrixRichTextEnabled boolOverrideFlag
-	var matrixPresenceEnabled boolOverrideFlag
+	var telegramEnabled boolOverrideFlag
 	var panelCaptureThinking boolOverrideFlag
 	var cronEnabled boolOverrideFlag
 	configPath := flags.String("config", "", "config path")
@@ -187,18 +178,12 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	heartbeat := flags.Duration("heartbeat-interval", 0, "heartbeat interval override")
 	prune := flags.Duration("prune-interval", 0, "prune interval override")
 	flags.Var(&rawCaps, "capability", "repeatable capability kind:name")
-	flags.Var(&matrixEnabled, "matrix-enabled", "matrix enabled override")
-	matrixHomeserver := flags.String("matrix-homeserver-url", "", "matrix homeserver url override")
-	matrixAppservice := flags.String("matrix-appservice-id", "", "matrix appservice id override")
-	matrixASToken := flags.String("matrix-as-token", "", "matrix as token override")
-	matrixHSToken := flags.String("matrix-hs-token", "", "matrix hs token override")
-	matrixListenAddr := flags.String("matrix-listen-addr", "", "matrix listen addr override")
-	matrixBotUserID := flags.String("matrix-bot-user-id", "", "matrix bot user id override")
-	flags.Var(&matrixProgressUpdates, "matrix-progress-updates-enabled", "matrix dm progress updates override")
-	flags.Var(&matrixRichTextEnabled, "matrix-rich-text-enabled", "matrix rich text enabled override")
-	flags.Var(&matrixPresenceEnabled, "matrix-presence-enabled", "matrix presence enabled override")
-	matrixPresenceInterval := flags.Duration("matrix-presence-interval", 0, "matrix presence interval override")
-	matrixPresenceStatusMsg := flags.String("matrix-presence-status-msg", "", "matrix presence status message override")
+	flags.Var(&telegramEnabled, "telegram-enabled", "telegram enabled override")
+	telegramBotToken := flags.String("telegram-bot-token", "", "telegram bot token override")
+	telegramPollInterval := flags.Duration("telegram-poll-interval", 0, "telegram poll interval override")
+	telegramPollTimeout := flags.Duration("telegram-poll-timeout", 0, "telegram poll timeout override")
+	telegramAllowedUserID := flags.String("telegram-allowed-user-id", "", "telegram allowed user id override")
+	telegramAllowedChatID := flags.String("telegram-allowed-chat-id", "", "telegram allowed chat id override")
 	panelListenAddr := flags.String("panel-listen-addr", "", "panel listen addr override")
 	flags.Var(&panelCaptureThinking, "panel-capture-thinking", "panel capture thinking override")
 	flags.Var(&cronEnabled, "cron-enabled", "cron enabled override")
@@ -247,53 +232,29 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 		}
 		inputs.Overrides.Capabilities = &caps
 	}
-	if matrixEnabled.set {
-		value := matrixEnabled.value
-		inputs.Overrides.MatrixEnabled = &value
+	if telegramEnabled.set {
+		value := telegramEnabled.value
+		inputs.Overrides.TelegramEnabled = &value
 	}
-	if strings.TrimSpace(*matrixHomeserver) != "" {
-		value := strings.TrimSpace(*matrixHomeserver)
-		inputs.Overrides.MatrixHomeserver = &value
+	if strings.TrimSpace(*telegramBotToken) != "" {
+		value := strings.TrimSpace(*telegramBotToken)
+		inputs.Overrides.TelegramBotToken = &value
 	}
-	if strings.TrimSpace(*matrixAppservice) != "" {
-		value := strings.TrimSpace(*matrixAppservice)
-		inputs.Overrides.MatrixAppservice = &value
+	if *telegramPollInterval != 0 {
+		value := *telegramPollInterval
+		inputs.Overrides.TelegramPollInterval = &value
 	}
-	if strings.TrimSpace(*matrixASToken) != "" {
-		value := strings.TrimSpace(*matrixASToken)
-		inputs.Overrides.MatrixASToken = &value
+	if *telegramPollTimeout != 0 {
+		value := *telegramPollTimeout
+		inputs.Overrides.TelegramPollTimeout = &value
 	}
-	if strings.TrimSpace(*matrixHSToken) != "" {
-		value := strings.TrimSpace(*matrixHSToken)
-		inputs.Overrides.MatrixHSToken = &value
+	if strings.TrimSpace(*telegramAllowedUserID) != "" {
+		value := strings.TrimSpace(*telegramAllowedUserID)
+		inputs.Overrides.TelegramAllowedUserID = &value
 	}
-	if strings.TrimSpace(*matrixListenAddr) != "" {
-		value := strings.TrimSpace(*matrixListenAddr)
-		inputs.Overrides.MatrixListenAddr = &value
-	}
-	if strings.TrimSpace(*matrixBotUserID) != "" {
-		value := strings.TrimSpace(*matrixBotUserID)
-		inputs.Overrides.MatrixBotUserID = &value
-	}
-	if matrixProgressUpdates.set {
-		value := matrixProgressUpdates.value
-		inputs.Overrides.MatrixProgressUpdates = &value
-	}
-	if matrixRichTextEnabled.set {
-		value := matrixRichTextEnabled.value
-		inputs.Overrides.MatrixRichTextEnabled = &value
-	}
-	if matrixPresenceEnabled.set {
-		value := matrixPresenceEnabled.value
-		inputs.Overrides.MatrixPresenceEnabled = &value
-	}
-	if *matrixPresenceInterval != 0 {
-		value := *matrixPresenceInterval
-		inputs.Overrides.MatrixPresenceInterval = &value
-	}
-	if strings.TrimSpace(*matrixPresenceStatusMsg) != "" {
-		value := strings.TrimSpace(*matrixPresenceStatusMsg)
-		inputs.Overrides.MatrixPresenceStatusMsg = &value
+	if strings.TrimSpace(*telegramAllowedChatID) != "" {
+		value := strings.TrimSpace(*telegramAllowedChatID)
+		inputs.Overrides.TelegramAllowedChatID = &value
 	}
 	if strings.TrimSpace(*panelListenAddr) != "" {
 		value := strings.TrimSpace(*panelListenAddr)
@@ -372,26 +333,29 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	}
 	defer process.Stop()
 
-	var matrixBridge *matrixDMBridge
-	if cfg.Matrix.Enabled {
-		slog.Info("gateway_run: matrix enabled, starting dm bridge")
-		matrixBridge, err = startMatrixDMBridgeWithRuntime(ctx, cfg, workspace, agentRuntime, process.executor, logger)
+	dataDir := resolveGatewayDataDir(workspace)
+	var telegramBridge *telegramDMBridge
+	if cfg.Telegram.Enabled {
+		slog.Info("gateway_run: telegram enabled, starting dm bridge")
+		telegramBridge, err = startTelegramDMBridgeWithRuntime(ctx, cfg, workspace, agentRuntime, process.executor, logger)
 		if err != nil {
-			slog.Error("gateway_run: failed to start matrix dm bridge", "error", err)
+			slog.Error("gateway_run: failed to start telegram dm bridge", "error", err)
 			return err
 		}
-		defer matrixBridge.Stop()
+		defer telegramBridge.Stop()
+		newControlActionApplier(telegramBridge.manager, dataDir, logger).Start(ctx)
+		newControlSessionWatcher(telegramBridge.store, dataDir, logger).Start(ctx)
 	} else {
-		slog.Info("gateway_run: matrix disabled")
+		slog.Info("gateway_run: telegram disabled")
 	}
 
 	var panelStore panel.SessionStore
 	var panelSessionMetadata panel.SessionMetadataResolver
-	if matrixBridge != nil && matrixBridge.store != nil {
-		panelStore = matrixBridge.store
+	if telegramBridge != nil && telegramBridge.store != nil {
+		panelStore = telegramBridge.store
 	}
-	if matrixBridge != nil && matrixBridge.bindings != nil {
-		bindings := matrixBridge.bindings
+	if telegramBridge != nil && telegramBridge.bindings != nil {
+		bindings := telegramBridge.bindings
 		panelSessionMetadata = func(sessionID sessionrt.SessionID) (panel.SessionMetadata, bool) {
 			binding, ok := bindings.GetBySession(sessionID)
 			if !ok {
@@ -403,7 +367,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 			}, true
 		}
 	}
-	if err := startGatewayPanel(ctx, cfg, process, panelStore, panelSessionMetadata, logger); err != nil {
+	if err := startGatewayPanel(ctx, cfg, process, panelStore, panelSessionMetadata, dataDir, logger); err != nil {
 		slog.Error("gateway_run: failed to start panel server", "error", err)
 		return err
 	}
@@ -553,6 +517,7 @@ func startGatewayPanel(
 	process *gatewayProcess,
 	store panel.SessionStore,
 	sessionMetadata panel.SessionMetadataResolver,
+	controlDir string,
 	logger *log.Logger,
 ) error {
 	if process == nil || process.registry == nil {
@@ -563,6 +528,7 @@ func startGatewayPanel(
 		ListenAddr:      cfg.Panel.ListenAddr,
 		Store:           store,
 		SessionMetadata: sessionMetadata,
+		ControlDir:      filepath.Join(controlDir, "control"),
 		NodeSnapshot: func() []scheduler.NodeInfo {
 			return process.registry.Snapshot()
 		},

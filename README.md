@@ -29,7 +29,7 @@ you can start with one server and grow into a distributed system without redesig
 
 ## mvp goal
 
-run a gopher server on exe.dev and chat with it via matrix.
+run a gopher server on exe.dev and chat with it via telegram.
 
 ## current status (code as source of truth)
 
@@ -46,13 +46,13 @@ run a gopher server on exe.dev and chat with it via matrix.
 **in progress:**
 
 - gateway executor is a stub – returns "gateway executor is not configured yet" on execution requests. wiring it to a real agent is next.
-- matrix multi-agent routing – current bridge is single-agent DM first. task-room fanout and per-agent identity registry are phase 2.
+- telegram executive channel + panel control-pane hardening.
 
 ## core concepts
 
 ### session
 
-a long-lived conversational workspace. one matrix room → one session (MVP mapping, when matrix lands). contains events, participants, and state. durable across restarts. primary unit of execution.
+a long-lived conversational workspace. one conversation thread → one session. contains events, participants, and state. durable across restarts. primary unit of execution.
 
 ### event
 
@@ -75,7 +75,7 @@ persistent knowledge derived from sessions. memory is scoped, not owned by a sin
 
 ### gateway
 
-the central process that owns session state, persists events, schedules execution, can run agents locally, and connects external interfaces (matrix, APIs, etc.). the gateway is authoritative but restartable.
+the central process that owns session state, persists events, schedules execution, can run agents locally, and connects external interfaces (telegram, panel, APIs, etc.). the gateway is authoritative but restartable.
 
 ### node (optional)
 
@@ -84,9 +84,7 @@ a worker process that can execute agents or tools remotely. nodes are stateless,
 ## architecture
 
 ```
-Matrix Client
-     ↓
-Matrix Homeserver (Conduit)  [planned]
+Telegram DM
      ↓
 Gopher Gateway
      ↓
@@ -94,7 +92,7 @@ Session Runtime
      ↓
 LLM Provider
      ↓
-Response → Matrix Room
+Response → Telegram DM
 ```
 
 with distributed execution enabled:
@@ -236,7 +234,7 @@ gopher auth set --env-file /etc/gopher/gopher.env --key OPENAI_CODEX_TOKEN --val
 
 ```bash
 # create agent registry entry + scaffold workspace files
-gopher agent create --id planner --matrix-user @planner:example.com
+gopher agent create --id planner --user-id tg:planner
 
 # list agents and statuses
 gopher agent list
@@ -311,123 +309,36 @@ troubleshooting:
   rewrite command to the standardized one-shot format.
 - non-zero `opencode` exits now include `opencode_troubleshooting` hints in tool results.
 
-## matrix single-agent dm setup (conduit)
-
-phase-1 objective: one matrix bot user (`bot_user_id`) that accepts dm messages and routes them through one runtime agent workspace.
+## telegram single-agent dm setup
 
 1. prepare runtime workspace(s):
-   - preferred layout (isolated per agent):
-     - `<working_dir>/agents/USER.md` (shared user profile for all agents)
-     - `<working_dir>/agents/<agent_id>/AGENTS.md`
-     - `<working_dir>/agents/<agent_id>/SOUL.md`
-     - `<working_dir>/agents/<agent_id>/TOOLS.md`
-     - `<working_dir>/agents/<agent_id>/IDENTITY.md`
-     - `<working_dir>/agents/<agent_id>/USER.md` (optional local overrides)
-     - `<working_dir>/agents/<agent_id>/HEARTBEAT.md` (optional)
-     - `<working_dir>/agents/<agent_id>/BOOTSTRAP.md` (brand-new workspaces)
-     - `<working_dir>/agents/<agent_id>/MEMORY.md` (optional)
-     - `<working_dir>/agents/<agent_id>/config.json`
-     - `<working_dir>/agents/<agent_id>/policies.json`
-   - compatibility:
-     - runtime reads canonical uppercase files first
-     - if missing, runtime falls back to lowercase legacy names (`soul.md`, `tools.md`, etc.)
-   - optional skills layout (agent-skills compatible):
-     - `<working_dir>/agents/<agent_id>/.agents/skills/<skill_name>/SKILL.md`
-     - frontmatter must include:
-       - `name`
-       - `description`
-     - example:
+   - `<working_dir>/agents/USER.md` (shared user profile)
+   - `<working_dir>/agents/<agent_id>/AGENTS.md`
+   - `<working_dir>/agents/<agent_id>/SOUL.md`
+   - `<working_dir>/agents/<agent_id>/TOOLS.md`
+   - `<working_dir>/agents/<agent_id>/IDENTITY.md`
+   - `<working_dir>/agents/<agent_id>/config.json`
+   - `<working_dir>/agents/<agent_id>/policies.json`
+2. configure gateway telegram block in `/etc/gopher/gopher.toml`:
 
-```markdown
----
-name: fixing-accessibility
-description: Fix accessibility issues in UI code.
----
-## workflow
-
-Run the accessibility audit and apply fixes.
+```toml
+[gateway.telegram]
+enabled = true
+bot_token = "<telegram_bot_token>"
+poll_interval = "2s"
+poll_timeout = "30s"
+allowed_user_id = "<telegram_user_id>"
+allowed_chat_id = "<telegram_chat_id>"
 ```
 
-   - discovery order:
-     - `config.json` `skills_paths` (if set)
-     - `AGENT_SKILLS_PATH` (path-list separated)
-     - defaults: `<workspace>/.agents/skills` and `~/.agents/skills`
-   - runtime behavior:
-     - startup loads skill metadata (`name`, `description`, `location`)
-     - system prompt uses an OpenClaw-style sectioned layout (`full|minimal|none`; default `full`)
-     - `<available_skills>` metadata is injected; full skill instructions are loaded on demand via `read`
-     - explicit skill invocation is supported via `/skill:<name> [args]`
-     - `web_search` tool is enabled by default at runtime (MCP-backed via `https://api.z.ai/api/mcp/web_search_prime/mcp`)
-       - aliases: `web_search`, `search_mcp`, `search`, and `group:web`
-       - set `disable_default_search_mcp = true` in `config.json` to opt out for that agent
-     - bootstrap files are injected every turn with caps:
-       - `bootstrap_max_chars` (default `20000`) per file
-       - `bootstrap_total_max_chars` (default `150000`) total across injected files
-     - memory model is hybrid:
-       - `MEMORY.md` / `memory.md` can be injected as bootstrap context
-       - JSON working memory remains injected as a gopher extension
-     - long-term memory retrieval is injected only for `full` prompt mode
-   - optional distributed routing per agent in `config.json`:
-
-```json
-{
-  "execution": {
-    "required_capabilities": ["tool:gpu"]
-  }
-}
-```
-
-   - if `execution.required_capabilities` is empty/missing, the gateway keeps execution local by default.
-     - heartbeat polling is opt-in per agent via `config.json`:
-       - `heartbeat.every` (duration; required to enable, examples: `"15m"`, `"1h"`, `"30"` where bare numbers mean minutes)
-       - `heartbeat.prompt` (optional custom poll prompt)
-       - `heartbeat.ack_max_chars` (optional suppression threshold for `HEARTBEAT_OK` replies; default `300`)
-       - agents can self-configure these settings at runtime with the `heartbeat` tool (`get`, `set`, `disable`) when collaboration tools are enabled
-       - when `user_timezone` is set to a valid IANA timezone, heartbeat dispatch is suppressed during local sleeping hours (`22:00`-`08:00`)
-       - heartbeat dispatch targets the scheduled agent explicitly via `target_actor_id` (no `@mention` required)
-       - in matrix room=session flows with multiple agents, heartbeat is skipped when the target agent's managed user is not currently joined in that room
-   - cross-agent file access is policy-gated in `policies.json`:
-     - set `allow_cross_agent_fs = true` and include additional paths in `fs_roots` when an agent should read/write another agent workspace
-2. configure gateway matrix block in `/etc/gopher/gopher.toml`:
-   - `enabled = true`
-   - `homeserver_url = "http://127.0.0.1:6167"` (or your matrix base url)
-   - `appservice_id`, `as_token`, `hs_token`, `listen_addr`, `bot_user_id`
-   - `bot_user_id` is used as a domain template. runtime maps each `agent_id` to `@<agent_id>:<domain>`.
-     example: if `bot_user_id = "@gopher:gophers.bostonc.dev"` and `agent_id = "gateway-agent"`,
-     the runtime matrix user is `@gateway-agent:gophers.bostonc.dev`.
-   - `presence_enabled = true` (default)
-   - `presence_interval = "60s"` (default keepalive)
-   - `presence_status_msg = ""` (optional custom status)
-   - `rich_text_enabled = true` (default; renders markdown replies as sanitized html with plain-text fallback)
-3. configure model provider key in `/etc/gopher/gopher.env` (required for default `web_search` MCP and zai models: `ZAI_API_KEY=...`) and restart:
+3. configure model provider key(s) in `/etc/gopher/gopher.env` and restart:
    - `sudo systemctl restart gopher-gateway.service`
-4. register appservice in conduit admin room using `/etc/gopher/gopher-appservice-registration.yaml`
-   - command message: `@conduit:<server_name>: register-appservice`
-   - then paste yaml payload
-   - verify with: `@conduit:<server_name>: list-appservices`
-5. run smoke test:
-
-```bash
-python3 scripts/matrix_dm_smoke.py \
-  --homeserver http://127.0.0.1:6167 \
-  --registration-token <matrix_registration_token> \
-  --bot-user-id @gopher:<server_name>
-```
-
-expected result:
-- `bot_membership=join`
-- `bot_reply_count>=1`
 
 dm control commands:
-- `!context clear` / `!context reset`: rotate to a fresh session for the dm and keep the room.
-- `!context summarize` / `!context summary`: request a short state summary in-session.
-- `!trace` / `!trace link`: ensure trace is on and reply in-thread with the trace room link.
-- `!trace on|off|status`: toggle/query trace publishing for the dm (replies in-thread).
-
-to disable rich matrix formatting for compatibility debugging:
-- toml: set `[gateway.matrix] rich_text_enabled = false`
-- env: `GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED=false`
-- cli: `--matrix-rich-text-enabled=false`
+- `!context clear` / `!context reset`: rotate to a fresh session for the dm.
+- `!context summarize` / `!context summary`: request a short in-session summary.
+- `!trace` / `!trace link`: ensure trace is on and return the trace conversation id.
+- `!trace on|off|status`: toggle/query trace publishing for the dm.
 
 ## releases
 
@@ -506,7 +417,7 @@ gopher prioritizes durability, observability, simplicity, and personal control o
 - **phase 1 — session runtime** — durable, event-driven sessions ✅
 - **phase 2 — distributed execution** — optional nodes via nats ✅
 - **phase 3 — memory system** — persistent knowledge across sessions ✅
-- **current — wire gateway executor + matrix interface** — chat with gopher via matrix
+- **current — wire gateway executor + telegram interface** — chat with gopher via telegram
 - **future** — improved agent loops, expanded tools, agent identities, automation, multi-gateway HA
 
 ## design principles

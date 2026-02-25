@@ -23,47 +23,17 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if cfg.GatewayNodeID != DefaultGatewayNodeID {
 		t.Fatalf("gateway id = %q, want %q", cfg.GatewayNodeID, DefaultGatewayNodeID)
 	}
-	if cfg.HeartbeatInterval != DefaultHeartbeatInterval {
-		t.Fatalf("heartbeat interval = %s, want %s", cfg.HeartbeatInterval, DefaultHeartbeatInterval)
+	if cfg.Telegram.Enabled {
+		t.Fatalf("telegram enabled = true, want false")
 	}
-	if len(cfg.Capabilities) != 1 {
-		t.Fatalf("capabilities len = %d, want 1", len(cfg.Capabilities))
+	if cfg.Telegram.PollInterval <= 0 {
+		t.Fatalf("telegram poll interval must be > 0")
+	}
+	if cfg.Telegram.PollTimeout <= 0 {
+		t.Fatalf("telegram poll timeout must be > 0")
 	}
 	if len(sources) != 1 || sources[0] != "defaults" {
 		t.Fatalf("sources = %#v, want defaults only", sources)
-	}
-	if cfg.Cron.Enabled {
-		t.Fatalf("cron enabled = true, want false")
-	}
-	if cfg.Cron.PollInterval != DefaultCronPollInterval {
-		t.Fatalf("cron poll interval = %s, want %s", cfg.Cron.PollInterval, DefaultCronPollInterval)
-	}
-	if cfg.Cron.DefaultTimezone != "UTC" {
-		t.Fatalf("cron timezone = %q, want UTC", cfg.Cron.DefaultTimezone)
-	}
-	if !cfg.Matrix.RichTextEnabled {
-		t.Fatalf("matrix rich text enabled = false, want true")
-	}
-	if !cfg.Matrix.PresenceEnabled {
-		t.Fatalf("matrix presence enabled = false, want true")
-	}
-	if cfg.Matrix.PresenceInterval != 60*time.Second {
-		t.Fatalf("matrix presence interval = %s, want 60s", cfg.Matrix.PresenceInterval)
-	}
-	if cfg.Matrix.PresenceStatusMsg != "" {
-		t.Fatalf("matrix presence status = %q, want empty", cfg.Matrix.PresenceStatusMsg)
-	}
-	if !cfg.Matrix.TraceEnabled {
-		t.Fatalf("matrix trace enabled = false, want true")
-	}
-	if !cfg.Matrix.ProgressUpdates {
-		t.Fatalf("matrix progress updates enabled = false, want true")
-	}
-	if cfg.Panel.ListenAddr != "127.0.0.1:29329" {
-		t.Fatalf("panel listen addr = %q, want 127.0.0.1:29329", cfg.Panel.ListenAddr)
-	}
-	if !cfg.Panel.CaptureThinking {
-		t.Fatalf("panel capture thinking = false, want true")
 	}
 }
 
@@ -87,14 +57,9 @@ prune_interval = "5s"
 kind = "tool"
 name = "gpu"
 `)
-	writeFile(t, filepath.Join(dir, "gopher.local.toml"), `
-[gateway]
-node_id = "local-gw"
-`)
-
 	overrideNodeID := "flag-gw"
 	overrideHeartbeat := 11 * time.Second
-	overrideCaps := []scheduler.Capability{{Kind: scheduler.CapabilitySystem, Name: "matrix"}}
+	overrideCaps := []scheduler.Capability{{Kind: scheduler.CapabilitySystem, Name: "telegram"}}
 	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
 		Env: map[string]string{
@@ -109,7 +74,6 @@ node_id = "local-gw"
 	if err != nil {
 		t.Fatalf("LoadGatewayConfig() error: %v", err)
 	}
-
 	if cfg.NodeID != "flag-gw" {
 		t.Fatalf("node id = %q, want flag-gw", cfg.NodeID)
 	}
@@ -122,221 +86,110 @@ node_id = "local-gw"
 	if cfg.PruneInterval != 9*time.Second {
 		t.Fatalf("prune interval = %s, want 9s", cfg.PruneInterval)
 	}
-	if cfg.ConnectTimeout != 7*time.Second || cfg.ReconnectWait != 4*time.Second {
-		t.Fatalf("nats durations = %s/%s, want 7s/4s", cfg.ConnectTimeout, cfg.ReconnectWait)
-	}
-	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "matrix" {
-		t.Fatalf("capabilities = %#v, want system:matrix override", cfg.Capabilities)
+	if len(cfg.Capabilities) != 1 || cfg.Capabilities[0].Name != "telegram" {
+		t.Fatalf("capabilities override mismatch: %#v", cfg.Capabilities)
 	}
 }
 
-func TestLoadGatewayConfigRejectsUnknownField(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway]
-node_id = "gw"
-bad_field = "nope"
-`)
-
-	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env:        map[string]string{},
-	})
-	if err == nil {
-		t.Fatalf("expected unknown field error")
-	}
-}
-
-func TestLoadGatewayConfigRejectsInvalidDuration(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway.runtime]
-heartbeat_interval = "bad"
-`)
-
-	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env:        map[string]string{},
-	})
-	if err == nil {
-		t.Fatalf("expected invalid duration error")
-	}
-}
-
-func TestLoadGatewayConfigRejectsInvalidCapabilityKind(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[[gateway.capabilities]]
-kind = "wrong"
-name = "agent"
-`)
-
-	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env:        map[string]string{},
-	})
-	if err == nil {
-		t.Fatalf("expected invalid capability kind error")
-	}
-}
-
-func TestLoadGatewayConfigMatrixValidationAndOverrides(t *testing.T) {
+func TestLoadGatewayConfigTelegramValidationAndOverrides(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "gopher.toml"), `
 [gateway]
 node_id = "gw"
 
-[gateway.matrix]
+[gateway.telegram]
 enabled = true
-homeserver_url = "http://localhost:8008"
-appservice_id = "gopher"
-as_token = "as-file"
-hs_token = "hs-file"
-listen_addr = "127.0.0.1:29328"
-bot_user_id = "@gopher:local"
-trace_enabled = false
-rich_text_enabled = false
-presence_enabled = false
-presence_interval = "45s"
-presence_status_msg = "file-status"
+bot_token = "file-token"
+poll_interval = "4s"
+poll_timeout = "40s"
+allowed_user_id = "1001"
+allowed_chat_id = "2002"
 `)
 
 	overrideEnabled := true
-	overrideHS := "http://example.test:8008"
-	overrideAS := "override-as"
-	overrideHSSecret := "override-hs"
-	overrideTraceEnabled := true
-	overrideProgressUpdates := true
-	overrideRichText := true
-	overridePresenceEnabled := true
-	overridePresenceInterval := 30 * time.Second
-	overridePresenceStatus := "override-status"
+	overrideToken := "override-token"
+	overridePollInterval := 8 * time.Second
+	overridePollTimeout := 50 * time.Second
+	overrideUserID := "user-1"
+	overrideChatID := "chat-1"
 	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
 		Env: map[string]string{
-			"GOPHER_GATEWAY_MATRIX_TRACE_ENABLED":            "false",
-			"GOPHER_GATEWAY_MATRIX_PROGRESS_UPDATES_ENABLED": "false",
-			"GOPHER_GATEWAY_MATRIX_RICH_TEXT_ENABLED":        "false",
-			"GOPHER_GATEWAY_MATRIX_PRESENCE_ENABLED":         "false",
-			"GOPHER_GATEWAY_MATRIX_PRESENCE_INTERVAL":        "20s",
-			"GOPHER_GATEWAY_MATRIX_PRESENCE_STATUS_MSG":      "env-status",
+			"GOPHER_GATEWAY_TELEGRAM_POLL_INTERVAL": "6s",
+			"GOPHER_GATEWAY_TELEGRAM_POLL_TIMEOUT":  "45s",
 		},
 		Overrides: GatewayOverrides{
-			MatrixEnabled:           &overrideEnabled,
-			MatrixHomeserver:        &overrideHS,
-			MatrixASToken:           &overrideAS,
-			MatrixHSToken:           &overrideHSSecret,
-			MatrixTraceEnabled:      &overrideTraceEnabled,
-			MatrixProgressUpdates:   &overrideProgressUpdates,
-			MatrixRichTextEnabled:   &overrideRichText,
-			MatrixPresenceEnabled:   &overridePresenceEnabled,
-			MatrixPresenceInterval:  &overridePresenceInterval,
-			MatrixPresenceStatusMsg: &overridePresenceStatus,
+			TelegramEnabled:       &overrideEnabled,
+			TelegramBotToken:      &overrideToken,
+			TelegramPollInterval:  &overridePollInterval,
+			TelegramPollTimeout:   &overridePollTimeout,
+			TelegramAllowedUserID: &overrideUserID,
+			TelegramAllowedChatID: &overrideChatID,
 		},
 	})
 	if err != nil {
 		t.Fatalf("LoadGatewayConfig() error: %v", err)
 	}
-	if !cfg.Matrix.Enabled {
-		t.Fatalf("matrix.enabled = false, want true")
+	if !cfg.Telegram.Enabled {
+		t.Fatalf("telegram.enabled = false, want true")
 	}
-	if cfg.Matrix.HomeserverURL != overrideHS {
-		t.Fatalf("matrix homeserver = %q, want %q", cfg.Matrix.HomeserverURL, overrideHS)
+	if cfg.Telegram.BotToken != overrideToken {
+		t.Fatalf("telegram token = %q, want %q", cfg.Telegram.BotToken, overrideToken)
 	}
-	if cfg.Matrix.ASToken != overrideAS || cfg.Matrix.HSToken != overrideHSSecret {
-		t.Fatalf("matrix tokens not overridden as expected")
+	if cfg.Telegram.PollInterval != overridePollInterval {
+		t.Fatalf("telegram poll interval = %s, want %s", cfg.Telegram.PollInterval, overridePollInterval)
 	}
-	if !cfg.Matrix.TraceEnabled {
-		t.Fatalf("matrix trace enabled = false, want true")
+	if cfg.Telegram.PollTimeout != overridePollTimeout {
+		t.Fatalf("telegram poll timeout = %s, want %s", cfg.Telegram.PollTimeout, overridePollTimeout)
 	}
-	if !cfg.Matrix.ProgressUpdates {
-		t.Fatalf("matrix progress updates enabled = false, want true")
-	}
-	if !cfg.Matrix.RichTextEnabled {
-		t.Fatalf("matrix rich text enabled = false, want true")
-	}
-	if !cfg.Matrix.PresenceEnabled {
-		t.Fatalf("matrix presence enabled = false, want true")
-	}
-	if cfg.Matrix.PresenceInterval != 30*time.Second {
-		t.Fatalf("matrix presence interval = %s, want 30s", cfg.Matrix.PresenceInterval)
-	}
-	if cfg.Matrix.PresenceStatusMsg != "override-status" {
-		t.Fatalf("matrix presence status = %q, want override-status", cfg.Matrix.PresenceStatusMsg)
+	if cfg.Telegram.AllowedUserID != overrideUserID || cfg.Telegram.AllowedChatID != overrideChatID {
+		t.Fatalf("telegram binding mismatch: %+v", cfg.Telegram)
 	}
 }
 
-func TestLoadGatewayConfigCronFileEnvAndOverrides(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway.cron]
-enabled = true
-poll_interval = "3s"
-default_timezone = "America/New_York"
-`)
-
-	overrideEnabled := true
-	overridePoll := 7 * time.Second
-	overrideTZ := "UTC"
-	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env: map[string]string{
-			"GOPHER_GATEWAY_CRON_ENABLED":          "false",
-			"GOPHER_GATEWAY_CRON_POLL_INTERVAL":    "5s",
-			"GOPHER_GATEWAY_CRON_DEFAULT_TIMEZONE": "Asia/Tokyo",
-		},
-		Overrides: GatewayOverrides{
-			CronEnabled:      &overrideEnabled,
-			CronPollInterval: &overridePoll,
-			CronTimezone:     &overrideTZ,
-		},
-	})
-	if err != nil {
-		t.Fatalf("LoadGatewayConfig() error: %v", err)
-	}
-	if !cfg.Cron.Enabled {
-		t.Fatalf("cron enabled = false, want true")
-	}
-	if cfg.Cron.PollInterval != 7*time.Second {
-		t.Fatalf("cron poll interval = %s, want 7s", cfg.Cron.PollInterval)
-	}
-	if cfg.Cron.DefaultTimezone != "UTC" {
-		t.Fatalf("cron timezone = %q, want UTC", cfg.Cron.DefaultTimezone)
-	}
-}
-
-func TestLoadGatewayConfigPanelFileEnvAndOverrides(t *testing.T) {
+func TestLoadGatewayConfigRejectsMissingTelegramSecretsWhenEnabled(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "gopher.toml"), `
 [gateway]
 node_id = "gw"
 
-[gateway.panel]
-listen_addr = "127.0.0.1:4001"
-capture_thinking = true
+[gateway.telegram]
+enabled = true
+bot_token = ""
+poll_interval = "2s"
+poll_timeout = "30s"
+allowed_user_id = "1001"
+allowed_chat_id = "2002"
 `)
-
-	overrideListen := "127.0.0.1:4003"
-	overrideThinking := true
-	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
-		Env: map[string]string{
-			"GOPHER_GATEWAY_PANEL_LISTEN_ADDR":      "127.0.0.1:4002",
-			"GOPHER_GATEWAY_PANEL_CAPTURE_THINKING": "false",
-		},
-		Overrides: GatewayOverrides{
-			PanelListenAddr:      &overrideListen,
-			PanelCaptureThinking: &overrideThinking,
-		},
+		Env:        map[string]string{},
 	})
-	if err != nil {
-		t.Fatalf("LoadGatewayConfig() error: %v", err)
+	if err == nil {
+		t.Fatalf("expected telegram validation error")
 	}
-	if cfg.Panel.ListenAddr != "127.0.0.1:4003" {
-		t.Fatalf("panel listen addr = %q, want 127.0.0.1:4003", cfg.Panel.ListenAddr)
-	}
-	if !cfg.Panel.CaptureThinking {
-		t.Fatalf("panel capture thinking = false, want true")
+}
+
+func TestLoadGatewayConfigRejectsInvalidTelegramPollTimeout(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+bot_token = "token"
+poll_interval = "2s"
+poll_timeout = "0s"
+allowed_user_id = "1001"
+allowed_chat_id = "2002"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected telegram poll timeout validation error")
 	}
 }
 
@@ -355,128 +208,6 @@ listen_addr = "0.0.0.0:29329"
 	})
 	if err == nil {
 		t.Fatalf("expected panel listen addr validation error")
-	}
-}
-
-func TestLoadGatewayConfigRejectsMissingMatrixSecretsWhenEnabled(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway]
-node_id = "gw"
-
-[gateway.matrix]
-enabled = true
-homeserver_url = "http://localhost:8008"
-appservice_id = "gopher"
-`)
-
-	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env:        map[string]string{},
-	})
-	if err == nil {
-		t.Fatalf("expected matrix validation error")
-	}
-}
-
-func TestLoadGatewayConfigRejectsInvalidMatrixPresenceIntervalWhenEnabled(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway]
-node_id = "gw"
-
-[gateway.matrix]
-enabled = true
-homeserver_url = "http://localhost:8008"
-appservice_id = "gopher"
-as_token = "as-token"
-hs_token = "hs-token"
-listen_addr = "127.0.0.1:29328"
-presence_enabled = true
-presence_interval = "0s"
-`)
-
-	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env:        map[string]string{},
-	})
-	if err == nil {
-		t.Fatalf("expected matrix presence interval validation error")
-	}
-}
-
-func TestLoadGatewayConfigAppliesGatewayNodeFallbackAndCronTimezoneDefault(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway]
-node_id = "gw-fallback"
-gateway_id = ""
-
-[gateway.cron]
-enabled = false
-poll_interval = "1s"
-default_timezone = ""
-`)
-
-	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env:        map[string]string{},
-	})
-	if err != nil {
-		t.Fatalf("LoadGatewayConfig() error: %v", err)
-	}
-	if cfg.GatewayNodeID != "gw-fallback" {
-		t.Fatalf("gateway node id = %q, want gw-fallback", cfg.GatewayNodeID)
-	}
-	if cfg.Cron.DefaultTimezone != "UTC" {
-		t.Fatalf("cron default timezone = %q, want UTC", cfg.Cron.DefaultTimezone)
-	}
-}
-
-func TestLoadGatewayConfigUpdateValidation(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway]
-node_id = "gw"
-
-[gateway.update]
-enabled = true
-repo_owner = ""
-repo_name = "repo"
-channel = "stable"
-check_interval = "1h"
-binary_asset_pattern = "linux"
-`)
-	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env:        map[string]string{},
-	})
-	if err == nil {
-		t.Fatalf("expected update validation error for missing repo_owner")
-	}
-}
-
-func TestLoadGatewayConfigUpdateEnvOverrides(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "gopher.toml"), `
-[gateway]
-node_id = "gw"
-`)
-	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
-		WorkingDir: dir,
-		Env: map[string]string{
-			"GOPHER_GATEWAY_UPDATE_ENABLED":              "true",
-			"GOPHER_GATEWAY_UPDATE_REPO_OWNER":           "acme",
-			"GOPHER_GATEWAY_UPDATE_REPO_NAME":            "gopher",
-			"GOPHER_GATEWAY_UPDATE_CHECK_INTERVAL":       "2h",
-			"GOPHER_GATEWAY_UPDATE_BINARY_ASSET_PATTERN": "linux-amd64",
-		},
-	})
-	if err != nil {
-		t.Fatalf("LoadGatewayConfig() error: %v", err)
-	}
-	if !cfg.Update.Enabled || cfg.Update.RepoOwner != "acme" || cfg.Update.RepoName != "gopher" {
-		t.Fatalf("update env overrides not applied: %+v", cfg.Update)
 	}
 }
 

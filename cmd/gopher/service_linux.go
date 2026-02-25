@@ -47,6 +47,12 @@ var runSystemctlForService = func(ctx context.Context, args ...string) error {
 	return systemctlRunner{}.Run(ctx, "systemctl", args...)
 }
 var removeFileForService = os.Remove
+var runJournalctlForService = func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, "journalctl", args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
 var serviceGetEUIDForLinux = os.Geteuid
 var serviceUserHomeDir = os.UserHomeDir
 
@@ -220,9 +226,11 @@ func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {
 	run("disable timer", runSystemctlForService(ctx, scope.systemctlArgs("disable", "--now", "gopher-gateway-update.timer")...))
 	run("disable update service", runSystemctlForService(ctx, scope.systemctlArgs("disable", "--now", "gopher-gateway-update.service")...))
 	run("disable gateway service", runSystemctlForService(ctx, scope.systemctlArgs("disable", "--now", "gopher-gateway.service")...))
+	run("disable node service", runSystemctlForService(ctx, scope.systemctlArgs("disable", "--now", "gopher-node.service")...))
 	run("remove timer unit", removeFileForService(filepath.Join(unitDir, "gopher-gateway-update.timer")))
 	run("remove update service unit", removeFileForService(filepath.Join(unitDir, "gopher-gateway-update.service")))
 	run("remove gateway service unit", removeFileForService(filepath.Join(unitDir, "gopher-gateway.service")))
+	run("remove node service unit", removeFileForService(filepath.Join(unitDir, "gopher-node.service")))
 	run("reload systemd daemon", runSystemctlForService(ctx, scope.systemctlArgs("daemon-reload")...))
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -243,6 +251,7 @@ func shouldIgnoreUninstallError(err error) bool {
 		"unit gopher-gateway-update.timer not loaded",
 		"unit gopher-gateway-update.service not loaded",
 		"unit gopher-gateway.service not loaded",
+		"unit gopher-node.service not loaded",
 		"does not exist",
 		"not found",
 	}
@@ -543,10 +552,7 @@ func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions)
 	if opts.Follow {
 		args = append(args, "-f")
 	}
-	cmd := exec.CommandContext(ctx, "journalctl", scope.journalctlArgs(args...)...)
-	cmd.Stdout = r.stdout
-	cmd.Stderr = r.stderr
-	return cmd.Run()
+	return runJournalctlForService(ctx, scope.journalctlArgs(args...), r.stdout, r.stderr)
 }
 
 func ensureEnvFile(path string) error {

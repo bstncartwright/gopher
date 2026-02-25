@@ -39,6 +39,8 @@ var (
 	envLookupForUpdate            = os.Getenv
 	defaultServiceNameForUpdate   = inferDefaultServiceNameForUpdate
 	serviceIsActiveForUpdate      = isSystemdServiceActive
+	updateGetEUIDForScope         = os.Geteuid
+	updateUserHomeDirForScope     = os.UserHomeDir
 )
 
 type noopRunner struct{}
@@ -48,6 +50,17 @@ func (noopRunner) Run(ctx context.Context, command string, args ...string) error
 	_ = command
 	_ = args
 	return nil
+}
+
+type scopedSystemctlRunner struct {
+	userScope bool
+}
+
+func (r scopedSystemctlRunner) Run(ctx context.Context, command string, args ...string) error {
+	if command == "systemctl" && r.userScope {
+		args = append([]string{"--user"}, args...)
+	}
+	return systemctlRunner{}.Run(ctx, command, args...)
 }
 
 func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
@@ -126,7 +139,7 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 
 	runner := update.CommandRunner(noopRunner{})
 	if resolvedServiceName != "" {
-		runner = systemctlRunner{}
+		runner = scopedSystemctlRunner{userScope: inferUpdateUserScope()}
 	}
 	if err := applyReleaseForUpdate(ctx, update.ApplyOptions{
 		BinaryPath:   targetBinaryPath,
@@ -193,13 +206,10 @@ func inferDefaultServiceNameForUpdate() string {
 		return ""
 	}
 	const gatewayServiceName = "gopher-gateway.service"
-	for _, path := range []string{
-		filepath.Join("/etc/systemd/system", gatewayServiceName),
-		filepath.Join("/lib/systemd/system", gatewayServiceName),
-		filepath.Join("/usr/lib/systemd/system", gatewayServiceName),
-	} {
+	paths := updateCandidateServiceUnitPaths(gatewayServiceName)
+	for _, path := range paths {
 		if _, err := os.Stat(path); err == nil {
-			if serviceIsActiveForUpdate(gatewayServiceName) {
+			if serviceIsActiveForUpdate(gatewayServiceName, inferUpdateUserScope()) {
 				return gatewayServiceName
 			}
 			return ""
@@ -208,11 +218,34 @@ func inferDefaultServiceNameForUpdate() string {
 	return ""
 }
 
-func isSystemdServiceActive(serviceName string) bool {
+func updateCandidateServiceUnitPaths(serviceName string) []string {
+	if inferUpdateUserScope() {
+		if home, err := updateUserHomeDirForScope(); err == nil && strings.TrimSpace(home) != "" {
+			return []string{
+				filepath.Join(home, ".config", "systemd", "user", serviceName),
+			}
+		}
+	}
+	return []string{
+		filepath.Join("/etc/systemd/system", serviceName),
+		filepath.Join("/lib/systemd/system", serviceName),
+		filepath.Join("/usr/lib/systemd/system", serviceName),
+	}
+}
+
+func inferUpdateUserScope() bool {
+	return runtime.GOOS == "linux" && updateGetEUIDForScope() != 0
+}
+
+func isSystemdServiceActive(serviceName string, userScope bool) bool {
 	if strings.TrimSpace(serviceName) == "" {
 		return false
 	}
-	err := exec.Command("systemctl", "is-active", "--quiet", strings.TrimSpace(serviceName)).Run()
+	args := []string{"is-active", "--quiet", strings.TrimSpace(serviceName)}
+	if userScope {
+		args = append([]string{"--user"}, args...)
+	}
+	err := exec.Command("systemctl", args...).Run()
 	return err == nil
 }
 

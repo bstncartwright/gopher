@@ -363,7 +363,8 @@ func TestInferDefaultServiceNameForUpdateRequiresActiveService(t *testing.T) {
 	}
 
 	const serviceName = "gopher-gateway.service"
-	serviceIsActiveForUpdate = func(name string) bool {
+	serviceIsActiveForUpdate = func(name string, userScope bool) bool {
+		_ = userScope
 		if name != serviceName {
 			t.Fatalf("unexpected service name: %q", name)
 		}
@@ -393,6 +394,8 @@ func stubUpdateDependencies(t *testing.T) func() {
 	prevEnvLookup := envLookupForUpdate
 	prevDefaultServiceName := defaultServiceNameForUpdate
 	prevServiceIsActive := serviceIsActiveForUpdate
+	prevUpdateEUID := updateGetEUIDForScope
+	prevUpdateHome := updateUserHomeDirForScope
 
 	return func() {
 		binaryVersion = prevVersion
@@ -406,5 +409,7 @@ func stubUpdateDependencies(t *testing.T) func() {
 		envLookupForUpdate = prevEnvLookup
 		defaultServiceNameForUpdate = prevDefaultServiceName
 		serviceIsActiveForUpdate = prevServiceIsActive
+		updateGetEUIDForScope = prevUpdateEUID
+		updateUserHomeDirForScope = prevUpdateHome
 	}
 }

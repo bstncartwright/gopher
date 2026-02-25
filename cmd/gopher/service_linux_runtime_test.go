@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,5 +283,112 @@ func TestResolveServiceSystemdScopeUsesSystemScopeWhenRoot(t *testing.T) {
 	args := scope.systemctlArgs("status", "gopher-gateway.service")
 	if len(args) == 0 || args[0] == "--user" {
 		t.Fatalf("expected system-scope args without --user, got %#v", args)
+	}
+}
+
+func TestLinuxServiceLogsUsesUserScopeAndNodeRole(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	prevReadUnitStatus := readUnitStatusForManagedUnit
+	prevRunJournalctl := runJournalctlForService
+	defer func() {
+		serviceGetEUIDForLinux = prevGetEUID
+		readUnitStatusForManagedUnit = prevReadUnitStatus
+		runJournalctlForService = prevRunJournalctl
+	}()
+
+	serviceGetEUIDForLinux = func() int { return 1000 }
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
+		_ = ctx
+		if !scope.user {
+			t.Fatalf("expected user scope for non-root logs")
+		}
+		switch unit {
+		case gopherGatewayUnitName:
+			return unitStatus{LoadState: "loaded", ActiveState: "inactive", SubState: "dead", UnitFileState: "enabled"}, nil
+		case gopherNodeUnitName:
+			return unitStatus{LoadState: "loaded", ActiveState: "active", SubState: "running", UnitFileState: "enabled"}, nil
+		default:
+			return unitStatus{}, fmt.Errorf("unexpected unit %q", unit)
+		}
+	}
+
+	var capturedArgs []string
+	runJournalctlForService = func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = stdout
+		_ = stderr
+		capturedArgs = append([]string{}, args...)
+		return nil
+	}
+
+	runtime := &linuxServiceRuntime{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	if err := runtime.Logs(context.Background(), serviceLogsOptions{
+		Target: serviceTargetNode,
+		Lines:  25,
+	}); err != nil {
+		t.Fatalf("Logs() error: %v", err)
+	}
+	if len(capturedArgs) == 0 {
+		t.Fatalf("expected journalctl args to be captured")
+	}
+	if capturedArgs[0] != "--user" {
+		t.Fatalf("expected --user journalctl scope, got %#v", capturedArgs)
+	}
+	joined := strings.Join(capturedArgs, " ")
+	if !strings.Contains(joined, "-u gopher-node.service") {
+		t.Fatalf("expected node unit logs, args=%#v", capturedArgs)
+	}
+}
+
+func TestLinuxServiceUninstallRemovesNodeUnitInUserScope(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	prevHome := serviceUserHomeDir
+	prevRunSystemctl := runSystemctlForService
+	prevRemoveFile := removeFileForService
+	defer func() {
+		serviceGetEUIDForLinux = prevGetEUID
+		serviceUserHomeDir = prevHome
+		runSystemctlForService = prevRunSystemctl
+		removeFileForService = prevRemoveFile
+	}()
+
+	serviceGetEUIDForLinux = func() int { return 1000 }
+	serviceUserHomeDir = func() (string, error) { return "/tmp/gopher-user", nil }
+
+	var systemctlCalls [][]string
+	runSystemctlForService = func(ctx context.Context, args ...string) error {
+		_ = ctx
+		systemctlCalls = append(systemctlCalls, append([]string{}, args...))
+		return nil
+	}
+	var removed []string
+	removeFileForService = func(path string) error {
+		removed = append(removed, path)
+		return nil
+	}
+
+	runtime := &linuxServiceRuntime{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	if err := runtime.Uninstall(context.Background()); err != nil {
+		t.Fatalf("Uninstall() error: %v", err)
+	}
+	foundDisableNode := false
+	for _, call := range systemctlCalls {
+		if strings.Join(call, " ") == "--user disable --now gopher-node.service" {
+			foundDisableNode = true
+			break
+		}
+	}
+	if !foundDisableNode {
+		t.Fatalf("expected gopher-node.service to be disabled, calls=%#v", systemctlCalls)
+	}
+	foundRemoveNode := false
+	for _, path := range removed {
+		if path == "/tmp/gopher-user/.config/systemd/user/gopher-node.service" {
+			foundRemoveNode = true
+			break
+		}
+	}
+	if !foundRemoveNode {
+		t.Fatalf("expected node unit removal path, removed=%#v", removed)
 	}
 }

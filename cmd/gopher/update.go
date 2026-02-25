@@ -78,6 +78,7 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 	binaryPath := flags.String("binary-path", "", "target binary path (defaults to current executable)")
 	assetPattern := flags.String("asset-pattern", "", "extra release asset name filter")
 	serviceName := flags.String("service-name", "", "optional systemd service to restart after update")
+	noServiceRestart := flags.Bool("no-service-restart", false, "disable post-update systemd service restart")
 	checkOnly := flags.Bool("check", false, "check for update without applying")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -127,7 +128,9 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	resolvedServiceName := strings.TrimSpace(*serviceName)
-	if resolvedServiceName == "" {
+	if *noServiceRestart {
+		resolvedServiceName = ""
+	} else if resolvedServiceName == "" {
 		resolvedServiceName = strings.TrimSpace(defaultServiceNameForUpdate())
 	}
 
@@ -198,6 +201,7 @@ func printUpdateUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --binary-path <path>    binary path to replace (default: current executable)")
 	fmt.Fprintln(out, "  --asset-pattern <text>  additional asset name filter")
 	fmt.Fprintln(out, "  --service-name <name>   systemd service to restart after update (default: auto-detect gateway service on linux)")
+	fmt.Fprintln(out, "  --no-service-restart    disable post-update systemd restart")
 	fmt.Fprintln(out, "  --github-token <token>  github token (or GOPHER_GITHUB_TOKEN / GOPHER_GITHUB_UPDATE_TOKEN)")
 }
 

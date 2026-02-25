@@ -75,6 +75,7 @@ type gatewayProcess struct {
 	registry  *scheduler.Registry
 	scheduler *scheduler.Scheduler
 	syncer    *gateway.NodeRegistrySync
+	updater   *gateway.NodeUpdateCoordinator
 	runtime   *node.Runtime
 	executor  sessionrt.AgentExecutor
 }
@@ -401,6 +402,7 @@ func startGatewayProcessWithCapabilityResolver(
 	registry.Upsert(scheduler.NodeInfo{
 		NodeID:       cfg.NodeID,
 		IsGateway:    true,
+		Version:      currentBinaryVersion(),
 		Capabilities: cfg.Capabilities,
 	})
 	schedulerInstance := scheduler.NewScheduler(cfg.GatewayNodeID, registry)
@@ -416,6 +418,19 @@ func startGatewayProcessWithCapabilityResolver(
 	if err := syncer.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start node registry sync: %w", err)
 	}
+	updater, err := gateway.NewNodeUpdateCoordinator(gateway.NodeUpdateCoordinatorOptions{
+		Fabric:         fabric,
+		GatewayNodeID:  cfg.NodeID,
+		GatewayVersion: currentBinaryVersion(),
+	})
+	if err != nil {
+		syncer.Stop()
+		return nil, fmt.Errorf("create node update coordinator: %w", err)
+	}
+	if err := updater.Start(ctx); err != nil {
+		syncer.Stop()
+		return nil, fmt.Errorf("start node update coordinator: %w", err)
+	}
 
 	distributedExecutor, err := gateway.NewDistributedExecutor(gateway.DistributedExecutorOptions{
 		GatewayNodeID:      cfg.GatewayNodeID,
@@ -425,6 +440,7 @@ func startGatewayProcessWithCapabilityResolver(
 		CapabilityResolver: resolver,
 	})
 	if err != nil {
+		updater.Stop()
 		syncer.Stop()
 		return nil, fmt.Errorf("create distributed executor: %w", err)
 	}
@@ -432,16 +448,19 @@ func startGatewayProcessWithCapabilityResolver(
 	runtime, err := node.NewRuntime(node.RuntimeOptions{
 		NodeID:            cfg.NodeID,
 		IsGateway:         true,
+		Version:           currentBinaryVersion(),
 		Capabilities:      cfg.Capabilities,
 		Fabric:            fabric,
 		Executor:          distributedExecutor,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 	})
 	if err != nil {
+		updater.Stop()
 		syncer.Stop()
 		return nil, fmt.Errorf("create gateway runtime: %w", err)
 	}
 	if err := runtime.Start(ctx); err != nil {
+		updater.Stop()
 		syncer.Stop()
 		return nil, fmt.Errorf("start gateway runtime: %w", err)
 	}
@@ -453,6 +472,7 @@ func startGatewayProcessWithCapabilityResolver(
 		registry:  registry,
 		scheduler: schedulerInstance,
 		syncer:    syncer,
+		updater:   updater,
 		runtime:   runtime,
 		executor:  distributedExecutor,
 	}, nil
@@ -543,6 +563,9 @@ func (p *gatewayProcess) Stop() {
 	}
 	if p.runtime != nil {
 		p.runtime.Stop()
+	}
+	if p.updater != nil {
+		p.updater.Stop()
 	}
 	if p.syncer != nil {
 		p.syncer.Stop()

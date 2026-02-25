@@ -34,6 +34,7 @@ func (r *Registry) Upsert(node NodeInfo) {
 	if node.NodeID == "" {
 		return
 	}
+	node.Version = strings.TrimSpace(node.Version)
 	if node.LastHeartbeat.IsZero() {
 		node.LastHeartbeat = time.Now().UTC()
 	}
@@ -41,7 +42,7 @@ func (r *Registry) Upsert(node NodeInfo) {
 	r.nodes[node.NodeID] = node
 }
 
-func (r *Registry) SetCapabilities(nodeID string, capabilities []Capability, isGateway bool, at time.Time) {
+func (r *Registry) SetCapabilities(nodeID string, capabilities []Capability, isGateway bool, version string, at time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	nodeID = strings.TrimSpace(nodeID)
@@ -51,6 +52,7 @@ func (r *Registry) SetCapabilities(nodeID string, capabilities []Capability, isG
 	node := r.nodes[nodeID]
 	node.NodeID = nodeID
 	node.IsGateway = isGateway
+	node.Version = strings.TrimSpace(version)
 	node.Capabilities = normalizeCapabilities(capabilities)
 	if at.IsZero() {
 		at = time.Now().UTC()
@@ -59,7 +61,7 @@ func (r *Registry) SetCapabilities(nodeID string, capabilities []Capability, isG
 	r.nodes[nodeID] = node
 }
 
-func (r *Registry) RecordHeartbeat(nodeID string, at time.Time) {
+func (r *Registry) RecordHeartbeat(nodeID string, isGateway bool, version string, at time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	nodeID = strings.TrimSpace(nodeID)
@@ -68,6 +70,8 @@ func (r *Registry) RecordHeartbeat(nodeID string, at time.Time) {
 	}
 	node := r.nodes[nodeID]
 	node.NodeID = nodeID
+	node.IsGateway = isGateway
+	node.Version = strings.TrimSpace(version)
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}

@@ -25,6 +25,7 @@ type Capability struct {
 type NodeInfo struct {
 	NodeID        string       `json:"node_id"`
 	IsGateway     bool         `json:"is_gateway"`
+	Version       string       `json:"version,omitempty"`
 	Capabilities  []Capability `json:"capabilities"`
 	LastHeartbeat time.Time    `json:"last_heartbeat"`
 }

@@ -5,6 +5,7 @@ type AdminAction string
 const (
 	AdminActionConfigure AdminAction = "configure"
 	AdminActionRestart   AdminAction = "restart"
+	AdminActionUpdate    AdminAction = "update"
 )
 
 type AdminConfigureNATS struct {
@@ -24,9 +25,14 @@ type AdminConfigureRequest struct {
 	Capabilities *[]string              `json:"capabilities,omitempty"`
 }
 
+type AdminUpdateRequest struct {
+	TargetVersion *string `json:"target_version,omitempty"`
+}
+
 type AdminRequest struct {
 	Action    AdminAction            `json:"action"`
 	Configure *AdminConfigureRequest `json:"configure,omitempty"`
+	Update    *AdminUpdateRequest    `json:"update,omitempty"`
 }
 
 type AdminResponse struct {
@@ -35,6 +41,7 @@ type AdminResponse struct {
 	Warnings         []string `json:"warnings,omitempty"`
 	PersistedPath    string   `json:"persisted_path,omitempty"`
 	RestartRequested bool     `json:"restart_requested,omitempty"`
+	UpdateRequested  bool     `json:"update_requested,omitempty"`
 }
 
 type AdminHandler interface {

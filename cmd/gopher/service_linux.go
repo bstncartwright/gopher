@@ -96,6 +96,11 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", workingDir, err)
 	}
+	if role == "gateway" {
+		if err := ensureGatewayConfigFile(opts.ConfigPath); err != nil {
+			return err
+		}
+	}
 	if err := os.WriteFile(filepath.Join("/etc/systemd/system", unitName), []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
@@ -495,6 +500,30 @@ func ensureEnvFile(path string) error {
 	initial := "GOPHER_GITHUB_TOKEN=\n"
 	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
 		return fmt.Errorf("write env file: %w", err)
+	}
+	return nil
+}
+
+func ensureGatewayConfigFile(path string) error {
+	target := strings.TrimSpace(path)
+	if target == "" {
+		return fmt.Errorf("gateway config path is required")
+	}
+	info, err := os.Stat(target)
+	if err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("gateway config path %s is a directory", target)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat gateway config %s: %w", target, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create gateway config directory: %w", err)
+	}
+	if err := os.WriteFile(target, []byte(config.DefaultGatewayTOML()), 0o644); err != nil {
+		return fmt.Errorf("write default gateway config %s: %w", target, err)
 	}
 	return nil
 }

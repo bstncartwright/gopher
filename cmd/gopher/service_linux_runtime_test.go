@@ -257,8 +257,6 @@ func TestEnsureGatewayConfigFilePreservesExistingFile(t *testing.T) {
 }
 
 func TestResolveTelegramTokenForAutoEnableFromEnvFile(t *testing.T) {
-	t.Parallel()
-
 	t.Setenv(telegramBotTokenEnvKey, "")
 	envPath := filepath.Join(t.TempDir(), "gopher.env")
 	if err := os.WriteFile(envPath, []byte("GOPHER_TELEGRAM_BOT_TOKEN=file-token\n"), 0o600); err != nil {
@@ -274,8 +272,6 @@ func TestResolveTelegramTokenForAutoEnableFromEnvFile(t *testing.T) {
 }
 
 func TestResolveTelegramTokenForAutoEnablePrefersProcessEnv(t *testing.T) {
-	t.Parallel()
-
 	t.Setenv(telegramBotTokenEnvKey, "process-token")
 	envPath := filepath.Join(t.TempDir(), "gopher.env")
 	if err := os.WriteFile(envPath, []byte("GOPHER_TELEGRAM_BOT_TOKEN=file-token\n"), 0o600); err != nil {

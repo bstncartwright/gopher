@@ -15,7 +15,6 @@ import (
 
 const (
 	telegramBotTokenEnvKey = "GOPHER_TELEGRAM_BOT_TOKEN"
-	telegramChatIDEnvKey   = "GOPHER_TELEGRAM_CHAT_ID"
 )
 
 func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writer) error {
@@ -30,7 +29,6 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 	authProvider := flags.String("auth-provider", "", "provider to configure when auth is missing")
 	authAPIKey := flags.String("auth-api-key", "", "api key/token for --auth-provider")
 	telegramBotToken := flags.String("telegram-bot-token", "", "telegram bot token")
-	telegramChatID := flags.String("telegram-chat-id", "", "telegram chat id")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -113,19 +111,9 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 	if telegramTokenValue == "" {
 		telegramTokenValue = strings.TrimSpace(envValues[telegramBotTokenEnvKey])
 	}
-	telegramChatValue := strings.TrimSpace(*telegramChatID)
-	if telegramChatValue == "" {
-		telegramChatValue = strings.TrimSpace(envValues[telegramChatIDEnvKey])
-	}
 
 	if telegramTokenValue == "" && !*nonInteractive {
 		telegramTokenValue, err = promptLine(in, stdout, "telegram bot token (leave blank to skip): ")
-		if err != nil {
-			return err
-		}
-	}
-	if telegramChatValue == "" && !*nonInteractive {
-		telegramChatValue, err = promptLine(in, stdout, "telegram chat id (leave blank to skip): ")
 		if err != nil {
 			return err
 		}
@@ -137,14 +125,8 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 		}
 		fmt.Fprintf(stdout, "configured %s in %s\n", telegramBotTokenEnvKey, envPath)
 	}
-	if telegramChatValue != "" {
-		if err := upsertEnvKey(envPath, telegramChatIDEnvKey, telegramChatValue); err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "configured %s in %s\n", telegramChatIDEnvKey, envPath)
-	}
-	if telegramTokenValue == "" || telegramChatValue == "" {
-		fmt.Fprintln(stdout, "telegram config incomplete (set both bot token and chat id to fully enable telegram integration)")
+	if telegramTokenValue == "" {
+		fmt.Fprintln(stdout, "telegram config incomplete (set bot token to enable telegram integration)")
 	}
 
 	return nil

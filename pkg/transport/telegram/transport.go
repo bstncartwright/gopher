@@ -258,9 +258,6 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 	if t.allowedUserID != "" && userID != t.allowedUserID {
 		return nil
 	}
-	if t.allowedChatID != "" && chatID != t.allowedChatID {
-		return nil
-	}
 	handler := t.getHandler()
 	if handler == nil {
 		return nil

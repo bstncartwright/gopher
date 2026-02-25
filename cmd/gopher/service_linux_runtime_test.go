@@ -325,10 +325,12 @@ func TestLinuxServiceLogsUsesUserScopeAndNodeRole(t *testing.T) {
 	prevGetEUID := serviceGetEUIDForLinux
 	prevReadUnitStatus := readUnitStatusForManagedUnit
 	prevRunJournalctl := runJournalctlForService
+	prevRunTail := runTailForService
 	defer func() {
 		serviceGetEUIDForLinux = prevGetEUID
 		readUnitStatusForManagedUnit = prevReadUnitStatus
 		runJournalctlForService = prevRunJournalctl
+		runTailForService = prevRunTail
 	}()
 
 	serviceGetEUIDForLinux = func() int { return 1000 }
@@ -355,6 +357,16 @@ func TestLinuxServiceLogsUsesUserScopeAndNodeRole(t *testing.T) {
 		capturedArgs = append([]string{}, args...)
 		return nil
 	}
+	runTailForService = func(ctx context.Context, path string, lines int, follow bool, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = path
+		_ = lines
+		_ = follow
+		_ = stdout
+		_ = stderr
+		t.Fatalf("did not expect fallback tail when journalctl succeeds")
+		return nil
+	}
 
 	runtime := &linuxServiceRuntime{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
 	if err := runtime.Logs(context.Background(), serviceLogsOptions{
@@ -372,6 +384,97 @@ func TestLinuxServiceLogsUsesUserScopeAndNodeRole(t *testing.T) {
 	joined := strings.Join(capturedArgs, " ")
 	if !strings.Contains(joined, "-u gopher-node.service") {
 		t.Fatalf("expected node unit logs, args=%#v", capturedArgs)
+	}
+}
+
+func TestLinuxServiceLogsFallsBackToFileWhenUserJournalUnavailable(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	prevReadUnitStatus := readUnitStatusForManagedUnit
+	prevRunJournalctl := runJournalctlForService
+	prevRunTail := runTailForService
+	defer func() {
+		serviceGetEUIDForLinux = prevGetEUID
+		readUnitStatusForManagedUnit = prevReadUnitStatus
+		runJournalctlForService = prevRunJournalctl
+		runTailForService = prevRunTail
+	}()
+
+	serviceGetEUIDForLinux = func() int { return 1000 }
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
+		_ = ctx
+		switch unit {
+		case gopherGatewayUnitName:
+			return unitStatus{LoadState: "loaded", ActiveState: "active", SubState: "running", UnitFileState: "enabled"}, nil
+		case gopherNodeUnitName:
+			return unitStatus{LoadState: "loaded", ActiveState: "inactive", SubState: "dead", UnitFileState: "enabled"}, nil
+		default:
+			return unitStatus{}, fmt.Errorf("unexpected unit %q", unit)
+		}
+	}
+
+	runJournalctlForService = func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = args
+		_ = stdout
+		_ = stderr
+		return errors.New("failed to connect to user bus")
+	}
+
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".gopher", "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	logPath := filepath.Join(tmp, ".gopher", "logs", "gateway.log")
+	if err := os.WriteFile(logPath, []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatalf("write log file: %v", err)
+	}
+	t.Setenv("HOME", tmp)
+
+	var tailPath string
+	runTailForService = func(ctx context.Context, path string, lines int, follow bool, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = stdout
+		_ = stderr
+		tailPath = path
+		if lines != 10 {
+			t.Fatalf("lines = %d, want 10", lines)
+		}
+		if follow {
+			t.Fatalf("expected follow=false")
+		}
+		return nil
+	}
+
+	var stderr bytes.Buffer
+	runtime := &linuxServiceRuntime{stdout: &bytes.Buffer{}, stderr: &stderr}
+	if err := runtime.Logs(context.Background(), serviceLogsOptions{
+		Target: serviceTargetGateway,
+		Lines:  10,
+	}); err != nil {
+		t.Fatalf("Logs() error: %v", err)
+	}
+	if tailPath != logPath {
+		t.Fatalf("tail fallback path = %q, want %q", tailPath, logPath)
+	}
+	if !strings.Contains(stderr.String(), "falling back to log file") {
+		t.Fatalf("expected fallback notice in stderr, got %q", stderr.String())
+	}
+}
+
+func TestResolveServiceLogPath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	path, ok := resolveServiceLogPath(gopherGatewayUnitName)
+	if !ok || path != filepath.Join(tmp, ".gopher", "logs", "gateway.log") {
+		t.Fatalf("gateway log path = %q ok=%v", path, ok)
+	}
+	path, ok = resolveServiceLogPath(gopherNodeUnitName)
+	if !ok || path != filepath.Join(tmp, ".gopher", "logs", "node.log") {
+		t.Fatalf("node log path = %q ok=%v", path, ok)
+	}
+	if _, ok := resolveServiceLogPath("custom.service"); ok {
+		t.Fatalf("expected unknown unit to not resolve log path")
 	}
 }
 

@@ -36,7 +36,9 @@ const (
 	gopherNodeUnitName    = "gopher-node.service"
 )
 
-var readUnitStatusForManagedUnit = readUnitStatus
+var readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
+	return readUnitStatus(ctx, scope, unit)
+}
 var loadGatewayConfigForStatus = func() (config.GatewayConfig, error) {
 	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: defaultServiceGatewayConfigPath()})
 	return cfg, err
@@ -45,6 +47,51 @@ var runSystemctlForService = func(ctx context.Context, args ...string) error {
 	return systemctlRunner{}.Run(ctx, "systemctl", args...)
 }
 var removeFileForService = os.Remove
+var serviceGetEUIDForLinux = os.Geteuid
+var serviceUserHomeDir = os.UserHomeDir
+
+type serviceSystemdScope struct {
+	user bool
+}
+
+func resolveServiceSystemdScope() serviceSystemdScope {
+	return serviceSystemdScope{user: serviceGetEUIDForLinux() != 0}
+}
+
+func (s serviceSystemdScope) systemctlArgs(args ...string) []string {
+	if !s.user {
+		return args
+	}
+	return append([]string{"--user"}, args...)
+}
+
+func (s serviceSystemdScope) journalctlArgs(args ...string) []string {
+	if !s.user {
+		return args
+	}
+	return append([]string{"--user"}, args...)
+}
+
+func (s serviceSystemdScope) unitDirectory() (string, error) {
+	if !s.user {
+		return "/etc/systemd/system", nil
+	}
+	home, err := serviceUserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home for systemd user units: %w", err)
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("resolve user home for systemd user units: home is empty")
+	}
+	return filepath.Join(home, ".config", "systemd", "user"), nil
+}
+
+func (s serviceSystemdScope) label() string {
+	if s.user {
+		return "user"
+	}
+	return "system"
+}
 
 func defaultServiceRuntime(stdout, stderr io.Writer) serviceRuntime {
 	return &linuxServiceRuntime{stdout: stdout, stderr: stderr}
@@ -64,11 +111,15 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	if role != "gateway" && role != "node" {
 		return fmt.Errorf("invalid service role %q", opts.Role)
 	}
+	scope := resolveServiceSystemdScope()
+	unitDir, err := scope.unitDirectory()
+	if err != nil {
+		return err
+	}
 	workingDir := resolveServiceWorkingDir()
 	var (
 		unit     string
 		unitName string
-		err      error
 	)
 	switch role {
 	case "gateway":
@@ -90,8 +141,8 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 		return err
 	}
 
-	if err := os.MkdirAll("/etc/gopher", 0o755); err != nil {
-		return fmt.Errorf("create /etc/gopher: %w", err)
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", unitDir, err)
 	}
 	if err := os.MkdirAll(workingDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", workingDir, err)
@@ -101,12 +152,12 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join("/etc/systemd/system", unitName), []byte(unit), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(unitDir, unitName), []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 	updatesEnabled := false
 	if role == "gateway" {
-		updatesEnabled, err = r.installUpdaterUnits(opts)
+		updatesEnabled, err = r.installUpdaterUnits(opts, unitDir)
 		if err != nil {
 			return err
 		}
@@ -116,19 +167,18 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 			return err
 		}
 	}
-	runner := systemctlRunner{}
-	if err := runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
+	if err := runSystemctlForService(ctx, scope.systemctlArgs("daemon-reload")...); err != nil {
 		return err
 	}
-	if err := runner.Run(ctx, "systemctl", "enable", "--now", unitName); err != nil {
+	if err := runSystemctlForService(ctx, scope.systemctlArgs("enable", "--now", unitName)...); err != nil {
 		return err
 	}
 	if updatesEnabled {
-		if err := runner.Run(ctx, "systemctl", "enable", "--now", "gopher-gateway-update.timer"); err != nil {
+		if err := runSystemctlForService(ctx, scope.systemctlArgs("enable", "--now", "gopher-gateway-update.timer")...); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintf(r.stdout, "installed and started %s\n", unitName)
+	fmt.Fprintf(r.stdout, "installed and started %s (%s scope)\n", unitName, scope.label())
 	return nil
 }
 
@@ -151,6 +201,11 @@ func resolveServiceWorkingDir() string {
 }
 
 func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {
+	scope := resolveServiceSystemdScope()
+	unitDir, err := scope.unitDirectory()
+	if err != nil {
+		return err
+	}
 	var errs []error
 	run := func(action string, err error) {
 		if err == nil {
@@ -162,13 +217,13 @@ func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("%s: %w", action, err))
 	}
 
-	run("disable timer", runSystemctlForService(ctx, "disable", "--now", "gopher-gateway-update.timer"))
-	run("disable update service", runSystemctlForService(ctx, "disable", "--now", "gopher-gateway-update.service"))
-	run("disable gateway service", runSystemctlForService(ctx, "disable", "--now", "gopher-gateway.service"))
-	run("remove timer unit", removeFileForService("/etc/systemd/system/gopher-gateway-update.timer"))
-	run("remove update service unit", removeFileForService("/etc/systemd/system/gopher-gateway-update.service"))
-	run("remove gateway service unit", removeFileForService("/etc/systemd/system/gopher-gateway.service"))
-	run("reload systemd daemon", runSystemctlForService(ctx, "daemon-reload"))
+	run("disable timer", runSystemctlForService(ctx, scope.systemctlArgs("disable", "--now", "gopher-gateway-update.timer")...))
+	run("disable update service", runSystemctlForService(ctx, scope.systemctlArgs("disable", "--now", "gopher-gateway-update.service")...))
+	run("disable gateway service", runSystemctlForService(ctx, scope.systemctlArgs("disable", "--now", "gopher-gateway.service")...))
+	run("remove timer unit", removeFileForService(filepath.Join(unitDir, "gopher-gateway-update.timer")))
+	run("remove update service unit", removeFileForService(filepath.Join(unitDir, "gopher-gateway-update.service")))
+	run("remove gateway service unit", removeFileForService(filepath.Join(unitDir, "gopher-gateway.service")))
+	run("reload systemd daemon", runSystemctlForService(ctx, scope.systemctlArgs("daemon-reload")...))
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
@@ -200,15 +255,16 @@ func shouldIgnoreUninstallError(err error) bool {
 }
 
 func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOptions) error {
-	unit, err := resolveManagedServiceUnit(ctx, opts.Target)
+	scope := resolveServiceSystemdScope()
+	unit, err := resolveManagedServiceUnit(ctx, scope, opts.Target)
 	if err != nil {
 		return err
 	}
-	selected, err := readUnitStatus(ctx, unit)
+	selected, err := readUnitStatus(ctx, scope, unit)
 	if err != nil {
 		return err
 	}
-	nats, _ := readUnitStatus(ctx, "nats-server.service")
+	nats, _ := readUnitStatus(ctx, serviceSystemdScope{}, "nats-server.service")
 	gatewayCfg, gatewayCfgErr := config.GatewayConfig{}, fmt.Errorf("gateway config unavailable")
 	if unit == gopherGatewayUnitName {
 		gatewayCfg, gatewayCfgErr = loadGatewayConfigForStatus()
@@ -224,7 +280,7 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 	printStatusStateLine(r.stdout, fmt.Sprintf("%s service", describeManagedServiceUnit(unit)), formatUnitStatus(selected))
 	printStatusStateLine(r.stdout, "nats service", formatUnitStatus(nats))
 	if unit == gopherGatewayUnitName {
-		updater, _ := readUnitStatus(ctx, "gopher-gateway-update.timer")
+		updater, _ := readUnitStatus(ctx, scope, "gopher-gateway-update.timer")
 		printStatusStateLine(r.stdout, "update timer", formatUnitStatus(updater))
 	}
 	fmt.Fprintln(r.stdout, "")
@@ -443,33 +499,37 @@ func schedulerNodeRole(isGateway bool) string {
 }
 
 func (r *linuxServiceRuntime) Start(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx, serviceTargetAuto)
+	scope := resolveServiceSystemdScope()
+	unit, err := resolveManagedServiceUnit(ctx, scope, serviceTargetAuto)
 	if err != nil {
 		return err
 	}
-	return systemctlRunner{}.Run(ctx, "systemctl", "start", unit)
+	return runSystemctlForService(ctx, scope.systemctlArgs("start", unit)...)
 }
 
 func (r *linuxServiceRuntime) Stop(ctx context.Context) error {
-	unit, err := resolveManagedServiceUnit(ctx, serviceTargetAuto)
+	scope := resolveServiceSystemdScope()
+	unit, err := resolveManagedServiceUnit(ctx, scope, serviceTargetAuto)
 	if err != nil {
 		return err
 	}
-	return systemctlRunner{}.Run(ctx, "systemctl", "stop", unit)
+	return runSystemctlForService(ctx, scope.systemctlArgs("stop", unit)...)
 }
 
 func (r *linuxServiceRuntime) Restart(ctx context.Context, opts serviceTargetOptions) error {
-	unit, err := resolveManagedServiceUnit(ctx, opts.Target)
+	scope := resolveServiceSystemdScope()
+	unit, err := resolveManagedServiceUnit(ctx, scope, opts.Target)
 	if err != nil {
 		return err
 	}
-	return systemctlRunner{}.Run(ctx, "systemctl", "restart", unit)
+	return runSystemctlForService(ctx, scope.systemctlArgs("restart", unit)...)
 }
 
 func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) error {
+	scope := resolveServiceSystemdScope()
 	unit := strings.TrimSpace(opts.Unit)
 	if unit == "" {
-		resolvedUnit, err := resolveManagedServiceUnit(ctx, opts.Target)
+		resolvedUnit, err := resolveManagedServiceUnit(ctx, scope, opts.Target)
 		if err != nil {
 			return err
 		}
@@ -483,7 +543,7 @@ func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions)
 	if opts.Follow {
 		args = append(args, "-f")
 	}
-	cmd := exec.CommandContext(ctx, "journalctl", args...)
+	cmd := exec.CommandContext(ctx, "journalctl", scope.journalctlArgs(args...)...)
 	cmd.Stdout = r.stdout
 	cmd.Stderr = r.stderr
 	return cmd.Run()
@@ -528,7 +588,7 @@ func ensureGatewayConfigFile(path string) error {
 	return nil
 }
 
-func (r *linuxServiceRuntime) installUpdaterUnits(opts serviceInstallOptions) (bool, error) {
+func (r *linuxServiceRuntime) installUpdaterUnits(opts serviceInstallOptions, unitDir string) (bool, error) {
 	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{
 		ConfigPath: opts.ConfigPath,
 	})
@@ -551,10 +611,10 @@ func (r *linuxServiceRuntime) installUpdaterUnits(opts serviceInstallOptions) (b
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile("/etc/systemd/system/gopher-gateway-update.service", []byte(updateService), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(unitDir, "gopher-gateway-update.service"), []byte(updateService), 0o644); err != nil {
 		return false, fmt.Errorf("write update service unit: %w", err)
 	}
-	if err := os.WriteFile("/etc/systemd/system/gopher-gateway-update.timer", []byte(updateTimer), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(unitDir, "gopher-gateway-update.timer"), []byte(updateTimer), 0o644); err != nil {
 		return false, fmt.Errorf("write update timer unit: %w", err)
 	}
 	return true, nil
@@ -571,12 +631,12 @@ func durationToOnCalendar(d time.Duration) string {
 	}
 }
 
-func resolveManagedServiceUnit(ctx context.Context, target serviceTarget) (string, error) {
-	gateway, err := readUnitStatusForManagedUnit(ctx, gopherGatewayUnitName)
+func resolveManagedServiceUnit(ctx context.Context, scope serviceSystemdScope, target serviceTarget) (string, error) {
+	gateway, err := readUnitStatusForManagedUnit(ctx, scope, gopherGatewayUnitName)
 	if err != nil {
 		return "", err
 	}
-	node, err := readUnitStatusForManagedUnit(ctx, gopherNodeUnitName)
+	node, err := readUnitStatusForManagedUnit(ctx, scope, gopherNodeUnitName)
 	if err != nil {
 		return "", err
 	}
@@ -636,13 +696,22 @@ type unitStatus struct {
 	UnitFileState string
 }
 
-func readUnitStatus(ctx context.Context, unit string) (unitStatus, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", "show", unit, "--no-pager",
-		"--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=UnitFileState")
+func readUnitStatus(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
+	args := scope.systemctlArgs(
+		"show",
+		unit,
+		"--no-pager",
+		"--property=LoadState",
+		"--property=ActiveState",
+		"--property=SubState",
+		"--property=UnitFileState",
+	)
+	cmd := exec.CommandContext(ctx, "systemctl", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		text := strings.TrimSpace(string(output))
-		if strings.Contains(text, "could not be found") {
+		lowerText := strings.ToLower(text)
+		if strings.Contains(lowerText, "could not be found") || strings.Contains(lowerText, "not found") {
 			return unitStatus{LoadState: "not-found", ActiveState: "inactive", SubState: "dead", UnitFileState: "not-found"}, nil
 		}
 		return unitStatus{}, fmt.Errorf("read %s status: %w: %s", unit, err, text)

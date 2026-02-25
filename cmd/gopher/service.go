@@ -72,6 +72,7 @@ var newServiceRuntime = defaultServiceRuntime
 var shouldPromptSudoForService = isInteractiveTerminal
 var retryWithSudoForService = rerunServiceWithSudo
 var envLookupForService = os.Getenv
+var serviceGetEUID = os.Geteuid
 
 func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || wantsHelp(args) {
@@ -104,8 +105,8 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		flags := flag.NewFlagSet("service install", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
 		configPath := flags.String("config", defaultServiceGatewayConfigPath(), "gateway config path")
-		envPath := flags.String("env-file", "/etc/gopher/gopher.env", "service env file")
-		binaryPath := flags.String("binary-path", "/usr/local/bin/gopher", "binary path for service")
+		envPath := flags.String("env-file", defaultServiceEnvPath(), "service env file")
+		binaryPath := flags.String("binary-path", defaultServiceBinaryPath(), "binary path for service")
 		role := flags.String("role", "gateway", "service role (gateway|node)")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
@@ -215,13 +216,33 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func defaultServiceGatewayConfigPath() string {
-	if os.Geteuid() == 0 {
+	if serviceGetEUID() == 0 {
 		return "/etc/gopher/gopher.toml"
 	}
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		return filepath.Join(home, ".gopher", "gopher.toml")
 	}
 	return "/etc/gopher/gopher.toml"
+}
+
+func defaultServiceEnvPath() string {
+	if serviceGetEUID() == 0 {
+		return "/etc/gopher/gopher.env"
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".gopher", "gopher.env")
+	}
+	return "/etc/gopher/gopher.env"
+}
+
+func defaultServiceBinaryPath() string {
+	if path, err := os.Executable(); err == nil && strings.TrimSpace(path) != "" {
+		return path
+	}
+	if serviceGetEUID() == 0 {
+		return "/usr/local/bin/gopher"
+	}
+	return "gopher"
 }
 
 func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {

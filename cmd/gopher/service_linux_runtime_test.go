@@ -417,7 +417,8 @@ func TestLinuxServiceLogsFallsBackToFileWhenUserJournalUnavailable(t *testing.T)
 		_ = args
 		_ = stdout
 		_ = stderr
-		return errors.New("failed to connect to user bus")
+		t.Fatalf("did not expect journalctl when runtime log file exists")
+		return nil
 	}
 
 	tmp := t.TempDir()
@@ -456,8 +457,8 @@ func TestLinuxServiceLogsFallsBackToFileWhenUserJournalUnavailable(t *testing.T)
 	if tailPath != logPath {
 		t.Fatalf("tail fallback path = %q, want %q", tailPath, logPath)
 	}
-	if !strings.Contains(stderr.String(), "falling back to log file") {
-		t.Fatalf("expected fallback notice in stderr, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "using runtime log file") {
+		t.Fatalf("expected runtime log file notice in stderr, got %q", stderr.String())
 	}
 }
 

@@ -478,6 +478,70 @@ func TestResolveServiceLogPath(t *testing.T) {
 	}
 }
 
+func TestLinuxServiceLogsFallsBackWithoutUnitWhenStateUnavailable(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	prevReadUnitStatus := readUnitStatusForManagedUnit
+	prevRunJournalctl := runJournalctlForService
+	prevRunTail := runTailForService
+	defer func() {
+		serviceGetEUIDForLinux = prevGetEUID
+		readUnitStatusForManagedUnit = prevReadUnitStatus
+		runJournalctlForService = prevRunJournalctl
+		runTailForService = prevRunTail
+	}()
+
+	serviceGetEUIDForLinux = func() int { return 1000 }
+	readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
+		_ = ctx
+		_ = scope
+		_ = unit
+		return unitStatus{}, errors.New("Failed to connect to bus: No medium found")
+	}
+	runJournalctlForService = func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = args
+		_ = stdout
+		_ = stderr
+		t.Fatalf("journalctl should not be called when unit state resolution fails")
+		return nil
+	}
+
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".gopher", "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	logPath := filepath.Join(tmp, ".gopher", "logs", "gateway.log")
+	if err := os.WriteFile(logPath, []byte("line1\n"), 0o644); err != nil {
+		t.Fatalf("write log file: %v", err)
+	}
+	t.Setenv("HOME", tmp)
+
+	var tailPath string
+	runTailForService = func(ctx context.Context, path string, lines int, follow bool, stdout, stderr io.Writer) error {
+		_ = ctx
+		_ = follow
+		_ = stdout
+		_ = stderr
+		tailPath = path
+		if lines != 5 {
+			t.Fatalf("lines = %d, want 5", lines)
+		}
+		return nil
+	}
+
+	var stderr bytes.Buffer
+	runtime := &linuxServiceRuntime{stdout: &bytes.Buffer{}, stderr: &stderr}
+	if err := runtime.Logs(context.Background(), serviceLogsOptions{Lines: 5}); err != nil {
+		t.Fatalf("Logs() error: %v", err)
+	}
+	if tailPath != logPath {
+		t.Fatalf("tail fallback path = %q, want %q", tailPath, logPath)
+	}
+	if !strings.Contains(stderr.String(), "service state unavailable, falling back to log file") {
+		t.Fatalf("expected state-unavailable fallback notice, got %q", stderr.String())
+	}
+}
+
 func TestLinuxServiceUninstallRemovesNodeUnitInUserScope(t *testing.T) {
 	prevGetEUID := serviceGetEUIDForLinux
 	prevHome := serviceUserHomeDir

@@ -551,17 +551,26 @@ func (r *linuxServiceRuntime) Restart(ctx context.Context, opts serviceTargetOpt
 
 func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) error {
 	scope := resolveServiceSystemdScope()
+	lines := opts.Lines
+	if lines <= 0 {
+		lines = 200
+	}
 	unit := strings.TrimSpace(opts.Unit)
 	if unit == "" {
 		resolvedUnit, err := resolveManagedServiceUnit(ctx, scope, opts.Target)
 		if err != nil {
+			if scope.user {
+				logPath, ok := resolveFallbackLogPathWithoutUnit()
+				if ok {
+					if r.stderr != nil {
+						fmt.Fprintf(r.stderr, "service state unavailable, falling back to log file: %s\n", logPath)
+					}
+					return runTailForService(ctx, logPath, lines, opts.Follow, r.stdout, r.stderr)
+				}
+			}
 			return err
 		}
 		unit = resolvedUnit
-	}
-	lines := opts.Lines
-	if lines <= 0 {
-		lines = 200
 	}
 	args := []string{"-u", unit, "--no-pager", "-n", fmt.Sprintf("%d", lines)}
 	if opts.Follow {
@@ -582,6 +591,24 @@ func (r *linuxServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions)
 		fmt.Fprintf(r.stderr, "journalctl unavailable, falling back to log file: %s\n", logPath)
 	}
 	return runTailForService(ctx, logPath, lines, opts.Follow, r.stdout, r.stderr)
+}
+
+func resolveFallbackLogPathWithoutUnit() (string, bool) {
+	workingDir := strings.TrimSpace(resolveServiceWorkingDir())
+	if workingDir == "" {
+		return "", false
+	}
+	logDir := filepath.Join(workingDir, "logs")
+	candidates := []string{
+		filepath.Join(logDir, "gateway.log"),
+		filepath.Join(logDir, "node.log"),
+	}
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, true
+		}
+	}
+	return "", false
 }
 
 func resolveServiceLogPath(unit string) (string, bool) {

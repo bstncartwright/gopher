@@ -95,6 +95,9 @@ func TestRunServiceSubcommandRoutesInstall(t *testing.T) {
 	if fake.installOpts.Role != "gateway" {
 		t.Fatalf("install role = %q, want gateway", fake.installOpts.Role)
 	}
+	if fake.installOpts.ConfigPath != defaultServiceGatewayConfigPath() {
+		t.Fatalf("install config path = %q, want %q", fake.installOpts.ConfigPath, defaultServiceGatewayConfigPath())
+	}
 }
 
 func TestRunServiceSubcommandRoutesRestart(t *testing.T) {

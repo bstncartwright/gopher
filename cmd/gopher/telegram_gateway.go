@@ -43,12 +43,21 @@ func startTelegramDMBridgeWithRuntime(
 ) (*telegramDMBridge, error) {
 	var err error
 	slog.Info("telegram_gateway: starting dm bridge", "workspace", workspace)
+	slog.Info(
+		"telegram_gateway: configuration",
+		"telegram_enabled", true,
+		"poll_interval", cfg.Telegram.PollInterval,
+		"poll_timeout", cfg.Telegram.PollTimeout,
+		"allowed_user_id_set", cfg.Telegram.AllowedUserID != "",
+		"allowed_chat_id_set", cfg.Telegram.AllowedChatID != "",
+	)
 	if agentRuntime == nil {
 		agentRuntime, err = loadGatewayAgentRuntime(workspace)
 		if err != nil {
 			return nil, fmt.Errorf("load gateway agents: %w", err)
 		}
 	}
+	slog.Info("telegram_gateway: runtime loaded", "runtime_agents", len(agentRuntime.Agents))
 	if executor == nil {
 		executor = agentRuntime.Executor
 	}
@@ -73,6 +82,11 @@ func startTelegramDMBridgeWithRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("create session manager: %w", err)
 	}
+	slog.Info(
+		"telegram_gateway: session manager created",
+		"agent_default_actor_id", agentRuntime.DefaultActorID,
+		"recover_on_start", true,
+	)
 
 	var cronRunner *gateway.CronRunner
 	if cfg.Cron.Enabled {
@@ -121,6 +135,7 @@ func startTelegramDMBridgeWithRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("create telegram transport: %w", err)
 	}
+	slog.Info("telegram_gateway: telegram transport initialized", "offset_path", filepath.Join(dataDir, "telegram", "offset.json"))
 
 	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
 		Manager:       manager,
@@ -157,6 +172,12 @@ func startTelegramDMBridgeWithRuntime(
 
 	// Wrap inbound processing with durable telegram ingress audit logging.
 	telegramBridge.SetInboundHandler(func(handlerCtx context.Context, inbound transport.InboundMessage) error {
+		slog.Info(
+			"telegram_gateway: inbound handler received message",
+			"conversation_id", inbound.ConversationID,
+			"sender_id", inbound.SenderID,
+			"event_id", inbound.EventID,
+		)
 		recordTelegramInbound(dataDir, inbound)
 		return processTelegramInbound(handlerCtx, inbound, pipeline, telegramBridge, dataDir, cfg.Telegram.AllowedChatID, cfg.Telegram.AllowedUserID)
 	})
@@ -172,6 +193,7 @@ func startTelegramDMBridgeWithRuntime(
 	}
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge.cancel = cancel
+	slog.Info("telegram_gateway: dm bridge supervisor started", "workspace", workspace)
 	go bridge.runSupervisor(bridgeCtx, logger)
 	return bridge, nil
 }
@@ -270,6 +292,9 @@ func (b *telegramDMBridge) runSupervisor(ctx context.Context, logger *log.Logger
 			return
 		}
 		attempt++
+		if logger != nil {
+			logger.Printf("telegram bridge start attempt=%d", attempt)
+		}
 		err := b.transport.Start(ctx)
 		if err == nil {
 			if ctx.Err() != nil {
@@ -277,6 +302,11 @@ func (b *telegramDMBridge) runSupervisor(ctx context.Context, logger *log.Logger
 			}
 		} else if logger != nil {
 			logger.Printf("telegram bridge degraded attempt=%d err=%v", attempt, err)
+			logger.Printf(
+				"telegram bridge retrying in %s (attempt=%d)",
+				channelBridgeRetryDelay(attempt),
+				attempt,
+			)
 		}
 		if ctx.Err() != nil {
 			return

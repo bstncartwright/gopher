@@ -37,7 +37,7 @@ const (
 
 var readUnitStatusForManagedUnit = readUnitStatus
 var loadGatewayConfigForStatus = func() (config.GatewayConfig, error) {
-	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: "/etc/gopher/gopher.toml"})
+	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: defaultServiceGatewayConfigPath()})
 	return cfg, err
 }
 

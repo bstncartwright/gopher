@@ -386,16 +386,6 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	return nil
 }
 
-func startGatewayProcess(
-	ctx context.Context,
-	cfg config.GatewayConfig,
-	fabric fabricts.Fabric,
-	executor sessionrt.AgentExecutor,
-	logger *log.Logger,
-) (*gatewayProcess, error) {
-	return startGatewayProcessWithCapabilityResolver(ctx, cfg, fabric, executor, nil, logger)
-}
-
 func startGatewayProcessWithCapabilityResolver(
 	ctx context.Context,
 	cfg config.GatewayConfig,

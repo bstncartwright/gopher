@@ -584,6 +584,9 @@ func applyGatewayEnv(cfg *GatewayConfig, env map[string]string) error {
 	}
 	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_BOT_TOKEN"]; ok {
 		cfg.Telegram.BotToken = strings.TrimSpace(value)
+	} else if value, ok := env["GOPHER_TELEGRAM_BOT_TOKEN"]; ok {
+		// Backward compatibility for onboarding-managed env files.
+		cfg.Telegram.BotToken = strings.TrimSpace(value)
 	}
 	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_POLL_INTERVAL"]; ok {
 		duration, err := time.ParseDuration(strings.TrimSpace(value))

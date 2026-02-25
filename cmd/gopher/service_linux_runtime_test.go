@@ -256,6 +256,40 @@ func TestEnsureGatewayConfigFilePreservesExistingFile(t *testing.T) {
 	}
 }
 
+func TestResolveTelegramTokenForAutoEnableFromEnvFile(t *testing.T) {
+	t.Parallel()
+
+	t.Setenv(telegramBotTokenEnvKey, "")
+	envPath := filepath.Join(t.TempDir(), "gopher.env")
+	if err := os.WriteFile(envPath, []byte("GOPHER_TELEGRAM_BOT_TOKEN=file-token\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	token, err := resolveTelegramTokenForAutoEnable(envPath)
+	if err != nil {
+		t.Fatalf("resolveTelegramTokenForAutoEnable() error: %v", err)
+	}
+	if token != "file-token" {
+		t.Fatalf("token = %q, want file-token", token)
+	}
+}
+
+func TestResolveTelegramTokenForAutoEnablePrefersProcessEnv(t *testing.T) {
+	t.Parallel()
+
+	t.Setenv(telegramBotTokenEnvKey, "process-token")
+	envPath := filepath.Join(t.TempDir(), "gopher.env")
+	if err := os.WriteFile(envPath, []byte("GOPHER_TELEGRAM_BOT_TOKEN=file-token\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	token, err := resolveTelegramTokenForAutoEnable(envPath)
+	if err != nil {
+		t.Fatalf("resolveTelegramTokenForAutoEnable() error: %v", err)
+	}
+	if token != "process-token" {
+		t.Fatalf("token = %q, want process-token", token)
+	}
+}
+
 func TestResolveServiceSystemdScopeUsesUserScopeWhenNotRoot(t *testing.T) {
 	prevGetEUID := serviceGetEUIDForLinux
 	defer func() { serviceGetEUIDForLinux = prevGetEUID }()

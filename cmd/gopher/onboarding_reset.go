@@ -124,6 +124,13 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 			return err
 		}
 		fmt.Fprintf(stdout, "configured %s in %s\n", telegramBotTokenEnvKey, envPath)
+		enabled, err := setGatewayTelegramEnabled(gatewayPath, true)
+		if err != nil {
+			return fmt.Errorf("enable gateway telegram in %s: %w", gatewayPath, err)
+		}
+		if enabled {
+			fmt.Fprintf(stdout, "enabled gateway telegram in %s\n", gatewayPath)
+		}
 	}
 	if telegramTokenValue == "" {
 		fmt.Fprintln(stdout, "telegram config incomplete (set bot token to enable telegram integration)")

@@ -103,7 +103,7 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 	case "install":
 		flags := flag.NewFlagSet("service install", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
-		configPath := flags.String("config", "/etc/gopher/gopher.toml", "gateway config path")
+		configPath := flags.String("config", defaultServiceGatewayConfigPath(), "gateway config path")
 		envPath := flags.String("env-file", "/etc/gopher/gopher.env", "service env file")
 		binaryPath := flags.String("binary-path", "/usr/local/bin/gopher", "binary path for service")
 		role := flags.String("role", "gateway", "service role (gateway|node)")
@@ -212,6 +212,16 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		printServiceUsage(stderr)
 		return fmt.Errorf("unknown service command %q", args[0])
 	}
+}
+
+func defaultServiceGatewayConfigPath() string {
+	if os.Geteuid() == 0 {
+		return "/etc/gopher/gopher.toml"
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".gopher", "gopher.toml")
+	}
+	return "/etc/gopher/gopher.toml"
 }
 
 func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {

@@ -125,3 +125,48 @@ func TestRunGatewayConfigSubcommandInitWritesTelegramTemplate(t *testing.T) {
 		t.Fatalf("generated config missing telegram block: %q", text)
 	}
 }
+
+func TestEnsureGatewayRunConfigExistsCreatesDefaultPrimary(t *testing.T) {
+	dir := t.TempDir()
+	if err := ensureGatewayRunConfigExists(dir, ""); err != nil {
+		t.Fatalf("ensureGatewayRunConfigExists() error: %v", err)
+	}
+
+	target := filepath.Join(dir, "gopher.toml")
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("expected gopher.toml to be created: %v", err)
+	}
+	if !strings.Contains(string(body), "[gateway]") {
+		t.Fatalf("default config missing [gateway] block")
+	}
+}
+
+func TestEnsureGatewayRunConfigExistsUsesLocalWithoutCreatingPrimary(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "gopher.local.toml")
+	if err := os.WriteFile(local, []byte("[gateway]\n"), 0o644); err != nil {
+		t.Fatalf("write local config: %v", err)
+	}
+
+	if err := ensureGatewayRunConfigExists(dir, ""); err != nil {
+		t.Fatalf("ensureGatewayRunConfigExists() error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "gopher.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected primary config to remain absent, stat err=%v", err)
+	}
+}
+
+func TestEnsureGatewayRunConfigExistsCreatesExplicitPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join("configs", "custom.toml")
+	if err := ensureGatewayRunConfigExists(dir, target); err != nil {
+		t.Fatalf("ensureGatewayRunConfigExists() error: %v", err)
+	}
+
+	absTarget := filepath.Join(dir, target)
+	if _, err := os.Stat(absTarget); err != nil {
+		t.Fatalf("expected explicit config path to be created: %v", err)
+	}
+}

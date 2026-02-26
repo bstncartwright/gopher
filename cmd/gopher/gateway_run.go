@@ -108,6 +108,9 @@ func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("resolve working directory: %w", err)
 		}
+		if err := ensureGatewayRunConfigExists(workingDir, inputs.ConfigPath); err != nil {
+			return err
+		}
 		cfg, sources, err := config.LoadGatewayConfig(config.GatewayLoadOptions{
 			WorkingDir: workingDir,
 			ConfigPath: inputs.ConfigPath,
@@ -282,6 +285,74 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 		inputs.Overrides.CronTimezone = &value
 	}
 	return inputs, nil
+}
+
+func ensureGatewayRunConfigExists(workingDir, explicitPath string) error {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return fmt.Errorf("working directory is required")
+	}
+	workspace, err := filepath.Abs(workingDir)
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+	workspace = filepath.Clean(workspace)
+
+	writeDefault := func(target string) error {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create config directory %s: %w", filepath.Dir(target), err)
+		}
+		if err := writeConfigFileWithBackup(target, []byte(config.DefaultGatewayTOML())); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if strings.TrimSpace(explicitPath) != "" {
+		target := strings.TrimSpace(explicitPath)
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(workspace, target)
+		}
+		target = filepath.Clean(target)
+		info, err := os.Stat(target)
+		if err == nil {
+			if info.IsDir() {
+				return fmt.Errorf("config path %s is a directory", target)
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat config file %s: %w", target, err)
+		}
+		return writeDefault(target)
+	}
+
+	primary := filepath.Join(workspace, "gopher.toml")
+	local := filepath.Join(workspace, "gopher.local.toml")
+
+	primaryInfo, primaryErr := os.Stat(primary)
+	if primaryErr == nil {
+		if primaryInfo.IsDir() {
+			return fmt.Errorf("config path %s is a directory", primary)
+		}
+		return nil
+	}
+	if !os.IsNotExist(primaryErr) {
+		return fmt.Errorf("stat config file %s: %w", primary, primaryErr)
+	}
+
+	localInfo, localErr := os.Stat(local)
+	if localErr == nil {
+		if localInfo.IsDir() {
+			return fmt.Errorf("config path %s is a directory", local)
+		}
+		return nil
+	}
+	if !os.IsNotExist(localErr) {
+		return fmt.Errorf("stat config file %s: %w", local, localErr)
+	}
+
+	return writeDefault(primary)
 }
 
 func wantsHelp(args []string) bool {

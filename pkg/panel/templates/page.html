@@ -20,7 +20,7 @@
     <header class="hero">
       <p class="eyebrow">Runtime Observability</p>
       <h1>Gopher Control Panel // Mission Control</h1>
-      <p class="hero-sub">Inspect user turns, agent outputs, tool traces, errors, and live deltas from a single timeline.</p>
+      <p class="hero-sub">Inspect user turns, agent outputs, tool traces, and errors from a single timeline.</p>
       <div class="hero-meta" aria-label="Console mode indicators">
         <span class="meta-pill">ops board</span>
         <span class="meta-pill">live feed</span>
@@ -281,6 +281,28 @@
         if (eventType === "tool_call") {
           var toolName = pickString(parsed, ["tool_name", "name", "tool", "id"]) || "tool";
           var toolInput = pick(parsed, ["arguments", "args", "input", "params", "payload"]);
+          var toolResult = pick(parsed, ["tool_result"]);
+          if (toolResult !== null && typeof toolResult === "object") {
+            var mergedStatus = pickString(toolResult, ["status", "state"]);
+            var mergedValue = pick(toolResult, ["result", "output", "value", "content", "error"]);
+            var mergedSummary = "Ran " + toolName;
+            if (mergedStatus) {
+              mergedSummary += " (" + mergedStatus + ")";
+            }
+            if (mergedValue !== null) {
+              mergedSummary += ": " + clip(summarizeValue(mergedValue), 180);
+            }
+            return mergedSummary;
+          }
+
+          var waiting = !!pick(parsed, ["waiting", "pending", "in_progress"]);
+          if (waiting) {
+            if (toolInput === null) {
+              return "Running " + toolName + "...";
+            }
+            return "Running " + toolName + " with " + clip(summarizeValue(toolInput), 180) + "...";
+          }
+
           if (toolInput === null) {
             return "Calling " + toolName + ".";
           }

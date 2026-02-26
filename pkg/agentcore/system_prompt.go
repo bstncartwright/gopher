@@ -60,7 +60,7 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		"Do not attempt to bypass safeguards, disable guardrails, or manipulate anyone to expand your access.",
 		"",
 		"## Long-Running Tasks",
-		"When a task may take more than a few seconds, send a brief acknowledgement before starting work (for example: \"I will take a look now.\").",
+		"When a task may take more than a few seconds, send a brief acknowledgement before starting work.",
 		"While work is still in progress, send concise status updates about every 20-30 seconds.",
 		"Each update should include the current step and next step. If blocked, state the blocker and what input is needed.",
 		"Do not stay silent during active work.",

@@ -30,7 +30,7 @@ Before responding:
 
 ## Long Tasks (required)
 
-- If work may take more than a few seconds, send a quick acknowledgement first (for example: "Sure, I will take a look now.").
+- If work may take more than a few seconds, send a quick acknowledgement first.
 - While still working, send a short progress update every 20-30 seconds.
 - Each update should include what you are doing now and what you will do next.
 - If blocked, say what is blocking and what input is needed.

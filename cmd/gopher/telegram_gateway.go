@@ -138,12 +138,11 @@ func startTelegramDMBridgeWithRuntime(
 	slog.Info("telegram_gateway: telegram transport initialized", "offset_path", filepath.Join(dataDir, "telegram", "offset.json"))
 
 	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
-		Manager:         manager,
-		Transport:       telegramBridge,
-		AgentID:         agentRuntime.DefaultActorID,
-		Conversations:   gateway.NewConversationSessionMap(),
-		Bindings:        bindingStore,
-		ProgressUpdates: true,
+		Manager:       manager,
+		Transport:     telegramBridge,
+		AgentID:       agentRuntime.DefaultActorID,
+		Conversations: gateway.NewConversationSessionMap(),
+		Bindings:      bindingStore,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create telegram dm pipeline: %w", err)

@@ -9,11 +9,11 @@
     {{if and .ConversationID (ne .ConversationID .Title)}}
     <p>Room: {{.ConversationID}}</p>
     {{end}}
-    <p>Last sequence: {{.LastSeq}}</p>
+    <p>Last sequence: {{.LastSeq}} · Events: {{len .Events}}</p>
   </header>
 
   {{range .Events}}
-  <article class="event-row">
+  <article class="event-row" data-event-row data-event-type="{{.Type}}">
     <div class="event-topline">
       <span class="seq">#{{.Seq}}</span>
       <span class="badge {{.BadgeClass}}">{{.Type}}</span>
@@ -21,14 +21,18 @@
       <span class="event-time">{{.Timestamp}}</span>
     </div>
 
-    {{if .Collapsed}}
-    <details class="payload payload-collapsed">
-      <summary>View payload</summary>
-      <pre>{{.Payload}}</pre>
-    </details>
-    {{else}}
-    <pre class="payload">{{.Payload}}</pre>
-    {{end}}
+    <div class="event-digest" data-event-digest>Summarizing work details...</div>
+
+    <div class="event-raw">
+      {{if .Collapsed}}
+      <details class="payload payload-collapsed">
+        <summary>View payload</summary>
+        <pre>{{.Payload}}</pre>
+      </details>
+      {{else}}
+      <pre class="payload">{{.Payload}}</pre>
+      {{end}}
+    </div>
   </article>
   {{end}}
 </section>

@@ -28,42 +28,90 @@
       </div>
     </header>
 
-    <section id="panel-overview" class="card overview" hx-get="/_gopher/panel/fragments/overview" hx-trigger="load, every 8s">
-      <div class="loading">Loading overview...</div>
+    <nav class="panel-tabs" role="tablist" aria-label="Panel sections">
+      <button type="button" class="tab-btn is-active" role="tab" aria-selected="true" data-panel-tab="control">Control</button>
+      <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="sessions">Sessions</button>
+      <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="nodes">Nodes</button>
+      <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="actions">Control Actions</button>
+      <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="agents">Agents</button>
+    </nav>
+
+    <section class="tab-pane is-active" data-tab-pane="control">
+      <section id="panel-control" class="card overview" hx-get="/_gopher/panel/fragments/control" hx-trigger="load, every 8s">
+        <div class="loading">Loading control board...</div>
+      </section>
     </section>
 
-    <section class="workspace-grid">
-      <article class="card sessions">
-        <header class="section-header">
-          <h2>Sessions</h2>
-          <p>{{if .HasSessionStore}}Live runtime with fast filtering{{else}}Limited mode (session runtime unavailable){{end}}</p>
-          <div class="sessions-controls">
-            <label class="visually-hidden" for="session-search">Filter sessions</label>
-            <input id="session-search" class="control-input" type="search" placeholder="Filter by session, room, or status" autocomplete="off">
-            <div class="chip-group" role="group" aria-label="Session status filter">
-              <button type="button" class="chip" data-status-filter="all">All</button>
-              <button type="button" class="chip" data-status-filter="active">Active</button>
-              <button type="button" class="chip" data-status-filter="paused">Paused</button>
-              <button type="button" class="chip" data-status-filter="failed">Failed</button>
+    <section class="tab-pane" data-tab-pane="sessions">
+      <section class="workspace-grid">
+        <article class="card sessions">
+          <header class="section-header">
+            <h2>Sessions</h2>
+            <p>{{if .HasSessionStore}}Live runtime with fast filtering{{else}}Limited mode (session runtime unavailable){{end}}</p>
+            <div class="sessions-controls">
+              <label class="visually-hidden" for="session-search">Filter sessions</label>
+              <input id="session-search" class="control-input" type="search" placeholder="Filter by session, room, or status" autocomplete="off">
+              <div class="chip-group" role="group" aria-label="Session status filter">
+                <button type="button" class="chip" data-status-filter="all">All</button>
+                <button type="button" class="chip" data-status-filter="active">Active</button>
+                <button type="button" class="chip" data-status-filter="paused">Paused</button>
+                <button type="button" class="chip" data-status-filter="failed">Failed</button>
+              </div>
             </div>
+          </header>
+          <div id="sessions-list" hx-get="/_gopher/panel/fragments/sessions" hx-trigger="load, every 5s">
+            <div class="loading">Loading sessions...</div>
           </div>
+        </article>
+
+        <article class="card detail">
+          <header class="section-header">
+            <h2>Timeline</h2>
+            <p>Switch between a compact work summary and full payload JSON.</p>
+            <div class="chip-group" role="group" aria-label="Timeline payload view">
+              <button type="button" class="chip" data-view-toggle="digest" aria-pressed="true">Work view</button>
+              <button type="button" class="chip" data-view-toggle="raw" aria-pressed="false">Raw JSON</button>
+            </div>
+          </header>
+          <div id="session-detail">
+            <div class="empty-state">Choose a session to inspect its event stream.</div>
+          </div>
+        </article>
+      </section>
+    </section>
+
+    <section class="tab-pane" data-tab-pane="nodes">
+      <article class="card agents">
+        <header class="section-header">
+          <h2>Nodes</h2>
+          <p>Gateway and worker heartbeat/capability view.</p>
         </header>
-        <div id="sessions-list" hx-get="/_gopher/panel/fragments/sessions" hx-trigger="load, every 5s">
-          <div class="loading">Loading sessions...</div>
+        <div id="nodes-list" hx-get="/_gopher/panel/fragments/nodes-table" hx-trigger="load, every 8s">
+          <div class="loading">Loading nodes...</div>
         </div>
       </article>
+    </section>
 
-      <article class="card detail">
+    <section class="tab-pane" data-tab-pane="actions">
+      <article class="card agents">
         <header class="section-header">
-          <h2>Timeline</h2>
-          <p>Switch between a compact work summary and full payload JSON.</p>
-          <div class="chip-group" role="group" aria-label="Timeline payload view">
-            <button type="button" class="chip" data-view-toggle="digest" aria-pressed="true">Work view</button>
-            <button type="button" class="chip" data-view-toggle="raw" aria-pressed="false">Raw JSON</button>
-          </div>
+          <h2>Control Actions</h2>
+          <p>Recent pause/resume and control action outcomes.</p>
         </header>
-        <div id="session-detail">
-          <div class="empty-state">Choose a session to inspect its event stream.</div>
+        <div id="actions-list" hx-get="/_gopher/panel/fragments/control-actions" hx-trigger="load, every 8s">
+          <div class="loading">Loading control actions...</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-pane" data-tab-pane="agents">
+      <article class="card agents">
+        <header class="section-header">
+          <h2>Agents</h2>
+          <p>Loaded runtime agents and effective configuration at a glance.</p>
+        </header>
+        <div id="agents-list" hx-get="/_gopher/panel/fragments/agents" hx-trigger="load, every 20s">
+          <div class="loading">Loading agents...</div>
         </div>
       </article>
     </section>
@@ -71,13 +119,20 @@
 
   <script>
     (function () {
+      var storedTab = localStorage.getItem("gopher.panel.activeTab");
+      var initialTab = "control";
+      if (storedTab === "sessions" || storedTab === "agents" || storedTab === "control" || storedTab === "nodes" || storedTab === "actions") {
+        initialTab = storedTab;
+      }
+
       var state = {
         sessionID: "",
         lastSeq: 0,
         source: null,
         payloadView: localStorage.getItem("gopher.panel.payloadView") === "raw" ? "raw" : "digest",
         sessionQuery: "",
-        statusFilter: "all"
+        statusFilter: "all",
+        activeTab: initialTab
       };
 
       function clip(value, max) {
@@ -363,7 +418,7 @@
       }
 
       function highlightSelected() {
-        var nodes = document.querySelectorAll("[data-session-card]");
+        var nodes = document.querySelectorAll("#sessions-list [data-session-card]");
         for (var i = 0; i < nodes.length; i++) {
           var node = nodes[i];
           var id = node.getAttribute("data-session-id") || "";
@@ -375,10 +430,38 @@
         }
       }
 
+      function ensureSelectedSession() {
+        var cards = document.querySelectorAll("#sessions-list [data-session-card]:not(.session-hidden)");
+        if (!cards.length) {
+          return;
+        }
+
+        if (state.sessionID) {
+          for (var i = 0; i < cards.length; i++) {
+            if ((cards[i].getAttribute("data-session-id") || "") === state.sessionID) {
+              highlightSelected();
+              return;
+            }
+          }
+        }
+
+        var first = cards[0];
+        var sessionID = first.getAttribute("data-session-id") || "";
+        var lastSeq = first.getAttribute("data-last-seq") || "0";
+        if (!sessionID) {
+          return;
+        }
+        selectSession(sessionID, lastSeq);
+        htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(sessionID), {
+          target: "#session-detail",
+          swap: "innerHTML"
+        });
+      }
+
       function applySessionFilters() {
         var query = normalize(state.sessionQuery);
         var statusFilter = normalize(state.statusFilter);
-        var cards = document.querySelectorAll("[data-session-card]");
+        var cards = document.querySelectorAll("#sessions-list [data-session-card]");
 
         for (var i = 0; i < cards.length; i++) {
           var card = cards[i];
@@ -412,6 +495,27 @@
         }
       }
 
+      function applyTabState() {
+        var tabs = document.querySelectorAll("[data-panel-tab]");
+        for (var i = 0; i < tabs.length; i++) {
+          var tab = tabs[i];
+          var isActive = tab.getAttribute("data-panel-tab") === state.activeTab;
+          tab.classList.toggle("is-active", isActive);
+          tab.setAttribute("aria-selected", isActive ? "true" : "false");
+        }
+
+        var panes = document.querySelectorAll("[data-tab-pane]");
+        for (var j = 0; j < panes.length; j++) {
+          var pane = panes[j];
+          var paneActive = pane.getAttribute("data-tab-pane") === state.activeTab;
+          pane.classList.toggle("is-active", paneActive);
+        }
+
+        if (state.activeTab === "sessions") {
+          ensureSelectedSession();
+        }
+      }
+
       function hydrateTimeline() {
         var rows = document.querySelectorAll("#session-detail [data-event-row]");
         for (var i = 0; i < rows.length; i++) {
@@ -429,14 +533,25 @@
       }
 
       document.body.addEventListener("click", function (event) {
-        var node = event.target.closest("[data-session-card]");
-        if (!node) {
+        var tabButton = event.target.closest("[data-panel-tab]");
+        if (tabButton) {
+          event.preventDefault();
+          var tabID = tabButton.getAttribute("data-panel-tab") || "control";
+          if (tabID !== "control" && tabID !== "sessions" && tabID !== "agents" && tabID !== "nodes" && tabID !== "actions") {
+            tabID = "control";
+          }
+          state.activeTab = tabID;
+          localStorage.setItem("gopher.panel.activeTab", tabID);
+          applyTabState();
           return;
         }
-        selectSession(node.getAttribute("data-session-id") || "", node.getAttribute("data-last-seq") || "0");
-      });
 
-      document.body.addEventListener("click", function (event) {
+        var node = event.target.closest("[data-session-card]");
+        if (node) {
+          selectSession(node.getAttribute("data-session-id") || "", node.getAttribute("data-last-seq") || "0");
+          return;
+        }
+
         var viewToggle = event.target.closest("[data-view-toggle]");
         if (viewToggle) {
           event.preventDefault();
@@ -451,6 +566,7 @@
           event.preventDefault();
           state.statusFilter = statusFilter.getAttribute("data-status-filter") || "all";
           applySessionFilters();
+          ensureSelectedSession();
         }
       });
 
@@ -466,6 +582,7 @@
         if (event.detail.target.id === "sessions-list") {
           highlightSelected();
           applySessionFilters();
+          ensureSelectedSession();
         }
       });
 
@@ -474,11 +591,13 @@
         sessionSearch.addEventListener("input", function () {
           state.sessionQuery = sessionSearch.value || "";
           applySessionFilters();
+          ensureSelectedSession();
         });
       }
 
       applyPayloadView();
       applySessionFilters();
+      applyTabState();
       hydrateTimeline();
       window.addEventListener("beforeunload", closeSource);
     })();

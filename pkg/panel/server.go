@@ -45,11 +45,32 @@ type SessionMetadata struct {
 
 type SessionMetadataResolver func(sessionID sessionrt.SessionID) (SessionMetadata, bool)
 
+type AgentInfo struct {
+	AgentID              string
+	Name                 string
+	Role                 string
+	Workspace            string
+	ModelPolicy          string
+	RequiredCapabilities []string
+	EnabledTools         []string
+	SkillsPaths          []string
+	KnownAgents          []string
+	FSRoots              []string
+	AllowDomains         []string
+	BlockDomains         []string
+	CanShell             bool
+	ApplyPatchEnabled    bool
+	CaptureThinking      bool
+	NetworkEnabled       bool
+	MaxContextMessages   int
+}
+
 type ServerOptions struct {
 	ListenAddr      string
 	Store           SessionStore
 	SessionMetadata SessionMetadataResolver
 	NodeSnapshot    func() []scheduler.NodeInfo
+	AgentSnapshot   func() []AgentInfo
 	ControlDir      string
 }
 
@@ -58,6 +79,7 @@ type Server struct {
 	store           SessionStore
 	sessionMetadata SessionMetadataResolver
 	nodeSnapshot    func() []scheduler.NodeInfo
+	agentSnapshot   func() []AgentInfo
 	controlDir      string
 	templates       *template.Template
 	assets          fs.FS
@@ -83,6 +105,48 @@ type overviewNode struct {
 	HeartbeatAt   string
 	Capabilities  string
 	IsGatewayNode bool
+}
+
+type nodesData struct {
+	Now   string
+	Nodes []overviewNode
+}
+
+type controlData struct {
+	Now          string
+	HasControl   bool
+	ExecSummary  controlSummary
+	WaitingItems []controlWaitingItem
+	Delegations  []controlDelegation
+}
+
+type controlActionsData struct {
+	Now           string
+	HasControl    bool
+	RecentActions []controlActionRecord
+}
+
+type agentsData struct {
+	Now    string
+	Agents []agentRow
+}
+
+type agentRow struct {
+	AgentID              string
+	Name                 string
+	Role                 string
+	Workspace            string
+	ModelPolicy          string
+	RequiredCapabilities string
+	EnabledTools         string
+	SkillsPaths          string
+	KnownAgents          string
+	FSRoots              string
+	NetworkSummary       string
+	CanShell             string
+	ApplyPatchEnabled    string
+	CaptureThinking      string
+	MaxContextMessages   int
 }
 
 type controlSummary struct {
@@ -172,12 +236,17 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if nodeSnapshot == nil {
 		nodeSnapshot = func() []scheduler.NodeInfo { return nil }
 	}
+	agentSnapshot := opts.AgentSnapshot
+	if agentSnapshot == nil {
+		agentSnapshot = func() []AgentInfo { return nil }
+	}
 	slog.Info("panel_server: created", "listen_addr", listenAddr, "has_store", opts.Store != nil)
 	return &Server{
 		listenAddr:      listenAddr,
 		store:           opts.Store,
 		sessionMetadata: opts.SessionMetadata,
 		nodeSnapshot:    nodeSnapshot,
+		agentSnapshot:   agentSnapshot,
 		controlDir:      strings.TrimSpace(opts.ControlDir),
 		templates:       tpl,
 		assets:          assetsFS,
@@ -247,9 +316,13 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("GET /_gopher/panel", s.handlePage)
 	mux.HandleFunc("GET /_gopher/panel/health", s.handleHealth)
 	mux.HandleFunc("GET /_gopher/panel/nodes", s.handleNodes)
+	mux.HandleFunc("GET /_gopher/panel/fragments/control", s.handleControl)
+	mux.HandleFunc("GET /_gopher/panel/fragments/nodes-table", s.handleNodesFragment)
+	mux.HandleFunc("GET /_gopher/panel/fragments/control-actions", s.handleControlActions)
 	mux.HandleFunc("GET /_gopher/panel/fragments/overview", s.handleOverview)
 	mux.HandleFunc("GET /_gopher/panel/fragments/sessions", s.handleSessions)
 	mux.HandleFunc("GET /_gopher/panel/fragments/session/{sessionID}", s.handleSessionDetail)
+	mux.HandleFunc("GET /_gopher/panel/fragments/agents", s.handleAgents)
 	mux.HandleFunc("GET /_gopher/panel/stream/session/{sessionID}", s.handleSessionStream)
 	mux.HandleFunc("GET /_gopher/panel/assets/panel.css", s.handleCSS)
 	return mux
@@ -275,25 +348,34 @@ func (s *Server) handleNodes(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, _ *http.Request) {
-	nodes := s.nodeSnapshot()
-	rows := make([]overviewNode, 0, len(nodes))
-	for _, node := range nodes {
-		rows = append(rows, overviewNode{
-			NodeID:        strings.TrimSpace(node.NodeID),
-			Role:          nodeRoleText(node.IsGateway),
-			HeartbeatAt:   formatTime(node.LastHeartbeat),
-			Capabilities:  formatCapabilities(node.Capabilities),
-			IsGatewayNode: node.IsGateway,
-		})
-	}
+	// Keep overview route for compatibility and render the control board.
+	s.handleControl(w, nil)
+}
+
+func (s *Server) handleControl(w http.ResponseWriter, _ *http.Request) {
 	summary, waiting, delegations, actions := s.loadControlOverview()
-	s.renderTemplate(w, "overview.html", overviewData{
+	_ = actions
+	s.renderTemplate(w, "control.html", controlData{
+		Now:          time.Now().UTC().Format(time.RFC3339),
+		HasControl:   s.controlDir != "",
+		ExecSummary:  summary,
+		WaitingItems: waiting,
+		Delegations:  delegations,
+	})
+}
+
+func (s *Server) handleNodesFragment(w http.ResponseWriter, _ *http.Request) {
+	s.renderTemplate(w, "nodes.html", nodesData{
+		Now:   time.Now().UTC().Format(time.RFC3339),
+		Nodes: snapshotOverviewNodes(s.nodeSnapshot()),
+	})
+}
+
+func (s *Server) handleControlActions(w http.ResponseWriter, _ *http.Request) {
+	_, _, _, actions := s.loadControlOverview()
+	s.renderTemplate(w, "control_actions.html", controlActionsData{
 		Now:           time.Now().UTC().Format(time.RFC3339),
-		Nodes:         rows,
 		HasControl:    s.controlDir != "",
-		ExecSummary:   summary,
-		WaitingItems:  waiting,
-		Delegations:   delegations,
 		RecentActions: actions,
 	})
 }
@@ -376,6 +458,71 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		data.Title = data.SessionID
 	}
 	s.renderTemplate(w, "session_detail.html", data)
+}
+
+func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
+	snapshot := s.agentSnapshot()
+	rows := make([]agentRow, 0, len(snapshot))
+	for _, info := range snapshot {
+		agentID := strings.TrimSpace(info.AgentID)
+		if agentID == "" {
+			continue
+		}
+		name := strings.TrimSpace(info.Name)
+		if name == "" {
+			name = agentID
+		}
+		role := strings.TrimSpace(info.Role)
+		if role == "" {
+			role = "-"
+		}
+		workspace := strings.TrimSpace(info.Workspace)
+		if workspace == "" {
+			workspace = "-"
+		}
+		model := strings.TrimSpace(info.ModelPolicy)
+		if model == "" {
+			model = "-"
+		}
+		rows = append(rows, agentRow{
+			AgentID:              agentID,
+			Name:                 name,
+			Role:                 role,
+			Workspace:            workspace,
+			ModelPolicy:          model,
+			RequiredCapabilities: formatStringList(info.RequiredCapabilities),
+			EnabledTools:         formatStringList(info.EnabledTools),
+			SkillsPaths:          formatStringList(info.SkillsPaths),
+			KnownAgents:          formatStringList(info.KnownAgents),
+			FSRoots:              formatStringList(info.FSRoots),
+			NetworkSummary:       formatNetworkSummary(info.NetworkEnabled, info.AllowDomains, info.BlockDomains),
+			CanShell:             boolStateText(info.CanShell),
+			ApplyPatchEnabled:    boolStateText(info.ApplyPatchEnabled),
+			CaptureThinking:      boolStateText(info.CaptureThinking),
+			MaxContextMessages:   info.MaxContextMessages,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].AgentID < rows[j].AgentID
+	})
+	s.renderTemplate(w, "agents.html", agentsData{
+		Now:    time.Now().UTC().Format(time.RFC3339),
+		Agents: rows,
+	})
+}
+
+func snapshotOverviewNodes(nodes []scheduler.NodeInfo) []overviewNode {
+	rows := make([]overviewNode, 0, len(nodes))
+	for _, node := range nodes {
+		rows = append(rows, overviewNode{
+			NodeID:        strings.TrimSpace(node.NodeID),
+			Role:          nodeRoleText(node.IsGateway),
+			HeartbeatAt:   formatTime(node.LastHeartbeat),
+			Capabilities:  formatCapabilities(node.Capabilities),
+			IsGatewayNode: node.IsGateway,
+		})
+	}
+	return rows
 }
 
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
@@ -765,4 +912,38 @@ func asInt64(value any) int64 {
 	default:
 		return 0
 	}
+}
+
+func formatStringList(values []string) string {
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		candidate := strings.TrimSpace(value)
+		if candidate == "" {
+			continue
+		}
+		trimmed = append(trimmed, candidate)
+	}
+	if len(trimmed) == 0 {
+		return "-"
+	}
+	return strings.Join(trimmed, ", ")
+}
+
+func boolStateText(value bool) string {
+	if value {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func formatNetworkSummary(enabled bool, allow []string, block []string) string {
+	if !enabled {
+		return "disabled"
+	}
+	allowText := formatStringList(allow)
+	blockText := formatStringList(block)
+	if allowText == "-" && blockText == "-" {
+		return "enabled"
+	}
+	return fmt.Sprintf("allow: %s · block: %s", allowText, blockText)
 }

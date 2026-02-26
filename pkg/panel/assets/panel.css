@@ -177,6 +177,51 @@ h1 {
   background: rgba(117, 212, 166, 0.09);
 }
 
+.panel-tabs {
+  margin: 0 0 12px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(7, 11, 11, 0.72);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  box-shadow: var(--panel-shadow);
+}
+
+.tab-btn {
+  border: 1px solid rgba(149, 167, 159, 0.3);
+  border-radius: 4px;
+  background: rgba(3, 7, 7, 0.72);
+  color: #9ab0a7;
+  padding: 7px 12px;
+  font-family: "IBM Plex Mono", Menlo, monospace;
+  font-size: 0.73rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.tab-btn:hover {
+  color: #d8e6df;
+  border-color: var(--line-strong);
+}
+
+.tab-btn.is-active {
+  color: #abf7cb;
+  border-color: var(--accent-strong);
+  background: rgba(117, 212, 166, 0.14);
+}
+
+.tab-pane {
+  display: none;
+}
+
+.tab-pane.is-active {
+  display: block;
+}
+
 .card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -297,6 +342,12 @@ h1 {
   flex-direction: column;
 }
 
+.agents {
+  min-height: 620px;
+  display: flex;
+  flex-direction: column;
+}
+
 #sessions-list,
 #session-detail {
   padding: 10px 12px 12px;
@@ -306,8 +357,28 @@ h1 {
   z-index: 1;
 }
 
+#agents-list {
+  padding: 10px 12px 12px;
+  overflow: auto;
+  max-height: 700px;
+  position: relative;
+  z-index: 1;
+}
+
+#nodes-list,
+#actions-list {
+  padding: 10px 12px 12px;
+  overflow: auto;
+  max-height: 700px;
+  position: relative;
+  z-index: 1;
+}
+
 #sessions-list::-webkit-scrollbar,
 #session-detail::-webkit-scrollbar,
+#agents-list::-webkit-scrollbar,
+#nodes-list::-webkit-scrollbar,
+#actions-list::-webkit-scrollbar,
 .payload::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -315,6 +386,9 @@ h1 {
 
 #sessions-list::-webkit-scrollbar-thumb,
 #session-detail::-webkit-scrollbar-thumb,
+#agents-list::-webkit-scrollbar-thumb,
+#nodes-list::-webkit-scrollbar-thumb,
+#actions-list::-webkit-scrollbar-thumb,
 .payload::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgba(167, 192, 180, 0.28);
@@ -322,6 +396,9 @@ h1 {
 
 #sessions-list::-webkit-scrollbar-track,
 #session-detail::-webkit-scrollbar-track,
+#agents-list::-webkit-scrollbar-track,
+#nodes-list::-webkit-scrollbar-track,
+#actions-list::-webkit-scrollbar-track,
 .payload::-webkit-scrollbar-track {
   background: rgba(2, 7, 7, 0.48);
 }
@@ -499,6 +576,79 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 8px;
   margin-bottom: 14px;
+}
+
+.agent-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+.agent-card {
+  border: 1px solid rgba(149, 167, 159, 0.26);
+  border-radius: 6px;
+  background: linear-gradient(145deg, rgba(15, 21, 21, 0.9), rgba(8, 13, 13, 0.88));
+  padding: 10px 11px;
+}
+
+.agent-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-head h3 {
+  margin: 0;
+  font-family: "Teko", "IBM Plex Sans", sans-serif;
+  font-size: 1.3rem;
+  line-height: 0.9;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #eaf5ef;
+}
+
+.agent-id {
+  margin: 0;
+  color: #98b0a7;
+  font-size: 0.7rem;
+}
+
+.agent-role {
+  margin: 5px 0 8px;
+  color: #b9ccc3;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.agent-kv {
+  margin: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.agent-kv-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 110px) 1fr;
+  gap: 8px;
+  border-bottom: 1px dashed rgba(149, 167, 159, 0.17);
+  padding: 4px 0;
+}
+
+.agent-kv-row dt {
+  margin: 0;
+  color: #8fa39a;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-kv-row dd {
+  margin: 0;
+  color: #d2dfd8;
+  font-size: 0.72rem;
+  word-break: break-word;
 }
 
 .summary-pill {
@@ -725,12 +875,16 @@ h1 {
   }
 
   #sessions-list,
-  #session-detail {
+  #session-detail,
+  #agents-list,
+  #nodes-list,
+  #actions-list {
     max-height: none;
   }
 
   .sessions,
-  .detail {
+  .detail,
+  .agents {
     min-height: auto;
   }
 }
@@ -753,7 +907,10 @@ h1 {
   }
 
   #sessions-list,
-  #session-detail {
+  #session-detail,
+  #agents-list,
+  #nodes-list,
+  #actions-list {
     padding: 10px;
   }
 }

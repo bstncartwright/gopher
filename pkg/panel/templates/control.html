@@ -1,0 +1,71 @@
+<div class="overview-head">
+  <h2>Executive Summary</h2>
+  <p>Updated {{.Now}}</p>
+</div>
+
+{{if .HasControl}}
+<div class="summary-grid">
+  <div class="summary-pill pill-active">Active: {{.ExecSummary.Active}}</div>
+  <div class="summary-pill pill-paused">Paused: {{.ExecSummary.Paused}}</div>
+  <div class="summary-pill pill-completed">Completed: {{.ExecSummary.Completed}}</div>
+  <div class="summary-pill pill-failed">Failed: {{.ExecSummary.Failed}}</div>
+  <div class="summary-pill pill-waiting">Waiting: {{.ExecSummary.Waiting}}</div>
+  <div class="summary-pill pill-delegated">Delegated: {{.ExecSummary.Delegated}}</div>
+</div>
+
+<div class="overview-head">
+  <h2>Waiting On Human</h2>
+</div>
+{{if .WaitingItems}}
+<table class="node-table">
+  <thead>
+    <tr>
+      <th>Session</th>
+      <th>Reason</th>
+      <th>Updated</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .WaitingItems}}
+    <tr>
+      <td class="node-id">{{.SessionID}}</td>
+      <td>{{.Reason}}</td>
+      <td>{{.UpdatedAt}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<div class="empty-state">No sessions currently waiting on human input.</div>
+{{end}}
+
+<div class="overview-head">
+  <h2>Delegations</h2>
+</div>
+{{if .Delegations}}
+<table class="node-table">
+  <thead>
+    <tr>
+      <th>Delegation</th>
+      <th>Source</th>
+      <th>Target</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Delegations}}
+    <tr>
+      <td class="node-id">{{.DelegationID}}</td>
+      <td>{{.SourceAgentID}} / {{.SourceSessionID}}</td>
+      <td>{{.TargetAgentID}}</td>
+      <td>{{.Status}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<div class="empty-state">No delegation sessions yet.</div>
+{{end}}
+{{else}}
+<div class="empty-state">Control directory unavailable for this runtime.</div>
+{{end}}

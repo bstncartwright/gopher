@@ -1,0 +1,71 @@
+<div class="overview-head">
+  <h2>Runtime Agent Registry</h2>
+  <p>Updated {{.Now}}</p>
+</div>
+
+{{if not .Agents}}
+<div class="empty-state">No runtime agents loaded yet.</div>
+{{else}}
+<div class="agent-grid">
+  {{range .Agents}}
+  <article class="agent-card">
+    <header class="agent-head">
+      <h3>{{.Name}}</h3>
+      <p class="agent-id">{{.AgentID}}</p>
+    </header>
+    <p class="agent-role">{{.Role}}</p>
+
+    <dl class="agent-kv">
+      <div class="agent-kv-row">
+        <dt>Workspace</dt>
+        <dd class="node-id">{{.Workspace}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Model</dt>
+        <dd>{{.ModelPolicy}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Required Caps</dt>
+        <dd>{{.RequiredCapabilities}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Tools</dt>
+        <dd>{{.EnabledTools}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Skills Paths</dt>
+        <dd>{{.SkillsPaths}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Known Agents</dt>
+        <dd>{{.KnownAgents}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>FS Roots</dt>
+        <dd>{{.FSRoots}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Network</dt>
+        <dd>{{.NetworkSummary}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Shell</dt>
+        <dd>{{.CanShell}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Apply Patch</dt>
+        <dd>{{.ApplyPatchEnabled}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Thinking Deltas</dt>
+        <dd>{{.CaptureThinking}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Max Context</dt>
+        <dd>{{.MaxContextMessages}}</dd>
+      </div>
+    </dl>
+  </article>
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,29 @@
+<div class="overview-head">
+  <h2>Gateway & Node Health</h2>
+  <p>Updated {{.Now}}</p>
+</div>
+
+{{if .Nodes}}
+<table class="node-table">
+  <thead>
+    <tr>
+      <th>Node</th>
+      <th>Role</th>
+      <th>Last Heartbeat</th>
+      <th>Capabilities</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Nodes}}
+    <tr>
+      <td class="node-id">{{.NodeID}}</td>
+      <td><span class="node-role {{if .IsGatewayNode}}gateway{{else}}worker{{end}}">{{.Role}}</span></td>
+      <td>{{.HeartbeatAt}}</td>
+      <td class="caps">{{.Capabilities}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<div class="empty-state">No nodes are currently registered.</div>
+{{end}}

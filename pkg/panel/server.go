@@ -87,6 +87,7 @@ type Server struct {
 
 type pageData struct {
 	HasSessionStore bool
+	ActiveTab       string
 }
 
 type overviewNode struct {
@@ -201,10 +202,11 @@ type eventRow struct {
 	Timestamp  string
 	From       string
 	Type       string
+	TypeLabel  string
 	Payload    string
 	Collapsed  bool
+	Waiting    bool
 	BadgeClass string
-	BadgeLabel string
 	RoleClass  string
 }
 
@@ -306,6 +308,7 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 func (s *Server) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_gopher/panel", s.handlePage)
+	mux.HandleFunc("GET /_gopher/panel/tab/{tab}", s.handlePageTab)
 	mux.HandleFunc("GET /_gopher/panel/health", s.handleHealth)
 	mux.HandleFunc("GET /_gopher/panel/nodes", s.handleNodes)
 	mux.HandleFunc("GET /_gopher/panel/fragments/control", s.handleControl)
@@ -320,8 +323,26 @@ func (s *Server) newMux() *http.ServeMux {
 	return mux
 }
 
-func (s *Server) handlePage(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "page.html", pageData{HasSessionStore: s.store != nil})
+func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
+	tab := ""
+	if r != nil {
+		tab = normalizePanelTab(r.URL.Query().Get("tab"))
+	}
+	s.renderTemplate(w, "page.html", pageData{
+		HasSessionStore: s.store != nil,
+		ActiveTab:       tab,
+	})
+}
+
+func (s *Server) handlePageTab(w http.ResponseWriter, r *http.Request) {
+	tab := normalizePanelTab(r.PathValue("tab"))
+	if tab == "" {
+		tab = "control"
+	}
+	s.renderTemplate(w, "page.html", pageData{
+		HasSessionStore: s.store != nil,
+		ActiveTab:       tab,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -678,33 +699,212 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+type pendingToolCallRow struct {
+	RowIndex    int
+	ToolName    string
+	CallPayload map[string]any
+}
+
 func toEventRows(events []sessionrt.Event) []eventRow {
 	rows := make([]eventRow, 0, len(events))
+	pendingCalls := make([]pendingToolCallRow, 0, 4)
+
 	for _, event := range events {
-		eventType := strings.TrimSpace(string(event.Type))
-		badgeClass := eventBadgeClass(event.Type)
-		badgeLabel := eventType
-		roleClass := ""
-		if event.Type == sessionrt.EventMessage {
-			if role, ok := messageRoleFromPayload(event.Payload); ok {
-				badgeClass = badgeClassForMessageRole(role)
-				badgeLabel = strings.ToUpper(string(role))
-				roleClass = rowClassForMessageRole(role)
-			}
+		if shouldHideEventInPanel(event.Type) {
+			continue
 		}
-		rows = append(rows, eventRow{
-			Seq:        event.Seq,
-			Timestamp:  formatTime(event.Timestamp),
-			From:       strings.TrimSpace(string(event.From)),
-			Type:       eventType,
-			Payload:    prettyPayload(event.Payload),
-			Collapsed:  event.Type == sessionrt.EventAgentDelta || event.Type == sessionrt.EventAgentThinkingDelta,
-			BadgeClass: badgeClass,
-			BadgeLabel: badgeLabel,
-			RoleClass:  roleClass,
-		})
+
+		switch event.Type {
+		case sessionrt.EventToolCall:
+			callPayload := clonePayloadMap(event.Payload)
+			toolName := toolNameFromPayloadMap(callPayload)
+			row := newEventRow(event)
+			row.Payload = prettyPayload(mergedToolExecutionPayload(toolName, callPayload, nil, true))
+			row.Waiting = true
+			rows = append(rows, row)
+			pendingCalls = append(pendingCalls, pendingToolCallRow{
+				RowIndex:    len(rows) - 1,
+				ToolName:    toolName,
+				CallPayload: callPayload,
+			})
+		case sessionrt.EventToolResult:
+			resultPayload := clonePayloadMap(event.Payload)
+			toolName := toolNameFromPayloadMap(resultPayload)
+			pendingIndex := findPendingToolCallIndex(pendingCalls, toolName)
+			if pendingIndex >= 0 {
+				pending := pendingCalls[pendingIndex]
+				pendingCalls = append(pendingCalls[:pendingIndex], pendingCalls[pendingIndex+1:]...)
+				resolvedName := coalesceTrimmed(toolName, pending.ToolName)
+				row := &rows[pending.RowIndex]
+				row.Payload = prettyPayload(mergedToolExecutionPayload(resolvedName, pending.CallPayload, resultPayload, false))
+				row.Waiting = false
+				row.BadgeClass = eventBadgeClass(sessionrt.EventToolResult)
+				if strings.TrimSpace(row.TypeLabel) == string(sessionrt.EventToolCall) {
+					if label := toolTypeLabelFromName(resolvedName); label != "" {
+						row.TypeLabel = label
+					}
+				}
+				continue
+			}
+			rows = append(rows, newEventRow(event))
+		default:
+			rows = append(rows, newEventRow(event))
+		}
 	}
 	return rows
+}
+
+func newEventRow(event sessionrt.Event) eventRow {
+	eventType := strings.TrimSpace(string(event.Type))
+	row := eventRow{
+		Seq:        event.Seq,
+		Timestamp:  formatTime(event.Timestamp),
+		From:       strings.TrimSpace(string(event.From)),
+		Type:       eventType,
+		TypeLabel:  eventTypeLabel(event, eventType),
+		Payload:    prettyPayload(event.Payload),
+		Collapsed:  event.Type == sessionrt.EventAgentDelta || event.Type == sessionrt.EventAgentThinkingDelta,
+		BadgeClass: eventBadgeClass(event.Type),
+	}
+	if event.Type == sessionrt.EventMessage {
+		if role, ok := messageRoleFromPayload(event.Payload); ok {
+			row.BadgeClass = badgeClassForMessageRole(role)
+			row.RoleClass = rowClassForMessageRole(role)
+		}
+	}
+	return row
+}
+
+func shouldHideEventInPanel(eventType sessionrt.EventType) bool {
+	switch eventType {
+	case sessionrt.EventAgentDelta, sessionrt.EventAgentThinkingDelta:
+		return true
+	default:
+		return false
+	}
+}
+
+func eventTypeLabel(event sessionrt.Event, fallback string) string {
+	if event.Type == sessionrt.EventMessage {
+		if role, ok := messageRoleFromPayload(event.Payload); ok {
+			return strings.ToUpper(string(role))
+		}
+	}
+	if event.Type == sessionrt.EventToolCall {
+		if name, ok := builtInToolNameFromPayload(event.Payload); ok {
+			return name
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return strings.TrimSpace(string(event.Type))
+}
+
+func builtInToolNameFromPayload(payload any) (string, bool) {
+	name := toolNameFromPayloadMap(clonePayloadMap(payload))
+	if name == "" || !isKnownBuiltInToolName(name) {
+		return "", false
+	}
+	return name, true
+}
+
+func toolTypeLabelFromName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || !isKnownBuiltInToolName(name) {
+		return ""
+	}
+	return name
+}
+
+func isKnownBuiltInToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read", "write", "edit", "apply_patch", "exec", "process", "delegate", "heartbeat", "cron", "web_search", "search_mcp", "search":
+		return true
+	default:
+		return false
+	}
+}
+
+func findPendingToolCallIndex(pending []pendingToolCallRow, toolName string) int {
+	toolName = strings.TrimSpace(toolName)
+	if toolName != "" {
+		for idx := range pending {
+			if strings.EqualFold(strings.TrimSpace(pending[idx].ToolName), toolName) {
+				return idx
+			}
+		}
+	}
+	if len(pending) > 0 {
+		return 0
+	}
+	return -1
+}
+
+func mergedToolExecutionPayload(toolName string, callPayload map[string]any, resultPayload map[string]any, waiting bool) map[string]any {
+	out := map[string]any{
+		"waiting": waiting,
+	}
+	if toolName = strings.TrimSpace(toolName); toolName != "" {
+		out["name"] = toolName
+	}
+	if args := toolArgsFromPayloadMap(callPayload); args != nil {
+		out["args"] = args
+	}
+	if len(callPayload) > 0 {
+		out["tool_call"] = callPayload
+	}
+	if len(resultPayload) > 0 {
+		out["tool_result"] = resultPayload
+	}
+	return out
+}
+
+func toolNameFromPayloadMap(payload map[string]any) string {
+	for _, key := range []string{"tool_name", "name", "tool", "id"} {
+		raw, ok := payload[key]
+		if !ok {
+			continue
+		}
+		name, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func toolArgsFromPayloadMap(payload map[string]any) any {
+	for _, key := range []string{"arguments", "args", "input", "params", "payload"} {
+		value, ok := payload[key]
+		if ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func clonePayloadMap(payload any) map[string]any {
+	src, ok := payload.(map[string]any)
+	if !ok || src == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
+}
+
+func coalesceTrimmed(primary, fallback string) string {
+	if value := strings.TrimSpace(primary); value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func messageRoleFromPayload(payload any) (sessionrt.Role, bool) {
@@ -1009,4 +1209,21 @@ func formatNetworkSummary(enabled bool, allow []string, block []string) string {
 		return "enabled"
 	}
 	return fmt.Sprintf("allow: %s · block: %s", allowText, blockText)
+}
+
+func normalizePanelTab(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "control":
+		return "control"
+	case "sessions":
+		return "sessions"
+	case "nodes":
+		return "nodes"
+	case "actions", "control-actions":
+		return "actions"
+	case "agents":
+		return "agents"
+	default:
+		return ""
+	}
 }

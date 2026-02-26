@@ -16,7 +16,10 @@
   <article class="event-row{{if .RoleClass}} {{.RoleClass}}{{end}}" data-event-row data-event-type="{{.Type}}">
     <div class="event-topline">
       <span class="seq">#{{.Seq}}</span>
-      <span class="badge {{.BadgeClass}}">{{.BadgeLabel}}</span>
+      <span class="badge {{.BadgeClass}}">{{.TypeLabel}}</span>
+      {{if .Waiting}}
+      <span class="event-pending"><span class="event-spinner" aria-hidden="true"></span>waiting for result</span>
+      {{end}}
       <span class="event-from">{{if .From}}{{.From}}{{else}}system{{end}}</span>
       <span class="event-time">{{.Timestamp}}</span>
     </div>

@@ -29,7 +29,17 @@
       <article class="card sessions">
         <header class="section-header">
           <h2>Sessions</h2>
-          <p>{{if .HasSessionStore}}Live session runtime{{else}}Limited mode (session runtime unavailable){{end}}</p>
+          <p>{{if .HasSessionStore}}Live runtime with fast filtering{{else}}Limited mode (session runtime unavailable){{end}}</p>
+          <div class="sessions-controls">
+            <label class="visually-hidden" for="session-search">Filter sessions</label>
+            <input id="session-search" class="control-input" type="search" placeholder="Filter by session, room, or status" autocomplete="off">
+            <div class="chip-group" role="group" aria-label="Session status filter">
+              <button type="button" class="chip" data-status-filter="all">All</button>
+              <button type="button" class="chip" data-status-filter="active">Active</button>
+              <button type="button" class="chip" data-status-filter="paused">Paused</button>
+              <button type="button" class="chip" data-status-filter="failed">Failed</button>
+            </div>
+          </div>
         </header>
         <div id="sessions-list" hx-get="/_gopher/panel/fragments/sessions" hx-trigger="load, every 5s">
           <div class="loading">Loading sessions...</div>
@@ -39,7 +49,11 @@
       <article class="card detail">
         <header class="section-header">
           <h2>Timeline</h2>
-          <p>Step-level events with expandable deltas.</p>
+          <p>Switch between a compact work summary and full payload JSON.</p>
+          <div class="chip-group" role="group" aria-label="Timeline payload view">
+            <button type="button" class="chip" data-view-toggle="digest" aria-pressed="true">Work view</button>
+            <button type="button" class="chip" data-view-toggle="raw" aria-pressed="false">Raw JSON</button>
+          </div>
         </header>
         <div id="session-detail">
           <div class="empty-state">Choose a session to inspect its event stream.</div>
@@ -53,8 +67,203 @@
       var state = {
         sessionID: "",
         lastSeq: 0,
-        source: null
+        source: null,
+        payloadView: localStorage.getItem("gopher.panel.payloadView") === "raw" ? "raw" : "digest",
+        sessionQuery: "",
+        statusFilter: "all"
       };
+
+      function clip(value, max) {
+        var text = String(value || "").replace(/\s+/g, " ").trim();
+        if (text.length <= max) {
+          return text;
+        }
+        return text.slice(0, max - 1) + "…";
+      }
+
+      function normalize(value) {
+        return String(value || "").toLowerCase();
+      }
+
+      function safeParseJSON(raw) {
+        try {
+          return JSON.parse(raw);
+        } catch (_err) {
+          return null;
+        }
+      }
+
+      function pick(payload, keys) {
+        if (!payload || typeof payload !== "object") {
+          return null;
+        }
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          if (Object.prototype.hasOwnProperty.call(payload, key)) {
+            return payload[key];
+          }
+        }
+        return null;
+      }
+
+      function pickString(payload, keys) {
+        var value = pick(payload, keys);
+        if (typeof value === "string") {
+          return value;
+        }
+        if (typeof value === "number" || typeof value === "boolean") {
+          return String(value);
+        }
+        return "";
+      }
+
+      function extractText(value) {
+        if (typeof value === "string") {
+          return value;
+        }
+        if (Array.isArray(value)) {
+          var parts = [];
+          for (var i = 0; i < value.length; i++) {
+            var part = value[i];
+            if (typeof part === "string") {
+              parts.push(part);
+              continue;
+            }
+            if (!part || typeof part !== "object") {
+              continue;
+            }
+            var nested = "";
+            if (typeof part.text === "string") {
+              nested = part.text;
+            } else if (typeof part.content === "string") {
+              nested = part.content;
+            } else if (typeof part.value === "string") {
+              nested = part.value;
+            }
+            if (nested) {
+              parts.push(nested);
+            }
+          }
+          return parts.join(" ");
+        }
+        if (value && typeof value === "object") {
+          if (typeof value.text === "string") {
+            return value.text;
+          }
+          if (typeof value.content === "string") {
+            return value.content;
+          }
+          if (typeof value.message === "string") {
+            return value.message;
+          }
+        }
+        return "";
+      }
+
+      function summarizeValue(value) {
+        if (value === null || value === undefined) {
+          return "no payload";
+        }
+        if (typeof value === "string") {
+          return clip(value, 220);
+        }
+        if (typeof value === "number" || typeof value === "boolean") {
+          return String(value);
+        }
+        if (Array.isArray(value)) {
+          if (!value.length) {
+            return "empty list";
+          }
+          return "list(" + value.length + ") " + clip(summarizeValue(value[0]), 180);
+        }
+        if (typeof value === "object") {
+          var keys = Object.keys(value);
+          if (!keys.length) {
+            return "empty object";
+          }
+          var parts = [];
+          for (var i = 0; i < keys.length && i < 4; i++) {
+            var key = keys[i];
+            var item = value[key];
+            if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") {
+              parts.push(key + ": " + clip(item, 48));
+            } else if (Array.isArray(item)) {
+              parts.push(key + ": list(" + item.length + ")");
+            } else if (item && typeof item === "object") {
+              parts.push(key + ": object");
+            } else {
+              parts.push(key + ": " + String(item));
+            }
+          }
+          return parts.join(" | ");
+        }
+        return clip(String(value), 220);
+      }
+
+      function summarizeEvent(type, payload, fallbackText) {
+        var eventType = normalize(type);
+        var parsed = payload;
+        if (!parsed && fallbackText) {
+          return clip(fallbackText, 220);
+        }
+
+        if (eventType === "message") {
+          var role = pickString(parsed, ["role", "speaker"]) || "message";
+          var text = extractText(pick(parsed, ["content", "text", "message"])) || "";
+          if (!text) {
+            text = summarizeValue(parsed);
+          }
+          return role + ": " + clip(text, 220);
+        }
+
+        if (eventType === "tool_call") {
+          var toolName = pickString(parsed, ["tool_name", "name", "tool", "id"]) || "tool";
+          var toolInput = pick(parsed, ["arguments", "args", "input", "params", "payload"]);
+          if (toolInput === null) {
+            return "Calling " + toolName + ".";
+          }
+          return "Calling " + toolName + " with " + clip(summarizeValue(toolInput), 180) + ".";
+        }
+
+        if (eventType === "tool_result") {
+          var resultStatus = pickString(parsed, ["status", "state"]);
+          var resultValue = pick(parsed, ["result", "output", "value", "content", "error"]);
+          var summary = "Tool result";
+          if (resultStatus) {
+            summary += " (" + resultStatus + ")";
+          }
+          if (resultValue !== null) {
+            summary += ": " + clip(summarizeValue(resultValue), 180);
+          }
+          return summary;
+        }
+
+        if (eventType === "error") {
+          var message = pickString(parsed, ["error", "message", "detail", "reason"]);
+          if (!message) {
+            message = summarizeValue(parsed);
+          }
+          return "Error: " + clip(message, 220);
+        }
+
+        if (eventType === "agent_delta" || eventType === "agent_thinking_delta") {
+          var deltaText = extractText(pick(parsed, ["delta", "text", "content", "chunk"]));
+          if (!deltaText) {
+            deltaText = summarizeValue(parsed);
+          }
+          return "Streaming update: " + clip(deltaText, 220);
+        }
+
+        if (eventType === "control") {
+          var action = pickString(parsed, ["action", "command", "status", "state"]);
+          if (!action) {
+            action = summarizeValue(parsed);
+          }
+          return "Control event: " + clip(action, 220);
+        }
+
+        return clip(summarizeValue(parsed), 220);
+      }
 
       function closeSource() {
         if (state.source) {
@@ -159,6 +368,59 @@
         }
       }
 
+      function applySessionFilters() {
+        var query = normalize(state.sessionQuery);
+        var statusFilter = normalize(state.statusFilter);
+        var cards = document.querySelectorAll("[data-session-card]");
+
+        for (var i = 0; i < cards.length; i++) {
+          var card = cards[i];
+          var haystack = normalize(card.textContent || "");
+          var status = normalize(card.getAttribute("data-session-status") || "");
+          var queryOK = !query || haystack.indexOf(query) >= 0;
+          var statusOK = statusFilter === "all" || status === statusFilter;
+          card.classList.toggle("session-hidden", !(queryOK && statusOK));
+        }
+
+        var chips = document.querySelectorAll("[data-status-filter]");
+        for (var j = 0; j < chips.length; j++) {
+          var chip = chips[j];
+          var selected = normalize(chip.getAttribute("data-status-filter")) === statusFilter;
+          chip.classList.toggle("is-active", selected);
+          chip.setAttribute("aria-pressed", selected ? "true" : "false");
+        }
+      }
+
+      function applyPayloadView() {
+        var isRaw = state.payloadView === "raw";
+        document.body.classList.toggle("view-raw", isRaw);
+        document.body.classList.toggle("view-digest", !isRaw);
+
+        var toggles = document.querySelectorAll("[data-view-toggle]");
+        for (var i = 0; i < toggles.length; i++) {
+          var toggle = toggles[i];
+          var selected = toggle.getAttribute("data-view-toggle") === state.payloadView;
+          toggle.classList.toggle("is-active", selected);
+          toggle.setAttribute("aria-pressed", selected ? "true" : "false");
+        }
+      }
+
+      function hydrateTimeline() {
+        var rows = document.querySelectorAll("#session-detail [data-event-row]");
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var digestNode = row.querySelector("[data-event-digest]");
+          if (!digestNode) {
+            continue;
+          }
+          var rawNode = row.querySelector(".event-raw pre");
+          var rawText = rawNode ? rawNode.textContent || "" : "";
+          var payload = safeParseJSON(rawText);
+          var summary = summarizeEvent(row.getAttribute("data-event-type") || "", payload, rawText);
+          digestNode.textContent = summary || "No payload details.";
+        }
+      }
+
       document.body.addEventListener("click", function (event) {
         var node = event.target.closest("[data-session-card]");
         if (!node) {
@@ -167,19 +429,50 @@
         selectSession(node.getAttribute("data-session-id") || "", node.getAttribute("data-last-seq") || "0");
       });
 
+      document.body.addEventListener("click", function (event) {
+        var viewToggle = event.target.closest("[data-view-toggle]");
+        if (viewToggle) {
+          event.preventDefault();
+          state.payloadView = viewToggle.getAttribute("data-view-toggle") === "raw" ? "raw" : "digest";
+          localStorage.setItem("gopher.panel.payloadView", state.payloadView);
+          applyPayloadView();
+          return;
+        }
+
+        var statusFilter = event.target.closest("[data-status-filter]");
+        if (statusFilter) {
+          event.preventDefault();
+          state.statusFilter = statusFilter.getAttribute("data-status-filter") || "all";
+          applySessionFilters();
+        }
+      });
+
       document.body.addEventListener("htmx:afterSwap", function (event) {
         if (!event.detail || !event.detail.target) {
           return;
         }
         if (event.detail.target.id === "session-detail") {
           syncStateFromDetail();
+          hydrateTimeline();
           scrollDetailToBottom();
         }
         if (event.detail.target.id === "sessions-list") {
           highlightSelected();
+          applySessionFilters();
         }
       });
 
+      var sessionSearch = document.getElementById("session-search");
+      if (sessionSearch) {
+        sessionSearch.addEventListener("input", function () {
+          state.sessionQuery = sessionSearch.value || "";
+          applySessionFilters();
+        });
+      }
+
+      applyPayloadView();
+      applySessionFilters();
+      hydrateTimeline();
       window.addEventListener("beforeunload", closeSource);
     })();
   </script>

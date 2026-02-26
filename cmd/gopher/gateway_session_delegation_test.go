@@ -40,7 +40,7 @@ func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	service := newGatewaySessionDelegationToolService(manager, map[sessionrt.ActorID]*agentcore.Agent{
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
 	}, dataDir, nil)
@@ -124,7 +124,7 @@ func TestGatewaySessionDelegationRejectsUnknownTargetAgent(t *testing.T) {
 		t.Fatalf("CreateSession(source) error: %v", err)
 	}
 
-	service := newGatewaySessionDelegationToolService(manager, map[sessionrt.ActorID]*agentcore.Agent{
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo": {},
 	}, t.TempDir(), nil)
 	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
@@ -135,5 +135,114 @@ func TestGatewaySessionDelegationRejectsUnknownTargetAgent(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected unknown target agent error")
+	}
+}
+
+func TestGatewaySessionDelegationListKillAndLog(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil)
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and reply with next steps.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+
+	listActive, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{SourceSessionID: string(source.ID)})
+	if err != nil {
+		t.Fatalf("ListDelegationSessions(active) error: %v", err)
+	}
+	if len(listActive) != 1 {
+		t.Fatalf("active list count = %d, want 1", len(listActive))
+	}
+	if listActive[0].SessionID != created.SessionID {
+		t.Fatalf("listed session_id = %q, want %q", listActive[0].SessionID, created.SessionID)
+	}
+	if listActive[0].Status != "active" {
+		t.Fatalf("listed status = %q, want active", listActive[0].Status)
+	}
+
+	logOut, err := service.GetDelegationLog(ctx, agentcore.DelegationLogRequest{
+		SourceSessionID: string(source.ID),
+		DelegationID:    created.SessionID,
+		Offset:          0,
+		Limit:           20,
+	})
+	if err != nil {
+		t.Fatalf("GetDelegationLog() error: %v", err)
+	}
+	if logOut.Count == 0 {
+		t.Fatalf("expected delegation log entries")
+	}
+	foundKickoff := false
+	for _, entry := range logOut.Entries {
+		if strings.Contains(entry.Content, "Delegation for worker:") {
+			foundKickoff = true
+			break
+		}
+	}
+	if !foundKickoff {
+		t.Fatalf("expected kickoff content in delegation log, entries=%+v", logOut.Entries)
+	}
+
+	killOut, err := service.KillDelegationSession(ctx, agentcore.DelegationKillRequest{
+		SourceSessionID: string(source.ID),
+		DelegationID:    created.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("KillDelegationSession() error: %v", err)
+	}
+	if !killOut.Killed {
+		t.Fatalf("expected killed=true, got false")
+	}
+	if killOut.Status != "cancelled" {
+		t.Fatalf("kill status = %q, want cancelled", killOut.Status)
+	}
+
+	listActiveAfterKill, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{SourceSessionID: string(source.ID)})
+	if err != nil {
+		t.Fatalf("ListDelegationSessions(after kill active) error: %v", err)
+	}
+	if len(listActiveAfterKill) != 0 {
+		t.Fatalf("active list count after kill = %d, want 0", len(listActiveAfterKill))
+	}
+
+	listAll, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{
+		SourceSessionID: string(source.ID),
+		IncludeInactive: true,
+	})
+	if err != nil {
+		t.Fatalf("ListDelegationSessions(include inactive) error: %v", err)
+	}
+	if len(listAll) != 1 {
+		t.Fatalf("all list count = %d, want 1", len(listAll))
+	}
+	if listAll[0].Status != "cancelled" {
+		t.Fatalf("all list status = %q, want cancelled", listAll[0].Status)
 	}
 }

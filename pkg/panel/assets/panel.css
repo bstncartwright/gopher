@@ -114,7 +114,7 @@ body::before {
 }
 
 .layout {
-  max-width: 1460px;
+  max-width: 1640px;
   margin: 0 auto;
   padding: 30px 20px 36px;
   position: relative;
@@ -262,10 +262,51 @@ h1 {
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(310px, 395px) minmax(520px, 1fr);
+  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr);
   gap: 14px;
   min-height: 0;
   flex: 1;
+}
+
+body[data-active-tab="sessions"] .hero {
+  margin-bottom: 10px;
+  padding: 12px 14px 10px;
+}
+
+body[data-active-tab="sessions"] .hero-sub {
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+body[data-active-tab="sessions"] .hero-meta {
+  margin-top: 8px;
+}
+
+body[data-active-tab="sessions"] .panel-tabs {
+  margin-bottom: 10px;
+}
+
+body[data-active-tab="sessions"] .workspace-grid {
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  gap: 10px;
+}
+
+body[data-active-tab="sessions"] .section-header {
+  padding: 11px 12px 9px;
+}
+
+body[data-active-tab="sessions"] .section-header p {
+  margin-top: 4px;
+}
+
+body[data-active-tab="sessions"] .sessions-controls {
+  margin-top: 8px;
+  gap: 6px;
+}
+
+body[data-active-tab="sessions"] #sessions-list,
+body[data-active-tab="sessions"] #session-detail {
+  padding: 8px 10px 10px;
 }
 
 .section-header {
@@ -722,6 +763,19 @@ h1 {
   margin-bottom: 2px;
   display: grid;
   gap: 4px;
+}
+
+.timeline-toolbar {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-view-toggle {
+  margin-left: auto;
 }
 
 .timeline-activity {

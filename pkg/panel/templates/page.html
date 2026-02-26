@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/_gopher/panel/assets/panel.css">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
-<body data-initial-tab="{{.ActiveTab}}">
+<body data-initial-tab="{{.ActiveTab}}" data-active-tab="{{.ActiveTab}}">
   <div class="noise-layer" aria-hidden="true"></div>
   <div class="scanline-layer" aria-hidden="true"></div>
   <div class="bg-orbit bg-orbit-a"></div>
@@ -68,13 +68,15 @@
           <header class="section-header">
             <h2>Timeline</h2>
             <p>Switch between a compact work summary and full payload JSON.</p>
-            <div id="timeline-activity" class="timeline-activity is-idle" data-working="false" aria-live="polite">
-              <span class="timeline-activity-dot" aria-hidden="true"></span>
-              <span class="timeline-activity-label" data-activity-label>Idle</span>
-            </div>
-            <div class="chip-group" role="group" aria-label="Timeline payload view">
-              <button type="button" class="chip" data-view-toggle="digest" aria-pressed="true">Work view</button>
-              <button type="button" class="chip" data-view-toggle="raw" aria-pressed="false">Raw JSON</button>
+            <div class="timeline-toolbar">
+              <div id="timeline-activity" class="timeline-activity is-idle" data-working="false" aria-live="polite">
+                <span class="timeline-activity-dot" aria-hidden="true"></span>
+                <span class="timeline-activity-label" data-activity-label>Idle</span>
+              </div>
+              <div class="chip-group timeline-view-toggle" role="group" aria-label="Timeline payload view">
+                <button type="button" class="chip" data-view-toggle="digest" aria-pressed="true">Work view</button>
+                <button type="button" class="chip" data-view-toggle="raw" aria-pressed="false">Raw JSON</button>
+              </div>
             </div>
           </header>
           <div id="session-detail">
@@ -698,6 +700,7 @@
         options = options || {};
         var syncURL = options.syncURL !== false;
         var forceLatest = !!options.forceLatest;
+        document.body.setAttribute("data-active-tab", state.activeTab);
 
         var tabs = document.querySelectorAll("[data-panel-tab]");
         for (var i = 0; i < tabs.length; i++) {

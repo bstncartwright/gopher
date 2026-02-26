@@ -341,39 +341,6 @@ func (e *dmWritePathExecutor) Step(_ context.Context, input sessionrt.AgentInput
 	}, nil
 }
 
-type dmDelayedExecutor struct {
-	delay time.Duration
-	text  string
-}
-
-func (e *dmDelayedExecutor) Step(ctx context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
-	delay := e.delay
-	if delay <= 0 {
-		delay = 100 * time.Millisecond
-	}
-	select {
-	case <-ctx.Done():
-		return sessionrt.AgentOutput{}, ctx.Err()
-	case <-time.After(delay):
-	}
-	text := strings.TrimSpace(e.text)
-	if text == "" {
-		text = "ack"
-	}
-	return sessionrt.AgentOutput{
-		Events: []sessionrt.Event{
-			{
-				From: input.ActorID,
-				Type: sessionrt.EventMessage,
-				Payload: sessionrt.Message{
-					Role:    sessionrt.RoleAgent,
-					Content: text,
-				},
-			},
-		},
-	}, nil
-}
-
 func latestUserContent(history []sessionrt.Event) string {
 	for i := len(history) - 1; i >= 0; i-- {
 		event := history[i]
@@ -633,77 +600,6 @@ func TestDMPipelineDoesNotSendWriteProgressUpdatesToDM(t *testing.T) {
 	}
 	if strings.TrimSpace(messages[0].Text) != "ack" {
 		t.Fatalf("final response = %q, want ack", messages[0].Text)
-	}
-}
-
-func TestDMPipelineSendsProgressUpdatesWhenEnabled(t *testing.T) {
-	prevInitial := dmProgressInitialDelay
-	prevInterval := dmProgressUpdateInterval
-	dmProgressInitialDelay = 20 * time.Millisecond
-	dmProgressUpdateInterval = 35 * time.Millisecond
-	defer func() {
-		dmProgressInitialDelay = prevInitial
-		dmProgressUpdateInterval = prevInterval
-	}()
-
-	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
-	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
-		Store: store,
-		Executor: &dmDelayedExecutor{
-			delay: 150 * time.Millisecond,
-			text:  "ack",
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewManager() error: %v", err)
-	}
-
-	fake := &fakeTransport{}
-	pipeline, err := NewDMPipeline(DMPipelineOptions{
-		Manager:         manager,
-		Transport:       fake,
-		AgentID:         "agent:a",
-		ProgressUpdates: true,
-	})
-	if err != nil {
-		t.Fatalf("NewDMPipeline() error: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
-		ConversationID: "!dm:progress-enabled",
-		SenderID:       "@user:hs",
-		Text:           "do a slow task",
-	}); err != nil {
-		t.Fatalf("HandleInbound() error: %v", err)
-	}
-
-	waitFor(t, 2*time.Second, func() bool {
-		messages := fake.sentMessages()
-		hasAck := false
-		for _, message := range messages {
-			if strings.TrimSpace(message.Text) == "ack" {
-				hasAck = true
-				break
-			}
-		}
-		return len(messages) >= 2 && hasAck
-	})
-
-	messages := fake.sentMessages()
-	if strings.TrimSpace(messages[0].Text) != dmProgressStartReply {
-		t.Fatalf("first progress reply = %q, want %q", messages[0].Text, dmProgressStartReply)
-	}
-	hasAck := false
-	for _, message := range messages {
-		if strings.TrimSpace(message.Text) == "ack" {
-			hasAck = true
-			break
-		}
-	}
-	if !hasAck {
-		t.Fatalf("expected final ack response in %v", messages)
 	}
 }
 

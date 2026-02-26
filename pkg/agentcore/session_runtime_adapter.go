@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,7 +39,7 @@ func NewSessionRuntimeAdapterWithOptions(agent *Agent, opts SessionRuntimeAdapte
 }
 
 func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
-	userMsg, ok := latestUserMessage(input.History)
+	userMsg, ok := latestPromptMessage(input.History, input.ActorID)
 	if !ok {
 		return sessionrt.AgentOutput{}, nil
 	}
@@ -76,7 +77,7 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 }
 
 func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.AgentInput, emit sessionrt.AgentEventEmitter) error {
-	userMsg, ok := latestUserMessage(input.History)
+	userMsg, ok := latestPromptMessage(input.History, input.ActorID)
 	if !ok {
 		return nil
 	}
@@ -124,30 +125,60 @@ func withTurnTimeout(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(ctx, sessionRuntimeTurnTimeout)
 }
 
-func latestUserMessage(events []sessionrt.Event) (sessionrt.Message, bool) {
+func latestPromptMessage(events []sessionrt.Event, actorID sessionrt.ActorID) (sessionrt.Message, bool) {
+	targetActor := strings.TrimSpace(string(actorID))
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Type != sessionrt.EventMessage {
 			continue
 		}
-		switch payload := event.Payload.(type) {
-		case sessionrt.Message:
-			if payload.Role == sessionrt.RoleUser {
-				return payload, true
-			}
-		case map[string]any:
-			roleRaw, ok := payload["role"].(string)
-			if !ok || roleRaw != string(sessionrt.RoleUser) {
-				continue
-			}
-			content, ok := payload["content"].(string)
-			if !ok {
-				continue
-			}
-			return sessionrt.Message{Role: sessionrt.RoleUser, Content: content}, true
+		payload, ok := promptMessageFromPayload(event.Payload)
+		if !ok {
+			continue
 		}
+		if payload.Role == sessionrt.RoleUser {
+			return payload, true
+		}
+		if payload.Role != sessionrt.RoleAgent {
+			continue
+		}
+		target := strings.TrimSpace(string(payload.TargetActorID))
+		if target == "" {
+			continue
+		}
+		if targetActor != "" && target != targetActor {
+			continue
+		}
+		return payload, true
 	}
 	return sessionrt.Message{}, false
+}
+
+func promptMessageFromPayload(payload any) (sessionrt.Message, bool) {
+	switch value := payload.(type) {
+	case sessionrt.Message:
+		return value, true
+	case map[string]any:
+		roleRaw, ok := value["role"].(string)
+		if !ok {
+			return sessionrt.Message{}, false
+		}
+		content, ok := value["content"].(string)
+		if !ok {
+			return sessionrt.Message{}, false
+		}
+		out := sessionrt.Message{
+			Role:    sessionrt.Role(strings.TrimSpace(roleRaw)),
+			Content: content,
+		}
+		targetRaw, targetOK := value["target_actor_id"].(string)
+		if targetOK {
+			out.TargetActorID = sessionrt.ActorID(strings.TrimSpace(targetRaw))
+		}
+		return out, true
+	default:
+		return sessionrt.Message{}, false
+	}
 }
 
 func stringPayloadField(payload any, key string) (string, bool) {

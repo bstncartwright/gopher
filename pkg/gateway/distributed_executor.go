@@ -46,6 +46,8 @@ const (
 var defaultSharedAuthEnvKeys = []string{
 	"OPENAI_API_KEY",
 	"ZAI_API_KEY",
+	"EXA_API_KEY",
+	"TAVILY_API_KEY",
 	"KIMI_API_KEY",
 	"ANTHROPIC_API_KEY",
 	"OLLAMA_API_KEY",

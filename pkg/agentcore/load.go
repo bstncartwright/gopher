@@ -292,11 +292,12 @@ func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
 	var rawNetwork struct {
 		Enabled      *bool     `json:"enabled"`
 		AllowDomains *[]string `json:"allow_domains"`
+		BlockDomains *[]string `json:"block_domains"`
 	}
 	if err := json.Unmarshal(rawPolicies.Network, &rawNetwork); err != nil {
 		return
 	}
-	if rawNetwork.Enabled != nil && !*rawNetwork.Enabled && networkDomainsAreUnrestricted(rawNetwork.AllowDomains) {
+	if rawNetwork.Enabled != nil && !*rawNetwork.Enabled && networkDomainsAreUnrestricted(rawNetwork.AllowDomains, rawNetwork.BlockDomains) {
 		policies.Network.Enabled = true
 		policies.Network.AllowDomains = []string{"*"}
 		return
@@ -307,9 +308,15 @@ func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
 	if rawNetwork.AllowDomains == nil && policies.Network.Enabled {
 		policies.Network.AllowDomains = []string{"*"}
 	}
+	if rawNetwork.BlockDomains == nil && policies.Network.Enabled {
+		policies.Network.BlockDomains = nil
+	}
 }
 
-func networkDomainsAreUnrestricted(allowDomains *[]string) bool {
+func networkDomainsAreUnrestricted(allowDomains *[]string, blockDomains *[]string) bool {
+	if blockDomains != nil && len(*blockDomains) > 0 {
+		return false
+	}
 	if allowDomains == nil {
 		return true
 	}

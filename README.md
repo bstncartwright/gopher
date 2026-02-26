@@ -230,6 +230,17 @@ manual fallback is still supported:
 gopher auth set --env-file /etc/gopher/gopher.env --key OPENAI_CODEX_TOKEN --value "<token>"
 ```
 
+web search MCP auth (Exa primary, Tavily fallback) is configured as raw env keys:
+
+```bash
+gopher auth set --env-file /etc/gopher/gopher.env --key EXA_API_KEY --value "<exa_api_key>"
+gopher auth set --env-file /etc/gopher/gopher.env --key TAVILY_API_KEY --value "<tavily_api_key>"
+```
+
+to block specific web MCP hosts, use `policies.network.block_domains` (denylist), for example:
+- `mcp.exa.ai`
+- `mcp.tavily.com`
+
 ## setup + reset
 
 `gopher onboard` bootstraps local defaults and lets you configure auth + telegram env values.
@@ -303,7 +314,7 @@ example `agents/builder/policies.json`:
   "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher", "opencode"],
   "network": {
     "enabled": true,
-    "allow_domains": ["*"]
+    "block_domains": []
   },
   "budget": {
     "max_tokens_per_session": 200000
@@ -416,6 +427,8 @@ gateway automatically forwards provider auth env vars to the selected worker nod
 
 - `OPENAI_API_KEY`
 - `ZAI_API_KEY`
+- `EXA_API_KEY`
+- `TAVILY_API_KEY`
 - `KIMI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `OLLAMA_API_KEY`
@@ -426,7 +439,7 @@ gateway automatically forwards provider auth env vars to the selected worker nod
 
 optional controls:
 - disable forwarding: `GOPHER_GATEWAY_SHARE_AUTH_ENV=false`
-- override forwarded key list: `GOPHER_GATEWAY_SHARED_AUTH_ENV_KEYS=OPENAI_API_KEY,ZAI_API_KEY`
+- override forwarded key list: `GOPHER_GATEWAY_SHARED_AUTH_ENV_KEYS=OPENAI_API_KEY,ZAI_API_KEY,EXA_API_KEY,TAVILY_API_KEY`
 
 node admin controls over NATS:
 - `gopher node configure --target-node <id> ...` persists remote `node.toml` and can request restart.

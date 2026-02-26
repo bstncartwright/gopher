@@ -65,6 +65,8 @@ func TestDistributedExecutorSharesAuthEnvWithRemoteNode(t *testing.T) {
 	env := map[string]string{
 		"OPENAI_API_KEY": "gateway-openai-key",
 		"ZAI_API_KEY":    "",
+		"EXA_API_KEY":    "gateway-exa-key",
+		"TAVILY_API_KEY": "",
 	}
 	distributed, err := NewDistributedExecutor(DistributedExecutorOptions{
 		GatewayNodeID: "gateway",
@@ -74,7 +76,7 @@ func TestDistributedExecutorSharesAuthEnvWithRemoteNode(t *testing.T) {
 		CapabilityResolver: func(sessionrt.AgentInput) []scheduler.Capability {
 			return []scheduler.Capability{{Kind: scheduler.CapabilityTool, Name: "gpu"}}
 		},
-		AuthEnvKeys: []string{"OPENAI_API_KEY", "ZAI_API_KEY"},
+		AuthEnvKeys: []string{"OPENAI_API_KEY", "ZAI_API_KEY", "EXA_API_KEY", "TAVILY_API_KEY"},
 		EnvLookup: func(key string) string {
 			return env[key]
 		},
@@ -98,8 +100,14 @@ func TestDistributedExecutorSharesAuthEnvWithRemoteNode(t *testing.T) {
 		if got := request.AuthEnv["OPENAI_API_KEY"]; got != "gateway-openai-key" {
 			t.Fatalf("shared OPENAI_API_KEY = %q, want %q", got, "gateway-openai-key")
 		}
+		if got := request.AuthEnv["EXA_API_KEY"]; got != "gateway-exa-key" {
+			t.Fatalf("shared EXA_API_KEY = %q, want %q", got, "gateway-exa-key")
+		}
 		if _, ok := request.AuthEnv["ZAI_API_KEY"]; ok {
 			t.Fatalf("expected empty ZAI_API_KEY to be omitted, got auth_env=%v", request.AuthEnv)
+		}
+		if _, ok := request.AuthEnv["TAVILY_API_KEY"]; ok {
+			t.Fatalf("expected empty TAVILY_API_KEY to be omitted, got auth_env=%v", request.AuthEnv)
 		}
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for remote execution request: %v", ctx.Err())

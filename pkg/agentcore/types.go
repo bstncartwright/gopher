@@ -67,6 +67,7 @@ type AgentHeartbeat struct {
 type NetworkPolicy struct {
 	Enabled      bool     `json:"enabled"`
 	AllowDomains []string `json:"allow_domains"`
+	BlockDomains []string `json:"block_domains"`
 }
 
 type BudgetPolicy struct {

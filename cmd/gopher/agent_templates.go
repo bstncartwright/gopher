@@ -17,7 +17,7 @@ gopher uses this workspace directory as the agent's working context.
 
 - Do not exfiltrate private data.
 - Do not run destructive commands unless explicitly asked.
-- Do not send partial or streaming responses to external messaging surfaces; send final responses.
+- Avoid token-by-token streaming noise in external messaging surfaces; send concise milestone updates instead.
 
 ## Session Start (required)
 
@@ -27,6 +27,13 @@ Before responding:
 - Read shared user profile from ../USER.md when present; otherwise read USER.md.
 - Read memory/YYYY-MM-DD.md for today and yesterday if present.
 - In direct/private sessions, also read MEMORY.md if present.
+
+## Long Tasks (required)
+
+- If work may take more than a few seconds, send a quick acknowledgement first (for example: "Sure, I will take a look now.").
+- While still working, send a short progress update every 20-30 seconds.
+- Each update should include what you are doing now and what you will do next.
+- If blocked, say what is blocking and what input is needed.
 
 ## Shared Spaces (recommended)
 

@@ -60,13 +60,14 @@ type TraceConversationProvisioner interface {
 }
 
 type DMPipeline struct {
-	manager       sessionrt.SessionManager
-	transport     transport.Transport
-	agentID       sessionrt.ActorID
-	agentByRecip  map[string]sessionrt.ActorID
-	recipByAgent  map[sessionrt.ActorID]string
-	conversations *ConversationSessionMap
-	bindings      ConversationBindingStore
+	manager         sessionrt.SessionManager
+	transport       transport.Transport
+	agentID         sessionrt.ActorID
+	agentByRecip    map[string]sessionrt.ActorID
+	recipByAgent    map[sessionrt.ActorID]string
+	conversations   *ConversationSessionMap
+	bindings        ConversationBindingStore
+	progressUpdates bool
 
 	setupMu            sync.Mutex
 	subscribedMu       sync.Mutex
@@ -80,6 +81,8 @@ type DMPipeline struct {
 	processing         map[string]int
 	typingMu           sync.Mutex
 	typingCancel       map[string]context.CancelFunc
+	progressMu         sync.Mutex
+	progressCancel     map[string]context.CancelFunc
 	attachmentMu       sync.Mutex
 	pendingFiles       map[string][]transport.OutboundAttachment
 	routeMu            sync.RWMutex
@@ -116,6 +119,8 @@ const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmContextClearedReply    = "Context cleared. Started a fresh session for this chat."
+	dmProgressStartReply     = "Sure, I will take a look now."
+	dmProgressContinueReply  = "Still working on it. I will share another update soon."
 	dmFallbackMinInterval    = 5 * time.Second
 	dmErrorFallbackDelay     = 750 * time.Millisecond
 	dmFallbackDetailMaxChars = 120
@@ -127,6 +132,8 @@ const (
 )
 
 var dmTypingKeepaliveInterval = dmTypingKeepaliveDefault
+var dmProgressInitialDelay = 5 * time.Second
+var dmProgressUpdateInterval = 25 * time.Second
 
 const dmSummarizeCommandPrompt = "Summarize this conversation so far in 8 bullets max. Include: objective, key decisions, important constraints, open questions, and next steps."
 
@@ -189,11 +196,13 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		recipByAgent:       recipByAgent,
 		conversations:      conversations,
 		bindings:           bindings,
+		progressUpdates:    opts.ProgressUpdates,
 		subscribed:         map[sessionrt.SessionID]struct{}{},
 		lastFallback:       map[string]time.Time{},
 		errorFallbacks:     map[string]pendingErrorFallback{},
 		processing:         map[string]int{},
 		typingCancel:       map[string]context.CancelFunc{},
+		progressCancel:     map[string]context.CancelFunc{},
 		pendingFiles:       map[string][]transport.OutboundAttachment{},
 		routes:             map[string]conversationRoute{},
 		traceByDM:          map[string]string{},
@@ -757,6 +766,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 		p.clearPendingAttachments(conversationID)
 		p.sendTyping(conversationID, true)
 		p.startTypingKeepalive(conversationID)
+		p.startProgressUpdates(conversationID)
 	}
 }
 
@@ -782,8 +792,128 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldDisable {
+		p.stopProgressUpdates(conversationID)
 		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
+	}
+}
+
+func (p *DMPipeline) startProgressUpdates(conversationID string) {
+	if p == nil || !p.progressUpdates {
+		return
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+
+	p.progressMu.Lock()
+	if _, exists := p.progressCancel[conversationID]; exists {
+		p.progressMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.progressCancel[conversationID] = cancel
+	p.progressMu.Unlock()
+
+	initialDelay := dmProgressInitialDelay
+	if initialDelay <= 0 {
+		initialDelay = time.Second
+	}
+	updateInterval := dmProgressUpdateInterval
+	if updateInterval <= 0 {
+		updateInterval = 25 * time.Second
+	}
+
+	go func() {
+		sentInitial := false
+		timer := time.NewTimer(initialDelay)
+		defer timer.Stop()
+		ticker := time.NewTicker(updateInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				if !p.IsConversationProcessing(conversationID) {
+					return
+				}
+				if !p.shouldSendProgressUpdate(conversationID) {
+					continue
+				}
+				p.sendProgressUpdate(conversationID, dmProgressStartReply)
+				sentInitial = true
+			case <-ticker.C:
+				if !p.IsConversationProcessing(conversationID) {
+					return
+				}
+				if !p.shouldSendProgressUpdate(conversationID) {
+					continue
+				}
+				if !sentInitial {
+					p.sendProgressUpdate(conversationID, dmProgressStartReply)
+					sentInitial = true
+					continue
+				}
+				p.sendProgressUpdate(conversationID, dmProgressContinueReply)
+			}
+		}
+	}()
+}
+
+func (p *DMPipeline) stopProgressUpdates(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+
+	p.progressMu.Lock()
+	cancel, exists := p.progressCancel[conversationID]
+	if exists {
+		delete(p.progressCancel, conversationID)
+	}
+	p.progressMu.Unlock()
+
+	if exists {
+		cancel()
+	}
+}
+
+func (p *DMPipeline) shouldSendProgressUpdate(conversationID string) bool {
+	if !p.IsConversationProcessing(conversationID) {
+		return false
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+
+	p.heartbeatMu.Lock()
+	state, ok := p.heartbeats[conversationID]
+	p.heartbeatMu.Unlock()
+	if ok && state.pending > 0 {
+		return false
+	}
+	return true
+}
+
+func (p *DMPipeline) sendProgressUpdate(conversationID, text string) {
+	text = strings.TrimSpace(text)
+	conversationID = strings.TrimSpace(conversationID)
+	if text == "" || conversationID == "" {
+		return
+	}
+	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: conversationID,
+		SenderID:       p.recipientForConversation(conversationID),
+		Text:           text,
+	}); err != nil {
+		slog.Warn("dm_pipeline: send progress update failed",
+			"conversation_id", conversationID,
+			"error", err,
+		)
 	}
 }
 

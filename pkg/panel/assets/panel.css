@@ -581,6 +581,23 @@ h1 {
   color: #8fa39a;
 }
 
+.event-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.69rem;
+  color: #ffd592;
+}
+
+.event-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid rgba(230, 185, 104, 0.28);
+  border-top-color: rgba(255, 218, 155, 0.95);
+  animation: spin 0.8s linear infinite;
+}
+
 .badge-message {
   border-color: rgba(117, 212, 166, 0.3);
   background: rgba(117, 212, 166, 0.15);
@@ -716,6 +733,12 @@ h1 {
   }
   50% {
     transform: translate3d(-14px, 14px, 0);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

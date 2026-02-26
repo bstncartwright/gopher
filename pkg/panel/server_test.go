@@ -212,6 +212,7 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	store.addSession("sess-1", sessionrt.SessionActive, []sessionrt.Event{
 		{SessionID: "sess-1", Seq: 1, Type: sessionrt.EventMessage, From: "user:1", Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "hi"}, Timestamp: now},
 		{SessionID: "sess-1", Seq: 2, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read"}, Timestamp: now.Add(time.Second)},
+		{SessionID: "sess-1", Seq: 3, Type: sessionrt.EventAgentDelta, From: "agent:a", Payload: map[string]any{"delta": "thinking"}, Timestamp: now.Add(2 * time.Second)},
 	})
 	srv, err := NewServer(ServerOptions{
 		ListenAddr: "127.0.0.1:29329",
@@ -250,11 +251,73 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail status = %d, want 200", detailRec.Code)
 	}
-	if !strings.Contains(detailRec.Body.String(), "tool_call") {
-		t.Fatalf("expected timeline events, got: %s", detailRec.Body.String())
+	if !strings.Contains(detailRec.Body.String(), ">read</span>") {
+		t.Fatalf("expected built-in tool label in timeline, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "waiting for result") {
+		t.Fatalf("expected pending tool indicator in timeline, got: %s", detailRec.Body.String())
+	}
+	if strings.Contains(detailRec.Body.String(), "agent_delta") {
+		t.Fatalf("expected delta events to be hidden in timeline, got: %s", detailRec.Body.String())
 	}
 	if !strings.Contains(detailRec.Body.String(), "Writer Room") {
 		t.Fatalf("expected room name in detail fragment, got: %s", detailRec.Body.String())
+	}
+}
+
+func TestToEventRowsFiltersDeltasAndLabelsBuiltInTools(t *testing.T) {
+	now := time.Now().UTC()
+	rows := toEventRows([]sessionrt.Event{
+		{Seq: 1, Type: sessionrt.EventAgentDelta, Timestamp: now},
+		{Seq: 2, Type: sessionrt.EventToolCall, Payload: map[string]any{"name": "web_search"}, Timestamp: now.Add(time.Second)},
+		{Seq: 3, Type: sessionrt.EventToolCall, Payload: map[string]any{"name": "external_tool"}, Timestamp: now.Add(2 * time.Second)},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("row count = %d, want 2", len(rows))
+	}
+	if rows[0].Type != "tool_call" {
+		t.Fatalf("rows[0].Type = %q, want tool_call", rows[0].Type)
+	}
+	if rows[0].TypeLabel != "web_search" {
+		t.Fatalf("rows[0].TypeLabel = %q, want web_search", rows[0].TypeLabel)
+	}
+	if !rows[0].Waiting {
+		t.Fatalf("rows[0].Waiting = false, want true")
+	}
+	if rows[1].TypeLabel != "tool_call" {
+		t.Fatalf("rows[1].TypeLabel = %q, want tool_call", rows[1].TypeLabel)
+	}
+	if !rows[1].Waiting {
+		t.Fatalf("rows[1].Waiting = false, want true")
+	}
+}
+
+func TestToEventRowsMergesToolCallAndResultIntoSingleRow(t *testing.T) {
+	now := time.Now().UTC()
+	rows := toEventRows([]sessionrt.Event{
+		{Seq: 1, Type: sessionrt.EventToolCall, Payload: map[string]any{"name": "read", "args": map[string]any{"path": "/tmp/file"}}, Timestamp: now},
+		{Seq: 2, Type: sessionrt.EventToolResult, Payload: map[string]any{"name": "read", "status": "ok", "result": map[string]any{"content": "hello"}}, Timestamp: now.Add(time.Second)},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1", len(rows))
+	}
+	if rows[0].Type != "tool_call" {
+		t.Fatalf("rows[0].Type = %q, want tool_call", rows[0].Type)
+	}
+	if rows[0].TypeLabel != "read" {
+		t.Fatalf("rows[0].TypeLabel = %q, want read", rows[0].TypeLabel)
+	}
+	if rows[0].Waiting {
+		t.Fatalf("rows[0].Waiting = true, want false")
+	}
+	if rows[0].BadgeClass != "badge-tool-result" {
+		t.Fatalf("rows[0].BadgeClass = %q, want badge-tool-result", rows[0].BadgeClass)
+	}
+	if !strings.Contains(rows[0].Payload, `"tool_call"`) {
+		t.Fatalf("rows[0].Payload missing tool_call, got: %s", rows[0].Payload)
+	}
+	if !strings.Contains(rows[0].Payload, `"tool_result"`) {
+		t.Fatalf("rows[0].Payload missing tool_result, got: %s", rows[0].Payload)
 	}
 }
 

@@ -6,19 +6,26 @@
   <title>Gopher Control Panel</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Teko:wght@500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/_gopher/panel/assets/panel.css">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
 <body>
+  <div class="noise-layer" aria-hidden="true"></div>
+  <div class="scanline-layer" aria-hidden="true"></div>
   <div class="bg-orbit bg-orbit-a"></div>
   <div class="bg-orbit bg-orbit-b"></div>
 
   <main class="layout">
     <header class="hero">
       <p class="eyebrow">Runtime Observability</p>
-      <h1>Gopher Control Panel</h1>
+      <h1>Gopher Control Panel // Mission Control</h1>
       <p class="hero-sub">Inspect user turns, agent outputs, tool traces, errors, and live deltas from a single timeline.</p>
+      <div class="hero-meta" aria-label="Console mode indicators">
+        <span class="meta-pill">ops board</span>
+        <span class="meta-pill">live feed</span>
+        <span class="meta-pill">operator mode</span>
+      </div>
     </header>
 
     <section id="panel-overview" class="card overview" hx-get="/_gopher/panel/fragments/overview" hx-trigger="load, every 8s">

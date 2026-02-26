@@ -69,6 +69,7 @@ var runTailForService = func(ctx context.Context, path string, lines int, follow
 }
 var serviceGetEUIDForLinux = os.Geteuid
 var serviceUserHomeDir = os.UserHomeDir
+var serviceTimeNow = time.Now
 var releaseVersionPattern = regexp.MustCompile(`\bv\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b`)
 
 type serviceSystemdScope struct {
@@ -314,8 +315,11 @@ func (r *linuxServiceRuntime) Status(ctx context.Context, opts serviceStatusOpti
 	fmt.Fprintln(r.stdout, "=============")
 	fmt.Fprintln(r.stdout, "")
 	printStatusSectionHeader(r.stdout, "service health")
+	now := serviceTimeNow()
 	printStatusStateLine(r.stdout, fmt.Sprintf("%s service", describeManagedServiceUnit(unit)), formatUnitStatus(selected))
+	printStatusValueLine(r.stdout, fmt.Sprintf("%s uptime", describeManagedServiceUnit(unit)), formatUnitUptime(selected, now))
 	printStatusStateLine(r.stdout, "nats service", formatUnitStatus(nats))
+	printStatusValueLine(r.stdout, "nats uptime", formatUnitUptime(nats, now))
 	if unit == gopherGatewayUnitName {
 		updater, _ := readUnitStatus(ctx, scope, "gopher-gateway-update.timer")
 		printStatusStateLine(r.stdout, "update timer", formatUnitStatus(updater))
@@ -816,6 +820,7 @@ type unitStatus struct {
 	ActiveState   string
 	SubState      string
 	UnitFileState string
+	ActiveSince   string
 }
 
 func readUnitStatus(ctx context.Context, scope serviceSystemdScope, unit string) (unitStatus, error) {
@@ -827,8 +832,10 @@ func readUnitStatus(ctx context.Context, scope serviceSystemdScope, unit string)
 		"--property=ActiveState",
 		"--property=SubState",
 		"--property=UnitFileState",
+		"--property=ActiveEnterTimestamp",
 	)
 	cmd := exec.CommandContext(ctx, "systemctl", args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		text := strings.TrimSpace(string(output))
@@ -860,6 +867,8 @@ func readUnitStatus(ctx context.Context, scope serviceSystemdScope, unit string)
 			status.SubState = value
 		case "UnitFileState":
 			status.UnitFileState = value
+		case "ActiveEnterTimestamp":
+			status.ActiveSince = value
 		}
 	}
 	if status.LoadState == "" {
@@ -882,6 +891,44 @@ func formatUnitStatus(status unitStatus) string {
 		return "not installed"
 	}
 	return fmt.Sprintf("%s/%s (%s)", valueOrUnknown(status.ActiveState), valueOrUnknown(status.SubState), valueOrUnknown(status.UnitFileState))
+}
+
+func formatUnitUptime(status unitStatus, now time.Time) string {
+	if status.LoadState == "not-found" {
+		return "not installed"
+	}
+	if !strings.EqualFold(strings.TrimSpace(status.ActiveState), "active") {
+		return "n/a"
+	}
+	activeSince, ok := parseSystemdTimestamp(status.ActiveSince)
+	if !ok {
+		return "unknown"
+	}
+	uptime := now.Sub(activeSince)
+	if uptime < 0 {
+		uptime = 0
+	}
+	return uptime.Round(time.Second).String()
+}
+
+func parseSystemdTimestamp(value string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || strings.EqualFold(trimmed, "n/a") {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		"Mon 2006-01-02 15:04:05 MST",
+		"Mon 2006-01-02 15:04:05 -0700",
+		time.RFC3339,
+		time.RFC3339Nano,
+	}
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, trimmed)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func valueOrUnknown(value string) string {

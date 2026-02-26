@@ -102,6 +102,35 @@ func TestDelegateToolCreateUsesCurrentSessionID(t *testing.T) {
 	}
 }
 
+func TestDelegateToolCreateDefaultsTargetToCurrentAgent(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"delegate"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	fake := &fakeDelegationToolService{}
+	agent.Delegation = fake
+	runner := NewToolRunner(agent)
+	session := agent.NewSession()
+	session.ID = "sess-source"
+
+	output, err := runner.Run(context.Background(), session, toolCall("delegate", map[string]any{
+		"action":  "create",
+		"message": "Please help with this task.",
+	}))
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("status = %q, want ok", output.Status)
+	}
+	if fake.lastCreateReq.TargetAgentID != strings.TrimSpace(agent.ID) {
+		t.Fatalf("target agent = %q, want %q", fake.lastCreateReq.TargetAgentID, strings.TrimSpace(agent.ID))
+	}
+}
+
 func TestDelegateToolListUsesCurrentSessionScope(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"delegate"}

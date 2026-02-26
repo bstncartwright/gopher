@@ -308,7 +308,7 @@ func buildToolUsageHints(registry ToolRegistry) string {
 		lines = append(lines, "- `process` manages background sessions. Use `action` in {`list`,`poll`,`log`,`write`,`kill`} with the `session_id` from `exec`.")
 	}
 	if toolRegistryHas(registry, "delegate") {
-		lines = append(lines, "- `delegate` creates a collaboration session with another agent. Provide `action:\"create\"`, `target_agent`, and a concrete `message`.")
+		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`}; `create` requires `message` and accepts optional `target_agent`.")
 	}
 	if toolRegistryHas(registry, "cron") {
 		lines = append(lines, "- `cron` manages scheduled reminders/checks; omit `session_id` only when the current session should be used.")
@@ -337,7 +337,7 @@ func buildCollaborationSection(input systemPromptInput) string {
 		lines = append(lines, "Known agents in this runtime: "+strings.Join(known, ", "))
 	}
 	if delegateEnabled {
-		lines = append(lines, "When another agent is better suited, use `delegate` with `action:\"create\"`, `target_agent`, and task-specific `message`.")
+		lines = append(lines, "When delegation helps, use `delegate` with `action:\"create\"` and a task-specific `message`; provide `target_agent` when you want a specific worker.")
 	} else if len(known) > 1 {
 		lines = append(lines, "Delegation requires the `delegate` tool; if missing from Tooling, ask the user to enable collaboration tools.")
 	}

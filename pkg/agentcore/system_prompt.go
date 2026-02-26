@@ -353,11 +353,11 @@ func buildPolicySection(policies AgentPolicies) string {
 	}
 
 	if policies.Network.Enabled {
-		domains := normalizeUniqueStrings(policies.Network.AllowDomains)
-		if len(domains) == 0 {
-			lines = append(lines, "network=enabled | allow_domains=unspecified")
+		blocked := normalizeUniqueStrings(policies.Network.BlockDomains)
+		if len(blocked) == 0 {
+			lines = append(lines, "network=enabled | block_domains=none")
 		} else {
-			lines = append(lines, "network=enabled | allow_domains="+strings.Join(domains, ","))
+			lines = append(lines, "network=enabled | block_domains="+strings.Join(blocked, ","))
 		}
 	} else {
 		lines = append(lines, "network=disabled")

@@ -10,7 +10,7 @@ func TestWebSearchPolicyDeniedWhenNetworkDisabled(t *testing.T) {
 	config.EnabledTools = []string{"web_search"}
 	policies := defaultPolicies()
 	policies.Network.Enabled = false
-	policies.Network.AllowDomains = []string{"example.com"}
+	policies.Network.BlockDomains = []string{"example.com"}
 	workspace := createTestWorkspace(t, config, policies)
 
 	agent, err := LoadAgent(workspace)
@@ -27,11 +27,11 @@ func TestWebSearchPolicyDeniedWhenNetworkDisabled(t *testing.T) {
 	}
 }
 
-func TestWebSearchPolicyDeniedWhenAllowDomainsExcludeAPIZAI(t *testing.T) {
+func TestWebSearchPolicyDeniedWhenRequiredHostsAreBlocked(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"web_search"}
 	policies := defaultPolicies()
-	policies.Network.AllowDomains = []string{"example.com"}
+	policies.Network.BlockDomains = []string{"mcp.exa.ai", "mcp.tavily.com"}
 	workspace := createTestWorkspace(t, config, policies)
 
 	agent, err := LoadAgent(workspace)
@@ -41,18 +41,19 @@ func TestWebSearchPolicyDeniedWhenAllowDomainsExcludeAPIZAI(t *testing.T) {
 
 	_, err = NewToolRunner(agent).enforcePolicy("web_search", map[string]any{"query": "latest ai news"})
 	if err == nil || !IsPolicyError(err) {
-		t.Fatalf("expected policy error when allow_domains excludes api.z.ai, got: %v", err)
+		t.Fatalf("expected policy error when block_domains contains required hosts, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "allow_domains") {
-		t.Fatalf("expected allow_domains error message, got: %v", err)
+	if !strings.Contains(err.Error(), "block_domains") {
+		t.Fatalf("expected block_domains error message, got: %v", err)
 	}
 }
 
-func TestWebSearchPolicyAllowedWithWildcardDomain(t *testing.T) {
+func TestWebSearchPolicyAllowedWhenNoRequiredHostsAreBlocked(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"web_search"}
 	policies := defaultPolicies()
-	policies.Network.AllowDomains = []string{"*"}
+	policies.Network.AllowDomains = []string{"example.com"}
+	policies.Network.BlockDomains = []string{"blocked.example.com"}
 	workspace := createTestWorkspace(t, config, policies)
 
 	agent, err := LoadAgent(workspace)
@@ -62,6 +63,6 @@ func TestWebSearchPolicyAllowedWithWildcardDomain(t *testing.T) {
 
 	_, err = NewToolRunner(agent).enforcePolicy("web_search", map[string]any{"query": "latest ai news"})
 	if err != nil {
-		t.Fatalf("expected web_search policy allow with wildcard domain, got: %v", err)
+		t.Fatalf("expected web_search policy allow when required hosts are not blocked, got: %v", err)
 	}
 }

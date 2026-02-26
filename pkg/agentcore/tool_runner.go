@@ -264,8 +264,15 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		if !r.agent.Policies.Network.Enabled {
 			return nil, &PolicyError{Message: "web_search denied: policies.network.enabled=false"}
 		}
-		if !domainAllowed("api.z.ai", r.agent.Policies.Network.AllowDomains) {
-			return nil, &PolicyError{Message: `web_search denied: "api.z.ai" is not allowed by policies.network.allow_domains`}
+		requiredDomains := []string{"mcp.exa.ai", "mcp.tavily.com"}
+		blockedDomains := make([]string, 0, len(requiredDomains))
+		for _, domain := range requiredDomains {
+			if domainAllowed(domain, r.agent.Policies.Network.BlockDomains) {
+				blockedDomains = append(blockedDomains, domain)
+			}
+		}
+		if len(blockedDomains) > 0 {
+			return nil, &PolicyError{Message: fmt.Sprintf("web_search denied: %q blocked by policies.network.block_domains", strings.Join(blockedDomains, ","))}
 		}
 		return out, nil
 

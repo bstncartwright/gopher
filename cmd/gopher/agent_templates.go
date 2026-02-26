@@ -243,7 +243,7 @@ func defaultPoliciesTemplate() string {
   "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"],
   "network": {
     "enabled": true,
-    "allow_domains": ["*"]
+    "block_domains": []
   },
   "budget": {
     "max_tokens_per_session": 200000

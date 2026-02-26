@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,8 +86,44 @@ type telegramChat struct {
 }
 
 type sendResponse struct {
-	OK bool `json:"ok"`
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
+	ErrorCode   int    `json:"error_code"`
 }
+
+type telegramAPIError struct {
+	Method      string
+	Description string
+	ErrorCode   int
+}
+
+func (e *telegramAPIError) Error() string {
+	if e == nil {
+		return "telegram api error"
+	}
+	method := strings.TrimSpace(e.Method)
+	if method == "" {
+		method = "request"
+	}
+	detail := strings.TrimSpace(e.Description)
+	switch {
+	case detail == "" && e.ErrorCode > 0:
+		return fmt.Sprintf("telegram %s returned ok=false (error_code=%d)", method, e.ErrorCode)
+	case detail == "":
+		return fmt.Sprintf("telegram %s returned ok=false", method)
+	case e.ErrorCode > 0:
+		return fmt.Sprintf("telegram %s returned ok=false (error_code=%d): %s", method, e.ErrorCode, detail)
+	default:
+		return fmt.Sprintf("telegram %s returned ok=false: %s", method, detail)
+	}
+}
+
+var (
+	telegramFencedCodeBlockPattern = regexp.MustCompile("(?s)```(?:[^\\n`]*)\\n(.*?)```")
+	telegramInlineCodePattern      = regexp.MustCompile("`([^`\\n]+)`")
+	telegramMarkdownLinkPattern    = regexp.MustCompile(`\[(.+?)\]\((https?://[^\s)]+|tg://[^\s)]+)\)`)
+	telegramBoldPattern            = regexp.MustCompile(`\*\*(.+?)\*\*|__(.+?)__`)
+)
 
 func New(opts Options) (*Transport, error) {
 	token := strings.TrimSpace(opts.BotToken)
@@ -208,12 +247,26 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 		slog.Debug("telegram transport: send message skipped due empty text", "conversation_id", message.ConversationID, "attachments", len(message.Attachments))
 		return nil
 	}
-	payload := map[string]any{
-		"chat_id": chatID,
-		"text":    text,
-	}
+	renderedText, parseMode := renderTelegramMessageText(text)
+	payload := buildSendMessagePayload(chatID, renderedText, parseMode)
 	slog.Info("telegram transport: sending message", "conversation_id", message.ConversationID, "chat_id", chatID, "attachment_count", len(message.Attachments))
-	return t.sendAPI(ctx, "sendMessage", payload)
+	if err := t.sendAPI(ctx, "sendMessage", payload); err != nil {
+		if parseMode == "" || !isTelegramEntityParseError(err) {
+			return err
+		}
+		fallbackText := strings.TrimSpace(stripCommonMarkdownFormatting(text))
+		if fallbackText == "" {
+			fallbackText = text
+		}
+		slog.Warn(
+			"telegram transport: parse-mode render rejected by telegram, retrying plain text",
+			"conversation_id", message.ConversationID,
+			"chat_id", chatID,
+			"error", err,
+		)
+		return t.sendAPI(ctx, "sendMessage", buildSendMessagePayload(chatID, fallbackText, ""))
+	}
+	return nil
 }
 
 func (t *Transport) SendTyping(ctx context.Context, conversationID string, typing bool) error {
@@ -362,7 +415,11 @@ func (t *Transport) sendAPI(ctx context.Context, method string, payload map[stri
 		return fmt.Errorf("decode telegram %s response: %w", method, err)
 	}
 	if !parsed.OK {
-		return fmt.Errorf("telegram %s returned ok=false", method)
+		return &telegramAPIError{
+			Method:      method,
+			Description: strings.TrimSpace(parsed.Description),
+			ErrorCode:   parsed.ErrorCode,
+		}
 	}
 	slog.Debug("telegram transport: api request successful", "method", method, "payload_keys", mapKeys(payload))
 	return nil
@@ -486,4 +543,128 @@ func formatAttachmentNotice(attachments []transport.OutboundAttachment) string {
 		return ""
 	}
 	return "Generated files: " + strings.Join(names, ", ")
+}
+
+func buildSendMessagePayload(chatID, text, parseMode string) map[string]any {
+	payload := map[string]any{
+		"chat_id": strings.TrimSpace(chatID),
+		"text":    strings.TrimSpace(text),
+	}
+	if mode := strings.TrimSpace(parseMode); mode != "" {
+		payload["parse_mode"] = mode
+	}
+	return payload
+}
+
+func isTelegramEntityParseError(err error) bool {
+	var apiErr *telegramAPIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	detail := strings.ToLower(strings.TrimSpace(apiErr.Description))
+	if detail == "" {
+		return false
+	}
+	return strings.Contains(detail, "can't parse entities") || strings.Contains(detail, "parse entities")
+}
+
+func renderTelegramMessageText(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ""
+	}
+	return markdownishToTelegramHTML(text), "HTML"
+}
+
+func markdownishToTelegramHTML(input string) string {
+	text := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(input), "\r\n", "\n"), "\r", "\n")
+	if text == "" {
+		return ""
+	}
+
+	type htmlToken struct {
+		key   string
+		value string
+	}
+	tokens := make([]htmlToken, 0, 16)
+	stash := func(pattern *regexp.Regexp, builder func([]string) string) {
+		text = pattern.ReplaceAllStringFunc(text, func(match string) string {
+			submatch := pattern.FindStringSubmatch(match)
+			if len(submatch) == 0 {
+				return match
+			}
+			key := fmt.Sprintf("@@TGPH_%d@@", len(tokens))
+			tokens = append(tokens, htmlToken{
+				key:   key,
+				value: builder(submatch),
+			})
+			return key
+		})
+	}
+
+	stash(telegramFencedCodeBlockPattern, func(parts []string) string {
+		code := strings.TrimSuffix(parts[1], "\n")
+		return "<pre><code>" + html.EscapeString(code) + "</code></pre>"
+	})
+	stash(telegramInlineCodePattern, func(parts []string) string {
+		return "<code>" + html.EscapeString(parts[1]) + "</code>"
+	})
+	stash(telegramMarkdownLinkPattern, func(parts []string) string {
+		label := strings.TrimSpace(parts[1])
+		href := strings.TrimSpace(parts[2])
+		if !isSupportedTelegramLink(href) {
+			return html.EscapeString(parts[0])
+		}
+		if label == "" {
+			label = href
+		}
+		return `<a href="` + html.EscapeString(href) + `">` + html.EscapeString(label) + "</a>"
+	})
+	stash(telegramBoldPattern, func(parts []string) string {
+		content := parts[1]
+		if strings.TrimSpace(content) == "" && len(parts) > 2 {
+			content = parts[2]
+		}
+		if content == "" {
+			return html.EscapeString(parts[0])
+		}
+		return "<b>" + html.EscapeString(content) + "</b>"
+	})
+
+	rendered := html.EscapeString(text)
+	for i := len(tokens) - 1; i >= 0; i-- {
+		rendered = strings.ReplaceAll(rendered, tokens[i].key, tokens[i].value)
+	}
+	return rendered
+}
+
+func isSupportedTelegramLink(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return strings.TrimSpace(parsed.Host) != ""
+	case "tg":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripCommonMarkdownFormatting(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	text = telegramMarkdownLinkPattern.ReplaceAllString(text, "$1 ($2)")
+	text = strings.ReplaceAll(text, "**", "")
+	text = strings.ReplaceAll(text, "__", "")
+	text = strings.ReplaceAll(text, "`", "")
+	return text
 }

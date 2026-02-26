@@ -89,16 +89,6 @@ type pageData struct {
 	HasSessionStore bool
 }
 
-type overviewData struct {
-	Now           string
-	Nodes         []overviewNode
-	HasControl    bool
-	ExecSummary   controlSummary
-	WaitingItems  []controlWaitingItem
-	Delegations   []controlDelegation
-	RecentActions []controlActionRecord
-}
-
 type overviewNode struct {
 	NodeID        string
 	Role          string

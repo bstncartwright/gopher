@@ -2,8 +2,12 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bstncartwright/gopher/pkg/transport"
@@ -129,5 +133,114 @@ func TestDispatchEventMapsInboundFields(t *testing.T) {
 	}
 	if got.Text != "what's going on?" {
 		t.Fatalf("text = %q", got.Text)
+	}
+}
+
+func TestRenderTelegramMessageTextConvertsMarkdown(t *testing.T) {
+	text := "Hey **Boston**\nUse `gopher` and [docs](https://example.com)\n\n```bash\necho hi\n```"
+	rendered, parseMode := renderTelegramMessageText(text)
+	if parseMode != "HTML" {
+		t.Fatalf("parse mode = %q, want HTML", parseMode)
+	}
+	if !strings.Contains(rendered, "<b>Boston</b>") {
+		t.Fatalf("rendered text missing bold conversion: %q", rendered)
+	}
+	if !strings.Contains(rendered, "<code>gopher</code>") {
+		t.Fatalf("rendered text missing inline code conversion: %q", rendered)
+	}
+	if !strings.Contains(rendered, `<a href="https://example.com">docs</a>`) {
+		t.Fatalf("rendered text missing link conversion: %q", rendered)
+	}
+	if !strings.Contains(rendered, "<pre><code>echo hi</code></pre>") {
+		t.Fatalf("rendered text missing fenced code conversion: %q", rendered)
+	}
+}
+
+func TestRenderTelegramMessageTextEscapesRawHTML(t *testing.T) {
+	rendered, parseMode := renderTelegramMessageText("<b>raw</b> **safe**")
+	if parseMode != "HTML" {
+		t.Fatalf("parse mode = %q, want HTML", parseMode)
+	}
+	if !strings.Contains(rendered, "&lt;b&gt;raw&lt;/b&gt;") {
+		t.Fatalf("rendered text should escape raw html: %q", rendered)
+	}
+	if !strings.Contains(rendered, "<b>safe</b>") {
+		t.Fatalf("rendered text missing markdown bold conversion: %q", rendered)
+	}
+}
+
+func TestSendMessageRetriesWithoutParseModeWhenTelegramRejectsEntities(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/sendMessage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+		requests = append(requests, payload)
+		w.Header().Set("Content-Type", "application/json")
+		if len(requests) == 1 {
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Text:           "Hey **Boston**",
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if mode, _ := requests[0]["parse_mode"].(string); mode != "HTML" {
+		t.Fatalf("first request parse_mode = %q, want HTML", mode)
+	}
+	if _, hasParseMode := requests[1]["parse_mode"]; hasParseMode {
+		t.Fatalf("second request should not set parse_mode")
+	}
+	fallbackText, _ := requests[1]["text"].(string)
+	if strings.Contains(fallbackText, "**") {
+		t.Fatalf("fallback text still includes markdown delimiters: %q", fallbackText)
+	}
+}
+
+func TestSendMessageDoesNotRetryOnNonParseTelegramError(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	err = tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Text:           "Hey **Boston**",
+	})
+	if err == nil {
+		t.Fatalf("expected SendMessage() error")
+	}
+	if requests != 1 {
+		t.Fatalf("request count = %d, want 1", requests)
 	}
 }

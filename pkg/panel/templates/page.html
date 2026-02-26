@@ -175,6 +175,15 @@
         return "control";
       }
 
+      function sessionFromSearch(search) {
+        var params = new URLSearchParams(search || "");
+        return String(params.get("session") || "").trim();
+      }
+
+      function sessionFromLocation() {
+        return sessionFromSearch(window.location.search || "");
+      }
+
       function resolveInitialTab() {
         var serverTab = normalize(document.body.getAttribute("data-initial-tab") || "");
         if (isValidTab(serverTab)) {
@@ -191,8 +200,12 @@
         return "control";
       }
 
+      function resolveInitialSessionID() {
+        return sessionFromLocation();
+      }
+
       var state = {
-        sessionID: "",
+        sessionID: resolveInitialSessionID(),
         lastSeq: 0,
         detailRenderedSeq: 0,
         animateIncomingRows: false,
@@ -446,7 +459,8 @@
         });
       }
 
-      function selectSession(sessionID, lastSeq) {
+      function selectSession(sessionID, lastSeq, options) {
+        options = options || {};
         if (!sessionID) {
           return;
         }
@@ -455,6 +469,12 @@
         state.detailRenderedSeq = state.lastSeq;
         state.animateIncomingRows = false;
         highlightSelected();
+        if (options.syncURL !== false) {
+          setURLState({ replaceHistory: !!options.replaceHistory });
+        }
+        if (options.loadDetail) {
+          ensureDetailForSession(sessionID);
+        }
         openSource();
       }
 
@@ -493,17 +513,23 @@
       function syncStateFromDetail() {
         var node = document.querySelector("#session-detail [data-session-id]");
         if (!node) {
-          return;
+          return false;
         }
         var detailSession = node.getAttribute("data-session-id") || "";
         var detailSeq = Number(node.getAttribute("data-last-seq") || "0") || 0;
         if (!detailSession) {
-          return;
+          return false;
         }
         if (detailSession !== state.sessionID) {
+          if (state.sessionID) {
+            ensureDetailForSession(state.sessionID);
+            highlightSelected();
+            return false;
+          }
           state.sessionID = detailSession;
           state.lastSeq = detailSeq;
           state.detailRenderedSeq = detailSeq;
+          setURLState({ replaceHistory: true });
           openSource();
         } else {
           if (detailSeq > state.lastSeq) {
@@ -513,6 +539,7 @@
           openSource();
         }
         highlightSelected();
+        return true;
       }
 
       function scrollDetailToBottom() {
@@ -616,10 +643,14 @@
 
         var cards = document.querySelectorAll("#sessions-list [data-session-card]:not(.session-hidden)");
         if (!cards.length) {
+          var hadSession = !!state.sessionID;
           state.sessionID = "";
           state.lastSeq = 0;
           state.detailRenderedSeq = 0;
           closeSource();
+          if (hadSession) {
+            setURLState({ replaceHistory: true });
+          }
           syncSelectedActivityIndicator();
           return;
         }
@@ -642,21 +673,31 @@
           return;
         }
 
-        selectSession(sessionID, lastSeq);
-        ensureDetailForSession(sessionID);
+        selectSession(sessionID, lastSeq, { loadDetail: true, replaceHistory: true });
       }
 
-      function setURLForTab(tabID, replaceHistory) {
+      function setURLState(options) {
+        options = options || {};
         if (!window.history || typeof window.history.pushState !== "function") {
           return;
         }
-        var normalizedTabID = isValidTab(tabID) ? tabID : "control";
+        var normalizedTabID = isValidTab(state.activeTab) ? state.activeTab : "control";
         var nextPath = tabPath(normalizedTabID);
-        if (window.location.pathname === nextPath && !window.location.search) {
+        var params = new URLSearchParams(window.location.search || "");
+        params.delete("tab");
+        if (state.sessionID) {
+          params.set("session", state.sessionID);
+        } else {
+          params.delete("session");
+        }
+        var nextSearch = params.toString();
+        var nextURL = nextPath + (nextSearch ? "?" + nextSearch : "");
+        var currentURL = window.location.pathname + (window.location.search || "");
+        if (currentURL === nextURL) {
           return;
         }
-        var method = replaceHistory ? "replaceState" : "pushState";
-        window.history[method]({ panelTab: normalizedTabID }, "", nextPath);
+        var method = options.replaceHistory ? "replaceState" : "pushState";
+        window.history[method]({ panelTab: normalizedTabID, panelSessionID: state.sessionID || "" }, "", nextURL);
       }
 
       function applySessionFilters() {
@@ -718,11 +759,11 @@
         }
 
         if (syncURL) {
-          setURLForTab(state.activeTab, !!options.replaceHistory);
+          setURLState({ replaceHistory: !!options.replaceHistory });
         }
 
         if (state.activeTab === "sessions") {
-          ensureSelectedSession({ forceLatest: forceLatest || state.previousTab !== "sessions" });
+          ensureSelectedSession({ forceLatest: forceLatest || (state.previousTab !== "sessions" && !state.sessionID) });
         } else {
           closeSource();
         }
@@ -764,7 +805,9 @@
 
         var node = event.target.closest("[data-session-card]");
         if (node) {
-          selectSession(node.getAttribute("data-session-id") || "", node.getAttribute("data-last-seq") || "0");
+          selectSession(node.getAttribute("data-session-id") || "", node.getAttribute("data-last-seq") || "0", {
+            loadDetail: true
+          });
           return;
         }
 
@@ -792,7 +835,10 @@
         }
         if (event.detail.target.id === "session-detail") {
           var previousRenderedSeq = state.detailRenderedSeq;
-          syncStateFromDetail();
+          var detailAccepted = syncStateFromDetail();
+          if (!detailAccepted) {
+            return;
+          }
           hydrateTimeline();
           animateIncomingTimelineRows(previousRenderedSeq);
           scrollDetailToBottom();
@@ -807,12 +853,18 @@
 
       window.addEventListener("popstate", function () {
         var nextTab = tabFromLocation();
+        var nextSessionID = sessionFromLocation();
         if (!isValidTab(nextTab)) {
           nextTab = "control";
         }
+        if (nextSessionID !== state.sessionID) {
+          state.sessionID = nextSessionID;
+          state.lastSeq = 0;
+          state.detailRenderedSeq = 0;
+        }
         state.activeTab = nextTab;
         localStorage.setItem("gopher.panel.activeTab", nextTab);
-        applyTabState({ syncURL: false });
+        applyTabState({ syncURL: false, forceLatest: !state.sessionID });
       });
 
       var sessionSearch = document.getElementById("session-search");

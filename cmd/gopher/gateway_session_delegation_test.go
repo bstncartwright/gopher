@@ -125,7 +125,8 @@ func TestGatewaySessionDelegationRejectsUnknownTargetAgent(t *testing.T) {
 	}
 
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
-		"milo": {},
+		"milo":  {},
+		"riley": {},
 	}, t.TempDir(), nil)
 	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
@@ -135,6 +136,91 @@ func TestGatewaySessionDelegationRejectsUnknownTargetAgent(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected unknown target agent error")
+	}
+}
+
+func TestGatewaySessionDelegationSingleAgentAllowsAliasTarget(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{{ID: "milo", Type: sessionrt.ActorAgent}},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+	dataDir := t.TempDir()
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo": {},
+	}, dataDir, nil)
+	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "subagent1",
+		Message:         "Investigate and report back.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	if result.TargetAgentID != "subagent1" {
+		t.Fatalf("target agent = %q, want subagent1", result.TargetAgentID)
+	}
+	delegatedSession, err := manager.GetSession(ctx, sessionrt.SessionID(result.SessionID))
+	if err != nil {
+		t.Fatalf("GetSession(delegated) error: %v", err)
+	}
+	if len(delegatedSession.Participants) != 1 {
+		t.Fatalf("participants count = %d, want 1", len(delegatedSession.Participants))
+	}
+	if _, ok := delegatedSession.Participants["milo"]; !ok {
+		t.Fatalf("expected milo participant in single-agent delegated session")
+	}
+	events, err := store.List(ctx, sessionrt.SessionID(result.SessionID))
+	if err != nil {
+		t.Fatalf("store.List(delegation) error: %v", err)
+	}
+	foundKickoff := false
+	for _, event := range events {
+		if event.Type != sessionrt.EventMessage {
+			continue
+		}
+		msg, ok := event.Payload.(sessionrt.Message)
+		if !ok {
+			continue
+		}
+		if msg.TargetActorID == "milo" && strings.Contains(msg.Content, "Delegation for subagent1:") {
+			foundKickoff = true
+			break
+		}
+	}
+	if !foundKickoff {
+		t.Fatalf("expected kickoff targeted to milo with alias label, events=%+v", events)
+	}
+
+	delegationsPath := filepath.Join(dataDir, "control", "delegations.jsonl")
+	blob, err := os.ReadFile(delegationsPath)
+	if err != nil {
+		t.Fatalf("read delegations log error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(blob)), "\n")
+	if len(lines) < 1 {
+		t.Fatalf("expected at least one delegation record")
+	}
+	record := map[string]any{}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &record); err != nil {
+		t.Fatalf("decode delegation record: %v", err)
+	}
+	if got, _ := record["target_agent_id"].(string); got != "subagent1" {
+		t.Fatalf("target_agent_id = %q, want subagent1", got)
+	}
+	if got, _ := record["resolved_target_agent_id"].(string); got != "milo" {
+		t.Fatalf("resolved_target_agent_id = %q, want milo", got)
 	}
 }
 

@@ -51,7 +51,7 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	}
 	sourceSessionID := sessionrt.SessionID(strings.TrimSpace(req.SourceSessionID))
 	sourceAgentID := sessionrt.ActorID(strings.TrimSpace(req.SourceAgentID))
-	targetAgentID := sessionrt.ActorID(strings.TrimSpace(req.TargetAgentID))
+	requestedTargetAgentID := sessionrt.ActorID(strings.TrimSpace(req.TargetAgentID))
 	message := strings.TrimSpace(req.Message)
 	if sourceSessionID == "" {
 		return agentcore.DelegationSession{}, fmt.Errorf("source session id is required")
@@ -59,20 +59,15 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	if sourceAgentID == "" {
 		return agentcore.DelegationSession{}, fmt.Errorf("source agent id is required")
 	}
-	if targetAgentID == "" {
-		return agentcore.DelegationSession{}, fmt.Errorf("target agent id is required")
-	}
-	if sourceAgentID == targetAgentID {
-		return agentcore.DelegationSession{}, fmt.Errorf("source and target agents must be different")
-	}
 	if message == "" {
 		return agentcore.DelegationSession{}, fmt.Errorf("message is required")
 	}
 	if _, exists := s.agents[sourceAgentID]; !exists {
 		return agentcore.DelegationSession{}, fmt.Errorf("unknown source agent %q", sourceAgentID)
 	}
-	if _, exists := s.agents[targetAgentID]; !exists {
-		return agentcore.DelegationSession{}, fmt.Errorf("unknown target agent %q", targetAgentID)
+	resolvedTargetAgentID, displayTargetAgentID, err := s.resolveDelegationTarget(sourceAgentID, requestedTargetAgentID)
+	if err != nil {
+		return agentcore.DelegationSession{}, err
 	}
 	sourceSession, err := s.manager.GetSession(ctx, sourceSessionID)
 	if err != nil {
@@ -82,16 +77,15 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		return agentcore.DelegationSession{}, fmt.Errorf("source session %q not found", sourceSessionID)
 	}
 
-	createdSession, err := s.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
-		Participants: []sessionrt.Participant{
-			{ID: sourceAgentID, Type: sessionrt.ActorAgent},
-			{ID: targetAgentID, Type: sessionrt.ActorAgent},
-		},
-	})
+	participants := []sessionrt.Participant{{ID: sourceAgentID, Type: sessionrt.ActorAgent}}
+	if resolvedTargetAgentID != sourceAgentID {
+		participants = append(participants, sessionrt.Participant{ID: resolvedTargetAgentID, Type: sessionrt.ActorAgent})
+	}
+	createdSession, err := s.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{Participants: participants})
 	if err != nil {
 		return agentcore.DelegationSession{}, fmt.Errorf("create delegation session: %w", err)
 	}
-	kickoff := buildDelegationKickoffMessage(string(targetAgentID), message)
+	kickoff := buildDelegationKickoffMessage(displayTargetAgentID, message)
 	sendErr := s.manager.SendEvent(ctx, sessionrt.Event{
 		SessionID: createdSession.ID,
 		From:      sourceAgentID,
@@ -99,7 +93,7 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		Payload: sessionrt.Message{
 			Role:          sessionrt.RoleUser,
 			Content:       kickoff,
-			TargetActorID: targetAgentID,
+			TargetActorID: resolvedTargetAgentID,
 		},
 	})
 	if sendErr != nil {
@@ -108,28 +102,37 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	announcement := buildDelegationAnnouncement(string(targetAgentID), string(createdSession.ID))
+	announcement := buildDelegationAnnouncement(displayTargetAgentID, string(createdSession.ID))
 	record := map[string]any{
-		"ts":                now,
-		"event":             "created",
-		"delegation_id":     strings.TrimSpace(string(createdSession.ID)),
-		"source_session_id": strings.TrimSpace(string(sourceSessionID)),
-		"source_agent_id":   strings.TrimSpace(string(sourceAgentID)),
-		"target_agent_id":   strings.TrimSpace(string(targetAgentID)),
-		"title":             strings.TrimSpace(req.Title),
-		"kickoff_message":   kickoff,
-		"status":            "active",
-		"created_at":        now,
-		"updated_at":        now,
+		"ts":                       now,
+		"event":                    "created",
+		"delegation_id":            strings.TrimSpace(string(createdSession.ID)),
+		"source_session_id":        strings.TrimSpace(string(sourceSessionID)),
+		"source_agent_id":          strings.TrimSpace(string(sourceAgentID)),
+		"target_agent_id":          strings.TrimSpace(displayTargetAgentID),
+		"resolved_target_agent_id": strings.TrimSpace(string(resolvedTargetAgentID)),
+		"title":                    strings.TrimSpace(req.Title),
+		"kickoff_message":          kickoff,
+		"status":                   "active",
+		"created_at":               now,
+		"updated_at":               now,
 	}
 	s.appendDelegationRecord(record)
 	_ = s.sendDelegationControlEvent(ctx, sourceSessionID, "delegation.created", map[string]any{
-		"delegation_id": string(createdSession.ID),
-		"target_agent":  string(targetAgentID),
-		"announcement":  announcement,
+		"delegation_id":         string(createdSession.ID),
+		"target_agent":          displayTargetAgentID,
+		"resolved_target_agent": string(resolvedTargetAgentID),
+		"announcement":          announcement,
 	})
 	if s.logger != nil {
-		s.logger.Printf("delegation session created source=%s target=%s source_session=%s delegated_session=%s", sourceAgentID, targetAgentID, sourceSessionID, createdSession.ID)
+		s.logger.Printf(
+			"delegation session created source=%s target=%s resolved_target=%s source_session=%s delegated_session=%s",
+			sourceAgentID,
+			displayTargetAgentID,
+			resolvedTargetAgentID,
+			sourceSessionID,
+			createdSession.ID,
+		)
 	}
 
 	return agentcore.DelegationSession{
@@ -137,11 +140,41 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		ConversationID:  "session:" + strings.TrimSpace(string(createdSession.ID)),
 		SourceSessionID: strings.TrimSpace(string(sourceSessionID)),
 		SourceAgentID:   strings.TrimSpace(string(sourceAgentID)),
-		TargetAgentID:   strings.TrimSpace(string(targetAgentID)),
+		TargetAgentID:   strings.TrimSpace(displayTargetAgentID),
 		KickoffMessage:  kickoff,
 		Status:          "active",
 		Announcement:    announcement,
 	}, nil
+}
+
+func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(sourceAgentID, requestedTargetAgentID sessionrt.ActorID) (sessionrt.ActorID, string, error) {
+	if s == nil {
+		return "", "", fmt.Errorf("delegation service is unavailable")
+	}
+	sourceAgentID = sessionrt.ActorID(strings.TrimSpace(string(sourceAgentID)))
+	requestedTargetAgentID = sessionrt.ActorID(strings.TrimSpace(string(requestedTargetAgentID)))
+	if sourceAgentID == "" {
+		return "", "", fmt.Errorf("source agent id is required")
+	}
+	if requestedTargetAgentID == "" {
+		return sourceAgentID, strings.TrimSpace(string(sourceAgentID)), nil
+	}
+	if _, exists := s.agents[requestedTargetAgentID]; exists {
+		return requestedTargetAgentID, strings.TrimSpace(string(requestedTargetAgentID)), nil
+	}
+	if len(s.agents) == 1 {
+		// Single-agent runtime: treat requested labels like `subagent1` as aliases that route to the source actor.
+		return sourceAgentID, strings.TrimSpace(string(requestedTargetAgentID)), nil
+	}
+	known := make([]string, 0, len(s.agents))
+	for id := range s.agents {
+		known = append(known, strings.TrimSpace(string(id)))
+	}
+	sort.Strings(known)
+	if len(known) == 0 {
+		return "", "", fmt.Errorf("unknown target agent %q", requestedTargetAgentID)
+	}
+	return "", "", fmt.Errorf("unknown target agent %q (known agents: %s)", requestedTargetAgentID, strings.Join(known, ", "))
 }
 
 func (s *gatewaySessionDelegationToolService) ListDelegationSessions(ctx context.Context, req agentcore.DelegationListRequest) ([]agentcore.DelegationListItem, error) {

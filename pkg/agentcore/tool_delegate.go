@@ -61,10 +61,10 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 
 	switch strings.TrimSpace(action) {
 	case "create":
-		targetAgentID, err := requiredStringArg(input.Args, "target_agent")
-		if err != nil {
-			slog.Error("delegate_tool: target_agent arg required")
-			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		targetAgentID, _ := optionalStringArg(input.Args, "target_agent")
+		targetAgentID = strings.TrimSpace(targetAgentID)
+		if targetAgentID == "" {
+			targetAgentID = strings.TrimSpace(input.Agent.ID)
 		}
 		message, err := requiredStringArg(input.Args, "message")
 		if err != nil {

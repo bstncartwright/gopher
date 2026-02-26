@@ -73,6 +73,9 @@ type DMPipeline struct {
 	subscribed         map[sessionrt.SessionID]struct{}
 	fallbackMu         sync.Mutex
 	lastFallback       map[string]time.Time
+	errorFallbackMu    sync.Mutex
+	errorFallbacks     map[string]pendingErrorFallback
+	errorFallbackSeq   uint64
 	processingMu       sync.Mutex
 	processing         map[string]int
 	typingMu           sync.Mutex
@@ -103,11 +106,18 @@ type traceProvisionState struct {
 	LastFailureAt time.Time
 }
 
+type pendingErrorFallback struct {
+	seq    uint64
+	rawErr string
+	timer  *time.Timer
+}
+
 const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
 	dmContextClearedReply    = "Context cleared. Started a fresh session for this chat."
 	dmFallbackMinInterval    = 5 * time.Second
+	dmErrorFallbackDelay     = 750 * time.Millisecond
 	dmFallbackDetailMaxChars = 120
 	dmTypingTimeout          = 3 * time.Second
 	dmTypingKeepaliveDefault = 5 * time.Second
@@ -181,6 +191,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		bindings:           bindings,
 		subscribed:         map[sessionrt.SessionID]struct{}{},
 		lastFallback:       map[string]time.Time{},
+		errorFallbacks:     map[string]pendingErrorFallback{},
 		processing:         map[string]int{},
 		typingCancel:       map[string]context.CancelFunc{},
 		pendingFiles:       map[string][]transport.OutboundAttachment{},
@@ -667,9 +678,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				)
 			}
 			if event.Type == sessionrt.EventError {
-				p.finishProcessing(conversationID)
-				p.clearPendingAttachments(conversationID)
-				p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), errorTextFromPayload(event.Payload))
+				p.scheduleErrorFallback(conversationID, errorTextFromPayload(event.Payload))
 				continue
 			}
 			if event.Type == sessionrt.EventToolResult {
@@ -695,6 +704,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			if msg.Role != sessionrt.RoleAgent {
 				continue
 			}
+			p.cancelScheduledErrorFallback(conversationID)
 			p.finishProcessing(conversationID)
 			attachments := p.takePendingAttachments(conversationID)
 			content := strings.TrimSpace(msg.Content)
@@ -733,6 +743,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 	if conversationID == "" {
 		return
 	}
+	p.cancelScheduledErrorFallback(conversationID)
 
 	shouldEnable := false
 	p.processingMu.Lock()
@@ -774,6 +785,68 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
 	}
+}
+
+func (p *DMPipeline) scheduleErrorFallback(conversationID, rawErr string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	rawErr = strings.TrimSpace(rawErr)
+
+	p.errorFallbackMu.Lock()
+	existing, hasExisting := p.errorFallbacks[conversationID]
+	if hasExisting && existing.timer != nil {
+		existing.timer.Stop()
+	}
+	p.errorFallbackSeq++
+	seq := p.errorFallbackSeq
+	timer := time.AfterFunc(dmErrorFallbackDelay, func() {
+		p.fireScheduledErrorFallback(conversationID, seq)
+	})
+	p.errorFallbacks[conversationID] = pendingErrorFallback{
+		seq:    seq,
+		rawErr: rawErr,
+		timer:  timer,
+	}
+	p.errorFallbackMu.Unlock()
+}
+
+func (p *DMPipeline) cancelScheduledErrorFallback(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.errorFallbackMu.Lock()
+	state, ok := p.errorFallbacks[conversationID]
+	if ok {
+		delete(p.errorFallbacks, conversationID)
+	}
+	p.errorFallbackMu.Unlock()
+	if ok && state.timer != nil {
+		state.timer.Stop()
+	}
+}
+
+func (p *DMPipeline) fireScheduledErrorFallback(conversationID string, seq uint64) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	var rawErr string
+	p.errorFallbackMu.Lock()
+	state, ok := p.errorFallbacks[conversationID]
+	if !ok || state.seq != seq {
+		p.errorFallbackMu.Unlock()
+		return
+	}
+	rawErr = state.rawErr
+	delete(p.errorFallbacks, conversationID)
+	p.errorFallbackMu.Unlock()
+
+	p.finishProcessing(conversationID)
+	p.clearPendingAttachments(conversationID)
+	p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), rawErr)
 }
 
 func (p *DMPipeline) captureAttachmentsFromEvent(conversationID string, event sessionrt.Event) {

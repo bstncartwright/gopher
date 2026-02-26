@@ -87,6 +87,7 @@ type Server struct {
 
 type pageData struct {
 	HasSessionStore bool
+	ActiveTab       string
 }
 
 type overviewNode struct {
@@ -304,6 +305,7 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 func (s *Server) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_gopher/panel", s.handlePage)
+	mux.HandleFunc("GET /_gopher/panel/tab/{tab}", s.handlePageTab)
 	mux.HandleFunc("GET /_gopher/panel/health", s.handleHealth)
 	mux.HandleFunc("GET /_gopher/panel/nodes", s.handleNodes)
 	mux.HandleFunc("GET /_gopher/panel/fragments/control", s.handleControl)
@@ -318,8 +320,26 @@ func (s *Server) newMux() *http.ServeMux {
 	return mux
 }
 
-func (s *Server) handlePage(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "page.html", pageData{HasSessionStore: s.store != nil})
+func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
+	tab := ""
+	if r != nil {
+		tab = normalizePanelTab(r.URL.Query().Get("tab"))
+	}
+	s.renderTemplate(w, "page.html", pageData{
+		HasSessionStore: s.store != nil,
+		ActiveTab:       tab,
+	})
+}
+
+func (s *Server) handlePageTab(w http.ResponseWriter, r *http.Request) {
+	tab := normalizePanelTab(r.PathValue("tab"))
+	if tab == "" {
+		tab = "control"
+	}
+	s.renderTemplate(w, "page.html", pageData{
+		HasSessionStore: s.store != nil,
+		ActiveTab:       tab,
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -936,4 +956,21 @@ func formatNetworkSummary(enabled bool, allow []string, block []string) string {
 		return "enabled"
 	}
 	return fmt.Sprintf("allow: %s · block: %s", allowText, blockText)
+}
+
+func normalizePanelTab(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "control":
+		return "control"
+	case "sessions":
+		return "sessions"
+	case "nodes":
+		return "nodes"
+	case "actions", "control-actions":
+		return "actions"
+	case "agents":
+		return "agents"
+	default:
+		return ""
+	}
 }

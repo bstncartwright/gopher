@@ -30,6 +30,7 @@
 
 html,
 body {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -43,6 +44,7 @@ body {
     linear-gradient(145deg, #070a0a 0%, #0c1212 50%, #090d0d 100%);
   position: relative;
   letter-spacing: 0.01em;
+  overflow: hidden;
 }
 
 body::before {
@@ -116,6 +118,13 @@ body::before {
   margin: 0 auto;
   padding: 30px 20px 36px;
   position: relative;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .hero {
@@ -216,10 +225,14 @@ h1 {
 
 .tab-pane {
   display: none;
+  flex: 1;
+  min-height: 0;
 }
 
 .tab-pane.is-active {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .card {
@@ -241,7 +254,9 @@ h1 {
 
 .overview {
   padding: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 0;
+  min-height: 0;
+  overflow: auto;
   animation: rise 420ms ease-out;
 }
 
@@ -249,6 +264,8 @@ h1 {
   display: grid;
   grid-template-columns: minmax(310px, 395px) minmax(520px, 1fr);
   gap: 14px;
+  min-height: 0;
+  flex: 1;
 }
 
 .section-header {
@@ -336,40 +353,24 @@ h1 {
 }
 
 .sessions,
-.detail {
-  min-height: 620px;
-  display: flex;
-  flex-direction: column;
-}
-
+.detail,
 .agents {
-  min-height: 620px;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
 }
 
 #sessions-list,
-#session-detail {
-  padding: 10px 12px 12px;
-  overflow: auto;
-  max-height: 700px;
-  position: relative;
-  z-index: 1;
-}
-
-#agents-list {
-  padding: 10px 12px 12px;
-  overflow: auto;
-  max-height: 700px;
-  position: relative;
-  z-index: 1;
-}
-
+#session-detail,
+#agents-list,
 #nodes-list,
 #actions-list {
   padding: 10px 12px 12px;
   overflow: auto;
-  max-height: 700px;
+  max-height: none;
+  min-height: 0;
+  flex: 1;
   position: relative;
   z-index: 1;
 }
@@ -870,8 +871,26 @@ h1 {
 }
 
 @media (max-width: 1100px) {
+  body {
+    overflow: auto;
+  }
+
+  .layout {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  .tab-pane,
+  .tab-pane.is-active {
+    flex: none;
+    min-height: auto;
+  }
+
   .workspace-grid {
     grid-template-columns: 1fr;
+    min-height: auto;
+    flex: none;
   }
 
   #sessions-list,
@@ -880,12 +899,15 @@ h1 {
   #nodes-list,
   #actions-list {
     max-height: none;
+    min-height: auto;
+    flex: none;
   }
 
   .sessions,
   .detail,
   .agents {
     min-height: auto;
+    height: auto;
   }
 }
 

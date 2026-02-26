@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/_gopher/panel/assets/panel.css">
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
-<body>
+<body data-initial-tab="{{.ActiveTab}}">
   <div class="noise-layer" aria-hidden="true"></div>
   <div class="scanline-layer" aria-hidden="true"></div>
   <div class="bg-orbit bg-orbit-a"></div>
@@ -119,20 +119,82 @@
 
   <script>
     (function () {
-      var storedTab = localStorage.getItem("gopher.panel.activeTab");
-      var initialTab = "control";
-      if (storedTab === "sessions" || storedTab === "agents" || storedTab === "control" || storedTab === "nodes" || storedTab === "actions") {
-        initialTab = storedTab;
+      var PANEL_ROOT = "/_gopher/panel";
+
+      function isValidTab(value) {
+        return value === "control" || value === "sessions" || value === "nodes" || value === "actions" || value === "agents";
+      }
+
+      function tabPath(tabID) {
+        if (tabID === "control") {
+          return PANEL_ROOT;
+        }
+        return PANEL_ROOT + "/tab/" + tabID;
+      }
+
+      function tabFromPathname(pathname) {
+        var path = String(pathname || "");
+        if (path === PANEL_ROOT || path === PANEL_ROOT + "/") {
+          return "control";
+        }
+        var prefix = PANEL_ROOT + "/tab/";
+        if (path.indexOf(prefix) !== 0) {
+          return "";
+        }
+        var tabID = normalize(path.slice(prefix.length).split("/")[0]);
+        if (isValidTab(tabID)) {
+          return tabID;
+        }
+        return "";
+      }
+
+      function tabFromSearch(search) {
+        var params = new URLSearchParams(search || "");
+        var tabID = normalize(params.get("tab") || "");
+        if (isValidTab(tabID)) {
+          return tabID;
+        }
+        return "";
+      }
+
+      function tabFromLocation() {
+        var pathTab = tabFromPathname(window.location.pathname || "");
+        if (isValidTab(pathTab)) {
+          return pathTab;
+        }
+        var queryTab = tabFromSearch(window.location.search || "");
+        if (isValidTab(queryTab)) {
+          return queryTab;
+        }
+        return "control";
+      }
+
+      function resolveInitialTab() {
+        var serverTab = normalize(document.body.getAttribute("data-initial-tab") || "");
+        if (isValidTab(serverTab)) {
+          return serverTab;
+        }
+        var locationTab = tabFromLocation();
+        if (isValidTab(locationTab)) {
+          return locationTab;
+        }
+        var storedTab = localStorage.getItem("gopher.panel.activeTab") || "";
+        if (isValidTab(storedTab)) {
+          return storedTab;
+        }
+        return "control";
       }
 
       var state = {
         sessionID: "",
         lastSeq: 0,
         source: null,
+        sourceSessionID: "",
         payloadView: localStorage.getItem("gopher.panel.payloadView") === "raw" ? "raw" : "digest",
         sessionQuery: "",
         statusFilter: "all",
-        activeTab: initialTab
+        activeTab: resolveInitialTab(),
+        previousTab: ""
       };
 
       function clip(value, max) {
@@ -332,6 +394,7 @@
           state.source.close();
           state.source = null;
         }
+        state.sourceSessionID = "";
       }
 
       function refreshSessionDetail() {
@@ -362,10 +425,15 @@
       }
 
       function openSource() {
-        closeSource();
-        if (!state.sessionID) {
+        if (state.activeTab !== "sessions" || !state.sessionID) {
+          closeSource();
           return;
         }
+        if (state.source && state.sourceSessionID === state.sessionID) {
+          return;
+        }
+
+        closeSource();
         var streamURL = "/_gopher/panel/stream/session/" + encodeURIComponent(state.sessionID) + "?after_seq=" + state.lastSeq;
         var source = new EventSource(streamURL);
         source.addEventListener("session-event", function (event) {
@@ -385,6 +453,7 @@
           // EventSource auto-reconnects.
         };
         state.source = source;
+        state.sourceSessionID = state.sessionID;
       }
 
       function syncStateFromDetail() {
@@ -403,8 +472,12 @@
           openSource();
         } else if (detailSeq > state.lastSeq) {
           state.lastSeq = detailSeq;
+          openSource();
+        } else {
+          openSource();
         }
         highlightSelected();
+        scrollDetailToBottom();
       }
 
       function scrollDetailToBottom() {
@@ -430,32 +503,72 @@
         }
       }
 
-      function ensureSelectedSession() {
-        var cards = document.querySelectorAll("#sessions-list [data-session-card]:not(.session-hidden)");
-        if (!cards.length) {
+      function ensureDetailForSession(sessionID) {
+        if (!sessionID) {
           return;
         }
 
-        if (state.sessionID) {
+        var detailNode = document.querySelector("#session-detail [data-session-id]");
+        var detailSessionID = detailNode ? (detailNode.getAttribute("data-session-id") || "") : "";
+        if (detailSessionID === sessionID) {
+          openSource();
+          scrollDetailToBottom();
+          return;
+        }
+
+        htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(sessionID), {
+          target: "#session-detail",
+          swap: "innerHTML"
+        });
+      }
+
+      function ensureSelectedSession(options) {
+        options = options || {};
+        var forceLatest = !!options.forceLatest;
+        if (state.activeTab !== "sessions") {
+          highlightSelected();
+          return;
+        }
+
+        var cards = document.querySelectorAll("#sessions-list [data-session-card]:not(.session-hidden)");
+        if (!cards.length) {
+          closeSource();
+          return;
+        }
+
+        if (!forceLatest && state.sessionID) {
           for (var i = 0; i < cards.length; i++) {
             if ((cards[i].getAttribute("data-session-id") || "") === state.sessionID) {
               highlightSelected();
+              ensureDetailForSession(state.sessionID);
               return;
             }
           }
         }
 
+        // Sessions are rendered newest-first; first visible card is latest work.
         var first = cards[0];
         var sessionID = first.getAttribute("data-session-id") || "";
         var lastSeq = first.getAttribute("data-last-seq") || "0";
         if (!sessionID) {
           return;
         }
+
         selectSession(sessionID, lastSeq);
-        htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(sessionID), {
-          target: "#session-detail",
-          swap: "innerHTML"
-        });
+        ensureDetailForSession(sessionID);
+      }
+
+      function setURLForTab(tabID, replaceHistory) {
+        if (!window.history || typeof window.history.pushState !== "function") {
+          return;
+        }
+        var normalizedTabID = isValidTab(tabID) ? tabID : "control";
+        var nextPath = tabPath(normalizedTabID);
+        if (window.location.pathname === nextPath && !window.location.search) {
+          return;
+        }
+        var method = replaceHistory ? "replaceState" : "pushState";
+        window.history[method]({ panelTab: normalizedTabID }, "", nextPath);
       }
 
       function applySessionFilters() {
@@ -495,7 +608,11 @@
         }
       }
 
-      function applyTabState() {
+      function applyTabState(options) {
+        options = options || {};
+        var syncURL = options.syncURL !== false;
+        var forceLatest = !!options.forceLatest;
+
         var tabs = document.querySelectorAll("[data-panel-tab]");
         for (var i = 0; i < tabs.length; i++) {
           var tab = tabs[i];
@@ -511,9 +628,16 @@
           pane.classList.toggle("is-active", paneActive);
         }
 
-        if (state.activeTab === "sessions") {
-          ensureSelectedSession();
+        if (syncURL) {
+          setURLForTab(state.activeTab, !!options.replaceHistory);
         }
+
+        if (state.activeTab === "sessions") {
+          ensureSelectedSession({ forceLatest: forceLatest || state.previousTab !== "sessions" });
+        } else {
+          closeSource();
+        }
+        state.previousTab = state.activeTab;
       }
 
       function hydrateTimeline() {
@@ -539,6 +663,9 @@
           var tabID = tabButton.getAttribute("data-panel-tab") || "control";
           if (tabID !== "control" && tabID !== "sessions" && tabID !== "agents" && tabID !== "nodes" && tabID !== "actions") {
             tabID = "control";
+          }
+          if (tabID === state.activeTab) {
+            return;
           }
           state.activeTab = tabID;
           localStorage.setItem("gopher.panel.activeTab", tabID);
@@ -586,6 +713,16 @@
         }
       });
 
+      window.addEventListener("popstate", function () {
+        var nextTab = tabFromLocation();
+        if (!isValidTab(nextTab)) {
+          nextTab = "control";
+        }
+        state.activeTab = nextTab;
+        localStorage.setItem("gopher.panel.activeTab", nextTab);
+        applyTabState({ syncURL: false });
+      });
+
       var sessionSearch = document.getElementById("session-search");
       if (sessionSearch) {
         sessionSearch.addEventListener("input", function () {
@@ -597,7 +734,7 @@
 
       applyPayloadView();
       applySessionFilters();
-      applyTabState();
+      applyTabState({ replaceHistory: true });
       hydrateTimeline();
       window.addEventListener("beforeunload", closeSource);
     })();

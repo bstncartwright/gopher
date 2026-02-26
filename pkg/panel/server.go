@@ -204,6 +204,8 @@ type eventRow struct {
 	Payload    string
 	Collapsed  bool
 	BadgeClass string
+	BadgeLabel string
+	RoleClass  string
 }
 
 func NewServer(opts ServerOptions) (*Server, error) {
@@ -680,6 +682,16 @@ func toEventRows(events []sessionrt.Event) []eventRow {
 	rows := make([]eventRow, 0, len(events))
 	for _, event := range events {
 		eventType := strings.TrimSpace(string(event.Type))
+		badgeClass := eventBadgeClass(event.Type)
+		badgeLabel := eventType
+		roleClass := ""
+		if event.Type == sessionrt.EventMessage {
+			if role, ok := messageRoleFromPayload(event.Payload); ok {
+				badgeClass = badgeClassForMessageRole(role)
+				badgeLabel = strings.ToUpper(string(role))
+				roleClass = rowClassForMessageRole(role)
+			}
+		}
 		rows = append(rows, eventRow{
 			Seq:        event.Seq,
 			Timestamp:  formatTime(event.Timestamp),
@@ -687,10 +699,71 @@ func toEventRows(events []sessionrt.Event) []eventRow {
 			Type:       eventType,
 			Payload:    prettyPayload(event.Payload),
 			Collapsed:  event.Type == sessionrt.EventAgentDelta || event.Type == sessionrt.EventAgentThinkingDelta,
-			BadgeClass: eventBadgeClass(event.Type),
+			BadgeClass: badgeClass,
+			BadgeLabel: badgeLabel,
+			RoleClass:  roleClass,
 		})
 	}
 	return rows
+}
+
+func messageRoleFromPayload(payload any) (sessionrt.Role, bool) {
+	switch value := payload.(type) {
+	case sessionrt.Message:
+		return normalizeMessageRole(value.Role)
+	case *sessionrt.Message:
+		if value == nil {
+			return "", false
+		}
+		return normalizeMessageRole(value.Role)
+	case map[string]any:
+		rawRole, ok := value["role"].(string)
+		if !ok {
+			return "", false
+		}
+		return normalizeMessageRole(sessionrt.Role(rawRole))
+	default:
+		return "", false
+	}
+}
+
+func normalizeMessageRole(role sessionrt.Role) (sessionrt.Role, bool) {
+	switch sessionrt.Role(strings.ToLower(strings.TrimSpace(string(role)))) {
+	case sessionrt.RoleUser:
+		return sessionrt.RoleUser, true
+	case sessionrt.RoleAgent:
+		return sessionrt.RoleAgent, true
+	case sessionrt.RoleSystem:
+		return sessionrt.RoleSystem, true
+	default:
+		return "", false
+	}
+}
+
+func badgeClassForMessageRole(role sessionrt.Role) string {
+	switch role {
+	case sessionrt.RoleUser:
+		return "badge-message-user"
+	case sessionrt.RoleAgent:
+		return "badge-message-agent"
+	case sessionrt.RoleSystem:
+		return "badge-message-system"
+	default:
+		return "badge-message"
+	}
+}
+
+func rowClassForMessageRole(role sessionrt.Role) string {
+	switch role {
+	case sessionrt.RoleUser:
+		return "event-message-user"
+	case sessionrt.RoleAgent:
+		return "event-message-agent"
+	case sessionrt.RoleSystem:
+		return "event-message-system"
+	default:
+		return ""
+	}
 }
 
 func prettyPayload(value any) string {

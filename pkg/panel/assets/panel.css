@@ -716,6 +716,19 @@ h1 {
   padding: 10px;
 }
 
+.event-message-user {
+  border-color: rgba(136, 194, 246, 0.3);
+  background: linear-gradient(145deg, rgba(16, 23, 33, 0.9), rgba(8, 13, 20, 0.88));
+}
+
+.event-message-agent {
+  border-color: rgba(117, 212, 166, 0.3);
+}
+
+.event-message-system {
+  border-color: rgba(176, 194, 188, 0.3);
+}
+
 .event-topline {
   display: flex;
   align-items: center;
@@ -735,6 +748,24 @@ h1 {
   border-color: rgba(117, 212, 166, 0.3);
   background: rgba(117, 212, 166, 0.15);
   color: #9be8bf;
+}
+
+.badge-message-user {
+  border-color: rgba(132, 192, 230, 0.35);
+  background: rgba(132, 192, 230, 0.15);
+  color: #b6e4ff;
+}
+
+.badge-message-agent {
+  border-color: rgba(117, 212, 166, 0.3);
+  background: rgba(117, 212, 166, 0.15);
+  color: #9be8bf;
+}
+
+.badge-message-system {
+  border-color: rgba(176, 194, 188, 0.35);
+  background: rgba(176, 194, 188, 0.12);
+  color: #d5e2dc;
 }
 
 .badge-tool-call {
@@ -783,6 +814,20 @@ h1 {
   font-size: 0.76rem;
   line-height: 1.5;
   margin-bottom: 8px;
+}
+
+.event-message-user .event-digest {
+  border-color: rgba(132, 192, 230, 0.34);
+  border-left-color: rgba(132, 192, 230, 0.82);
+  background: rgba(19, 34, 44, 0.55);
+  color: #c3e8ff;
+}
+
+.event-message-system .event-digest {
+  border-color: rgba(176, 194, 188, 0.32);
+  border-left-color: rgba(176, 194, 188, 0.8);
+  background: rgba(24, 31, 31, 0.5);
+  color: #d0ddd8;
 }
 
 .event-raw {

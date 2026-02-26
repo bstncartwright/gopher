@@ -76,6 +76,9 @@ func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 			continue
 		}
 		if msg.TargetActorID == "worker" && strings.Contains(msg.Content, "Delegation for worker:") {
+			if msg.Role != sessionrt.RoleAgent {
+				t.Fatalf("kickoff role = %q, want agent", msg.Role)
+			}
 			foundKickoff = true
 			break
 		}

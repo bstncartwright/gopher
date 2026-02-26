@@ -87,7 +87,7 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		From:      sourceAgentID,
 		Type:      sessionrt.EventMessage,
 		Payload: sessionrt.Message{
-			Role:          sessionrt.RoleUser,
+			Role:          sessionrt.RoleAgent,
 			Content:       kickoff,
 			TargetActorID: targetAgentID,
 		},

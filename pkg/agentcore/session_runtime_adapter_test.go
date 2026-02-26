@@ -91,6 +91,56 @@ func TestSessionRuntimeAdapterRoutesUserToRunTurn(t *testing.T) {
 	}
 }
 
+func TestLatestPromptMessageAcceptsTargetedAgentMessage(t *testing.T) {
+	events := []sessionrt.Event{
+		{
+			Type: sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleAgent,
+				Content: "status update",
+			},
+		},
+		{
+			Type: sessionrt.EventMessage,
+			Payload: map[string]any{
+				"role":            "agent",
+				"content":         "please handle this",
+				"target_actor_id": "agent:writer",
+			},
+		},
+	}
+
+	msg, ok := latestPromptMessage(events, "agent:writer")
+	if !ok {
+		t.Fatalf("expected targeted agent message to be accepted")
+	}
+	if msg.Role != sessionrt.RoleAgent {
+		t.Fatalf("message role = %q, want agent", msg.Role)
+	}
+	if msg.TargetActorID != "agent:writer" {
+		t.Fatalf("target actor id = %q, want agent:writer", msg.TargetActorID)
+	}
+	if msg.Content != "please handle this" {
+		t.Fatalf("content = %q, want %q", msg.Content, "please handle this")
+	}
+}
+
+func TestLatestPromptMessageSkipsUntargetedAgentMessage(t *testing.T) {
+	events := []sessionrt.Event{
+		{
+			Type: sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleAgent,
+				Content: "status update",
+			},
+		},
+	}
+
+	if msg, ok := latestPromptMessage(events, "agent:writer"); ok {
+		t.Fatalf("expected no prompt message, got %+v", msg)
+	}
+}
+
 func TestWithTurnTimeoutAddsDeadlineWhenMissing(t *testing.T) {
 	prev := sessionRuntimeTurnTimeout
 	sessionRuntimeTurnTimeout = time.Second

@@ -162,6 +162,94 @@ func TestRuntimeUserMessageTriggersDeterministicAgentStep(t *testing.T) {
 	}
 }
 
+func TestRuntimeTargetedAgentMessageTriggersDeterministicAgentStep(t *testing.T) {
+	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
+	exec := &recordingExecutor{
+		output: AgentOutput{
+			Events: []Event{
+				{
+					Type:    EventMessage,
+					Payload: Message{Role: RoleAgent, Content: "ack"},
+				},
+			},
+		},
+	}
+	manager, err := NewManager(ManagerOptions{
+		Store:    store,
+		Executor: exec,
+		AgentSelector: func(session *Session, trigger Event) ([]ActorID, bool) {
+			msg, ok := messageFromPayload(trigger.Payload)
+			if !ok {
+				return nil, false
+			}
+			target := ActorID(msg.TargetActorID)
+			if target == "" {
+				return nil, false
+			}
+			participant, exists := session.Participants[target]
+			if !exists || participant.Type != ActorAgent {
+				return nil, false
+			}
+			return []ActorID{target}, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), CreateSessionOptions{
+		Participants: []Participant{
+			{ID: "agent:source", Type: ActorAgent},
+			{ID: "agent:target", Type: ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	err = manager.SendEvent(context.Background(), Event{
+		SessionID: created.ID,
+		From:      "agent:source",
+		Type:      EventMessage,
+		Payload: Message{
+			Role:          RoleAgent,
+			Content:       "Please handle this task.",
+			TargetActorID: "agent:target",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendEvent() error: %v", err)
+	}
+
+	if exec.calls != 1 {
+		t.Fatalf("expected exactly one executor call, got %d", exec.calls)
+	}
+	if len(exec.inputs) != 1 {
+		t.Fatalf("expected one executor input, got %d", len(exec.inputs))
+	}
+	if exec.inputs[0].ActorID != "agent:target" {
+		t.Fatalf("selected actor = %q, want agent:target", exec.inputs[0].ActorID)
+	}
+
+	events, err := store.List(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events (created, targeted agent message, agent response), got %d", len(events))
+	}
+	msg, ok := messageFromPayload(events[1].Payload)
+	if !ok {
+		t.Fatalf("expected message payload at index 1")
+	}
+	if msg.Role != RoleAgent {
+		t.Fatalf("message role = %q, want agent", msg.Role)
+	}
+	if msg.TargetActorID != "agent:target" {
+		t.Fatalf("target actor id = %q, want agent:target", msg.TargetActorID)
+	}
+}
+
 func TestRuntimeExecutorErrorKeepsSessionActive(t *testing.T) {
 	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
 	exec := &recordingExecutor{err: errors.New("executor boom")}

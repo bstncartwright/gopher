@@ -347,7 +347,13 @@ func (m *Manager) shouldTriggerAgent(event Event) bool {
 	if !ok {
 		return false
 	}
-	return msg.Role == RoleUser
+	if msg.Role == RoleUser {
+		return true
+	}
+	if msg.Role != RoleAgent {
+		return false
+	}
+	return strings.TrimSpace(string(msg.TargetActorID)) != ""
 }
 
 func (m *Manager) appendProducedEvent(ctx context.Context, rt *sessionRuntime, actorID ActorID, produced Event) error {

@@ -68,6 +68,10 @@
           <header class="section-header">
             <h2>Timeline</h2>
             <p>Switch between a compact work summary and full payload JSON.</p>
+            <div id="timeline-activity" class="timeline-activity is-idle" data-working="false" aria-live="polite">
+              <span class="timeline-activity-dot" aria-hidden="true"></span>
+              <span class="timeline-activity-label" data-activity-label>Idle</span>
+            </div>
             <div class="chip-group" role="group" aria-label="Timeline payload view">
               <button type="button" class="chip" data-view-toggle="digest" aria-pressed="true">Work view</button>
               <button type="button" class="chip" data-view-toggle="raw" aria-pressed="false">Raw JSON</button>
@@ -188,6 +192,8 @@
       var state = {
         sessionID: "",
         lastSeq: 0,
+        detailRenderedSeq: 0,
+        animateIncomingRows: false,
         source: null,
         sourceSessionID: "",
         payloadView: localStorage.getItem("gopher.panel.payloadView") === "raw" ? "raw" : "digest",
@@ -419,10 +425,12 @@
         state.sourceSessionID = "";
       }
 
-      function refreshSessionDetail() {
+      function refreshSessionDetail(options) {
         if (!state.sessionID) {
           return;
         }
+        options = options || {};
+        state.animateIncomingRows = !!options.animateIncoming;
         htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(state.sessionID), {
           target: "#session-detail",
           swap: "innerHTML"
@@ -442,6 +450,8 @@
         }
         state.sessionID = sessionID;
         state.lastSeq = Number(lastSeq) || 0;
+        state.detailRenderedSeq = state.lastSeq;
+        state.animateIncomingRows = false;
         highlightSelected();
         openSource();
       }
@@ -468,7 +478,7 @@
           } catch (err) {
             console.error("parse stream payload", err);
           }
-          refreshSessionDetail();
+          refreshSessionDetail({ animateIncoming: true });
           refreshSessions();
         });
         source.onerror = function () {
@@ -491,15 +501,16 @@
         if (detailSession !== state.sessionID) {
           state.sessionID = detailSession;
           state.lastSeq = detailSeq;
-          openSource();
-        } else if (detailSeq > state.lastSeq) {
-          state.lastSeq = detailSeq;
+          state.detailRenderedSeq = detailSeq;
           openSource();
         } else {
+          if (detailSeq > state.lastSeq) {
+            state.lastSeq = detailSeq;
+          }
+          state.detailRenderedSeq = detailSeq;
           openSource();
         }
         highlightSelected();
-        scrollDetailToBottom();
       }
 
       function scrollDetailToBottom() {
@@ -523,6 +534,53 @@
             node.classList.remove("session-selected");
           }
         }
+        syncSelectedActivityIndicator();
+      }
+
+      function selectedSessionCard() {
+        if (!state.sessionID) {
+          return null;
+        }
+        var nodes = document.querySelectorAll("#sessions-list [data-session-card]");
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          if ((node.getAttribute("data-session-id") || "") === state.sessionID) {
+            return node;
+          }
+        }
+        return null;
+      }
+
+      function syncSelectedActivityIndicator() {
+        var indicator = document.getElementById("timeline-activity");
+        if (!indicator) {
+          return;
+        }
+        var label = indicator.querySelector("[data-activity-label]");
+        var card = selectedSessionCard();
+        var isWorking = !!(card && normalize(card.getAttribute("data-session-working") || "") === "true");
+        indicator.classList.toggle("is-working", isWorking);
+        indicator.classList.toggle("is-idle", !isWorking);
+        indicator.setAttribute("data-working", isWorking ? "true" : "false");
+        if (label) {
+          label.textContent = isWorking ? "Working" : "Idle";
+        }
+      }
+
+      function animateIncomingTimelineRows(previousSeq) {
+        if (!state.animateIncomingRows) {
+          return;
+        }
+        var threshold = Number(previousSeq) || 0;
+        var rows = document.querySelectorAll("#session-detail [data-event-row]");
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var seq = Number(row.getAttribute("data-event-seq") || "0") || 0;
+          if (seq > threshold) {
+            row.classList.add("event-row-new");
+          }
+        }
+        state.animateIncomingRows = false;
       }
 
       function ensureDetailForSession(sessionID) {
@@ -533,11 +591,13 @@
         var detailNode = document.querySelector("#session-detail [data-session-id]");
         var detailSessionID = detailNode ? (detailNode.getAttribute("data-session-id") || "") : "";
         if (detailSessionID === sessionID) {
+          state.animateIncomingRows = false;
           openSource();
           scrollDetailToBottom();
           return;
         }
 
+        state.animateIncomingRows = false;
         htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(sessionID), {
           target: "#session-detail",
           swap: "innerHTML"
@@ -554,7 +614,11 @@
 
         var cards = document.querySelectorAll("#sessions-list [data-session-card]:not(.session-hidden)");
         if (!cards.length) {
+          state.sessionID = "";
+          state.lastSeq = 0;
+          state.detailRenderedSeq = 0;
           closeSource();
+          syncSelectedActivityIndicator();
           return;
         }
 
@@ -724,14 +788,17 @@
           return;
         }
         if (event.detail.target.id === "session-detail") {
+          var previousRenderedSeq = state.detailRenderedSeq;
           syncStateFromDetail();
           hydrateTimeline();
+          animateIncomingTimelineRows(previousRenderedSeq);
           scrollDetailToBottom();
         }
         if (event.detail.target.id === "sessions-list") {
           highlightSelected();
           applySessionFilters();
           ensureSelectedSession();
+          syncSelectedActivityIndicator();
         }
       });
 

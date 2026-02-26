@@ -12,6 +12,7 @@
     data-session-id="{{.SessionID}}"
     data-last-seq="{{.LastSeq}}"
     data-session-status="{{.Status}}"
+    data-session-working="{{if .Working}}true{{else}}false{{end}}"
     hx-get="/_gopher/panel/fragments/session/{{.SessionID}}"
     hx-target="#session-detail"
     hx-swap="innerHTML"
@@ -21,6 +22,9 @@
     <span class="session-room-id">{{.ConversationID}}</span>
     {{end}}
     <span class="session-meta">
+      {{if .Working}}
+      <span class="session-working">working</span>
+      {{end}}
       <span class="session-status status-{{.Status}}">{{.Status}}</span>
       <span class="session-seq">seq {{.LastSeq}}</span>
       <span class="session-time">{{.UpdatedAt}}</span>

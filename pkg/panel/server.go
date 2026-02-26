@@ -183,6 +183,7 @@ type sessionRow struct {
 	Title          string
 	ConversationID string
 	Status         string
+	Working        bool
 	UpdatedAt      string
 	LastSeq        uint64
 }
@@ -426,6 +427,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			Title:          title,
 			ConversationID: metadata.ConversationID,
 			Status:         sessionStatusText(record.Status),
+			Working:        record.InFlight,
 			UpdatedAt:      formatTime(record.UpdatedAt),
 			LastSeq:        record.LastSeq,
 		})

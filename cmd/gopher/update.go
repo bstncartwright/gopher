@@ -38,7 +38,6 @@ var (
 	retryWithSudoForUpdate        = rerunUpdateWithSudo
 	envLookupForUpdate            = os.Getenv
 	defaultServiceNameForUpdate   = inferDefaultServiceNameForUpdate
-	serviceIsActiveForUpdate      = isSystemdServiceActive
 	updateGetEUIDForScope         = os.Geteuid
 	updateUserHomeDirForScope     = os.UserHomeDir
 )
@@ -213,10 +212,7 @@ func inferDefaultServiceNameForUpdate() string {
 	paths := updateCandidateServiceUnitPaths(gatewayServiceName)
 	for _, path := range paths {
 		if _, err := os.Stat(path); err == nil {
-			if serviceIsActiveForUpdate(gatewayServiceName, inferUpdateUserScope()) {
-				return gatewayServiceName
-			}
-			return ""
+			return gatewayServiceName
 		}
 	}
 	return ""
@@ -239,18 +235,6 @@ func updateCandidateServiceUnitPaths(serviceName string) []string {
 
 func inferUpdateUserScope() bool {
 	return runtime.GOOS == "linux" && updateGetEUIDForScope() != 0
-}
-
-func isSystemdServiceActive(serviceName string, userScope bool) bool {
-	if strings.TrimSpace(serviceName) == "" {
-		return false
-	}
-	args := []string{"is-active", "--quiet", strings.TrimSpace(serviceName)}
-	if userScope {
-		args = append([]string{"--user"}, args...)
-	}
-	err := exec.Command("systemctl", args...).Run()
-	return err == nil
 }
 
 func isInteractiveTerminal() bool {

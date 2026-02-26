@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -394,26 +395,31 @@ func TestRunUpdateSubcommandSystemctlPermissionErrorRetriesWithSudo(t *testing.T
 	}
 }
 
-func TestInferDefaultServiceNameForUpdateRequiresActiveService(t *testing.T) {
+func TestInferDefaultServiceNameForUpdateReturnsServiceWhenUnitExistsEvenIfInactive(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("linux-specific behavior")
 	}
 
+	restore := stubUpdateDependencies(t)
+	defer restore()
+
 	const serviceName = "gopher-gateway.service"
-	serviceIsActiveForUpdate = func(name string, userScope bool) bool {
-		_ = userScope
-		if name != serviceName {
-			t.Fatalf("unexpected service name: %q", name)
-		}
-		return false
+	home := t.TempDir()
+	unitPath := filepath.Join(home, ".config", "systemd", "user", serviceName)
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
 	}
-	t.Cleanup(func() {
-		serviceIsActiveForUpdate = isSystemdServiceActive
-	})
+	if err := os.WriteFile(unitPath, []byte("[Service]\n"), 0o644); err != nil {
+		t.Fatalf("write unit file: %v", err)
+	}
+	updateGetEUIDForScope = func() int { return 1000 }
+	updateUserHomeDirForScope = func() (string, error) {
+		return home, nil
+	}
 
 	service := inferDefaultServiceNameForUpdate()
-	if service != "" {
-		t.Fatalf("service = %q, want empty when service is inactive", service)
+	if service != serviceName {
+		t.Fatalf("service = %q, want %q when unit exists", service, serviceName)
 	}
 }
 
@@ -430,7 +436,6 @@ func stubUpdateDependencies(t *testing.T) func() {
 	prevRetryWithSudo := retryWithSudoForUpdate
 	prevEnvLookup := envLookupForUpdate
 	prevDefaultServiceName := defaultServiceNameForUpdate
-	prevServiceIsActive := serviceIsActiveForUpdate
 	prevUpdateEUID := updateGetEUIDForScope
 	prevUpdateHome := updateUserHomeDirForScope
 
@@ -445,7 +450,6 @@ func stubUpdateDependencies(t *testing.T) func() {
 		retryWithSudoForUpdate = prevRetryWithSudo
 		envLookupForUpdate = prevEnvLookup
 		defaultServiceNameForUpdate = prevDefaultServiceName
-		serviceIsActiveForUpdate = prevServiceIsActive
 		updateGetEUIDForScope = prevUpdateEUID
 		updateUserHomeDirForScope = prevUpdateHome
 	}

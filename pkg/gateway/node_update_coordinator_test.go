@@ -54,8 +54,7 @@ func TestNodeUpdateCoordinatorRequestsUpdateForOutdatedNode(t *testing.T) {
 	ensureNoAdminRequest(t, requests, 150*time.Millisecond)
 
 	publishHeartbeat(t, bus, node.Heartbeat{NodeID: "node-a", Version: "v1.2.3"})
-	publishHeartbeat(t, bus, node.Heartbeat{NodeID: "node-a", Version: "v1.2.2"})
-	_ = waitAdminRequest(t, requests, "stale heartbeat after node was current")
+	_ = waitForUpdateAfterCurrentHeartbeat(t, bus, requests, "node-a", "stale heartbeat after node was current")
 }
 
 func TestNodeUpdateCoordinatorSkipsNonReleaseGatewayVersion(t *testing.T) {
@@ -120,4 +119,25 @@ func ensureNoAdminRequest(t *testing.T, requests <-chan node.AdminRequest, wait 
 		t.Fatalf("unexpected admin request: %#v", request)
 	case <-time.After(wait):
 	}
+}
+
+func waitForUpdateAfterCurrentHeartbeat(
+	t *testing.T,
+	bus *fabricts.InMemoryBus,
+	requests <-chan node.AdminRequest,
+	nodeID string,
+	label string,
+) node.AdminRequest {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		publishHeartbeat(t, bus, node.Heartbeat{NodeID: nodeID, Version: "v1.2.2"})
+		select {
+		case request := <-requests:
+			return request
+		case <-time.After(40 * time.Millisecond):
+		}
+	}
+	t.Fatalf("timed out waiting for admin request: %s", label)
+	return node.AdminRequest{}
 }

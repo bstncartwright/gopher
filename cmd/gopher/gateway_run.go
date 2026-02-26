@@ -370,6 +370,16 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	if workspace == "" {
 		return fmt.Errorf("resolve workspace directory: workspace is required")
 	}
+	instanceLock, err := acquireGatewayInstanceLock(workspace)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseErr := instanceLock.Release(); releaseErr != nil {
+			slog.Warn("gateway_run: failed to release instance lock", "error", releaseErr)
+		}
+	}()
+
 	logger, cleanupLogs, err := setupProcessLogging(workspace, "gateway", stderr)
 	if err != nil {
 		return err

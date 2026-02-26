@@ -138,6 +138,38 @@ func TestPanelMainPageRenders(t *testing.T) {
 	}
 }
 
+func TestPanelPathTabRendersActiveTab(t *testing.T) {
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/tab/sessions", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "data-initial-tab=\"sessions\"") {
+		t.Fatalf("expected sessions tab in body data marker, got: %s", rec.Body.String())
+	}
+}
+
+func TestPanelQueryTabNormalizesActiveTab(t *testing.T) {
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel?tab=control-actions", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "data-initial-tab=\"actions\"") {
+		t.Fatalf("expected actions tab in body data marker, got: %s", rec.Body.String())
+	}
+}
+
 func TestPanelLimitedModeSessionsFragment(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {

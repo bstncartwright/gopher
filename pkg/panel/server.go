@@ -208,6 +208,7 @@ type eventRow struct {
 	Collapsed  bool
 	Waiting    bool
 	BadgeClass string
+	RoleClass  string
 }
 
 func NewServer(opts ServerOptions) (*Server, error) {
@@ -757,7 +758,7 @@ func toEventRows(events []sessionrt.Event) []eventRow {
 
 func newEventRow(event sessionrt.Event) eventRow {
 	eventType := strings.TrimSpace(string(event.Type))
-	return eventRow{
+	row := eventRow{
 		Seq:        event.Seq,
 		Timestamp:  formatTime(event.Timestamp),
 		From:       strings.TrimSpace(string(event.From)),
@@ -767,6 +768,13 @@ func newEventRow(event sessionrt.Event) eventRow {
 		Collapsed:  event.Type == sessionrt.EventAgentDelta || event.Type == sessionrt.EventAgentThinkingDelta,
 		BadgeClass: eventBadgeClass(event.Type),
 	}
+	if event.Type == sessionrt.EventMessage {
+		if role, ok := messageRoleFromPayload(event.Payload); ok {
+			row.BadgeClass = badgeClassForMessageRole(role)
+			row.RoleClass = rowClassForMessageRole(role)
+		}
+	}
+	return row
 }
 
 func shouldHideEventInPanel(eventType sessionrt.EventType) bool {
@@ -779,6 +787,11 @@ func shouldHideEventInPanel(eventType sessionrt.EventType) bool {
 }
 
 func eventTypeLabel(event sessionrt.Event, fallback string) string {
+	if event.Type == sessionrt.EventMessage {
+		if role, ok := messageRoleFromPayload(event.Payload); ok {
+			return strings.ToUpper(string(role))
+		}
+	}
 	if event.Type == sessionrt.EventToolCall {
 		if name, ok := builtInToolNameFromPayload(event.Payload); ok {
 			return name
@@ -894,6 +907,65 @@ func coalesceTrimmed(primary, fallback string) string {
 		return value
 	}
 	return strings.TrimSpace(fallback)
+}
+
+func messageRoleFromPayload(payload any) (sessionrt.Role, bool) {
+	switch value := payload.(type) {
+	case sessionrt.Message:
+		return normalizeMessageRole(value.Role)
+	case *sessionrt.Message:
+		if value == nil {
+			return "", false
+		}
+		return normalizeMessageRole(value.Role)
+	case map[string]any:
+		rawRole, ok := value["role"].(string)
+		if !ok {
+			return "", false
+		}
+		return normalizeMessageRole(sessionrt.Role(rawRole))
+	default:
+		return "", false
+	}
+}
+
+func normalizeMessageRole(role sessionrt.Role) (sessionrt.Role, bool) {
+	switch sessionrt.Role(strings.ToLower(strings.TrimSpace(string(role)))) {
+	case sessionrt.RoleUser:
+		return sessionrt.RoleUser, true
+	case sessionrt.RoleAgent:
+		return sessionrt.RoleAgent, true
+	case sessionrt.RoleSystem:
+		return sessionrt.RoleSystem, true
+	default:
+		return "", false
+	}
+}
+
+func badgeClassForMessageRole(role sessionrt.Role) string {
+	switch role {
+	case sessionrt.RoleUser:
+		return "badge-message-user"
+	case sessionrt.RoleAgent:
+		return "badge-message-agent"
+	case sessionrt.RoleSystem:
+		return "badge-message-system"
+	default:
+		return "badge-message"
+	}
+}
+
+func rowClassForMessageRole(role sessionrt.Role) string {
+	switch role {
+	case sessionrt.RoleUser:
+		return "event-message-user"
+	case sessionrt.RoleAgent:
+		return "event-message-agent"
+	case sessionrt.RoleSystem:
+		return "event-message-system"
+	default:
+		return ""
+	}
 }
 
 func prettyPayload(value any) string {

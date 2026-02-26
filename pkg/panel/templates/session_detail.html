@@ -13,7 +13,7 @@
   </header>
 
   {{range .Events}}
-  <article class="event-row" data-event-row data-event-type="{{.Type}}" data-event-seq="{{.Seq}}">
+  <article class="event-row{{if .RoleClass}} {{.RoleClass}}{{end}}" data-event-row data-event-type="{{.Type}}" data-event-seq="{{.Seq}}">
     <div class="event-topline">
       <span class="seq">#{{.Seq}}</span>
       <span class="badge {{.BadgeClass}}">{{.TypeLabel}}</span>

@@ -254,8 +254,9 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	now := time.Now().UTC()
 	store.addSession("sess-1", sessionrt.SessionActive, []sessionrt.Event{
 		{SessionID: "sess-1", Seq: 1, Type: sessionrt.EventMessage, From: "user:1", Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "hi"}, Timestamp: now},
-		{SessionID: "sess-1", Seq: 2, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read"}, Timestamp: now.Add(time.Second)},
-		{SessionID: "sess-1", Seq: 3, Type: sessionrt.EventAgentDelta, From: "agent:a", Payload: map[string]any{"delta": "thinking"}, Timestamp: now.Add(2 * time.Second)},
+		{SessionID: "sess-1", Seq: 2, Type: sessionrt.EventMessage, From: "agent:a", Payload: sessionrt.Message{Role: sessionrt.RoleAgent, Content: "hello"}, Timestamp: now.Add(time.Second)},
+		{SessionID: "sess-1", Seq: 3, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read"}, Timestamp: now.Add(2 * time.Second)},
+		{SessionID: "sess-1", Seq: 4, Type: sessionrt.EventAgentDelta, From: "agent:a", Payload: map[string]any{"delta": "thinking"}, Timestamp: now.Add(3 * time.Second)},
 	})
 	store.setInFlight("sess-1", true)
 	srv, err := NewServer(ServerOptions{
@@ -309,6 +310,12 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 	if strings.Contains(detailRec.Body.String(), "agent_delta") {
 		t.Fatalf("expected delta events to be hidden in timeline, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "badge-message-user") || !strings.Contains(detailRec.Body.String(), ">USER<") {
+		t.Fatalf("expected USER badge in detail fragment, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "badge-message-agent") || !strings.Contains(detailRec.Body.String(), ">AGENT<") {
+		t.Fatalf("expected AGENT badge in detail fragment, got: %s", detailRec.Body.String())
 	}
 	if !strings.Contains(detailRec.Body.String(), "Writer Room") {
 		t.Fatalf("expected room name in detail fragment, got: %s", detailRec.Body.String())

@@ -54,6 +54,17 @@ func (s *fakeSessionStore) addSession(sessionID sessionrt.SessionID, status sess
 	}
 }
 
+func (s *fakeSessionStore) setInFlight(sessionID sessionrt.SessionID, inFlight bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[sessionID]
+	if !ok {
+		return
+	}
+	record.InFlight = inFlight
+	s.records[sessionID] = record
+}
+
 func (s *fakeSessionStore) push(sessionID sessionrt.SessionID, event sessionrt.Event) {
 	s.mu.RLock()
 	ch := s.stream[sessionID]
@@ -247,6 +258,7 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 		{SessionID: "sess-1", Seq: 3, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read"}, Timestamp: now.Add(2 * time.Second)},
 		{SessionID: "sess-1", Seq: 4, Type: sessionrt.EventAgentDelta, From: "agent:a", Payload: map[string]any{"delta": "thinking"}, Timestamp: now.Add(3 * time.Second)},
 	})
+	store.setInFlight("sess-1", true)
 	srv, err := NewServer(ServerOptions{
 		ListenAddr: "127.0.0.1:29329",
 		Store:      store,
@@ -276,6 +288,12 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 	if !strings.Contains(sessionsRec.Body.String(), "!room:1") {
 		t.Fatalf("expected room id fallback metadata in sessions fragment, got: %s", sessionsRec.Body.String())
+	}
+	if !strings.Contains(sessionsRec.Body.String(), "session-working") {
+		t.Fatalf("expected working indicator in sessions fragment, got: %s", sessionsRec.Body.String())
+	}
+	if !strings.Contains(sessionsRec.Body.String(), "data-session-working=\"true\"") {
+		t.Fatalf("expected data-session-working marker in sessions fragment, got: %s", sessionsRec.Body.String())
 	}
 
 	detailRec := httptest.NewRecorder()

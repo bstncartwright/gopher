@@ -321,6 +321,108 @@ func TestToEventRowsMergesToolCallAndResultIntoSingleRow(t *testing.T) {
 	}
 }
 
+func TestPanelAgentsFragmentRender(t *testing.T) {
+	srv, err := NewServer(ServerOptions{
+		ListenAddr: "127.0.0.1:29329",
+		AgentSnapshot: func() []AgentInfo {
+			return []AgentInfo{
+				{
+					AgentID:              "main",
+					Name:                 "Main Agent",
+					Role:                 "triage",
+					Workspace:            "/tmp/workspace/agents/main",
+					ModelPolicy:          "openai:gpt-5.3-codex-spark",
+					RequiredCapabilities: []string{"tool:web_search"},
+					EnabledTools:         []string{"exec_command", "apply_patch"},
+					SkillsPaths:          []string{"/tmp/workspace/skills"},
+					KnownAgents:          []string{"main", "ops"},
+					FSRoots:              []string{"/tmp/workspace"},
+					AllowDomains:         []string{"api.github.com"},
+					BlockDomains:         []string{"example.com"},
+					CanShell:             true,
+					ApplyPatchEnabled:    true,
+					CaptureThinking:      true,
+					NetworkEnabled:       true,
+					MaxContextMessages:   40,
+				},
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/agents", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Main Agent") {
+		t.Fatalf("expected agent name, got: %s", body)
+	}
+	if !strings.Contains(body, "openai:gpt-5.3-codex-spark") {
+		t.Fatalf("expected model policy, got: %s", body)
+	}
+	if !strings.Contains(body, "allow: api.github.com") {
+		t.Fatalf("expected network summary, got: %s", body)
+	}
+}
+
+func TestPanelControlAndNodesFragmentsRender(t *testing.T) {
+	srv, err := NewServer(ServerOptions{
+		ListenAddr: "127.0.0.1:29329",
+		NodeSnapshot: func() []scheduler.NodeInfo {
+			return []scheduler.NodeInfo{
+				{
+					NodeID:    "gateway",
+					IsGateway: true,
+					Capabilities: []scheduler.Capability{
+						{Kind: scheduler.CapabilityAgent, Name: "agent"},
+					},
+					LastHeartbeat: time.Unix(1700000000, 0).UTC(),
+				},
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	mux := srv.newMux()
+
+	controlRec := httptest.NewRecorder()
+	controlReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/control", nil)
+	mux.ServeHTTP(controlRec, controlReq)
+	if controlRec.Code != http.StatusOK {
+		t.Fatalf("control status = %d, want 200", controlRec.Code)
+	}
+	if !strings.Contains(controlRec.Body.String(), "Control directory unavailable") {
+		t.Fatalf("expected control unavailable message, got: %s", controlRec.Body.String())
+	}
+
+	nodesRec := httptest.NewRecorder()
+	nodesReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/nodes-table", nil)
+	mux.ServeHTTP(nodesRec, nodesReq)
+	if nodesRec.Code != http.StatusOK {
+		t.Fatalf("nodes status = %d, want 200", nodesRec.Code)
+	}
+	if !strings.Contains(nodesRec.Body.String(), "gateway") {
+		t.Fatalf("expected gateway in nodes fragment, got: %s", nodesRec.Body.String())
+	}
+
+	actionsRec := httptest.NewRecorder()
+	actionsReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/control-actions", nil)
+	mux.ServeHTTP(actionsRec, actionsReq)
+	if actionsRec.Code != http.StatusOK {
+		t.Fatalf("actions status = %d, want 200", actionsRec.Code)
+	}
+	if !strings.Contains(actionsRec.Body.String(), "Control directory unavailable") {
+		t.Fatalf("expected actions unavailable message, got: %s", actionsRec.Body.String())
+	}
+}
+
 func TestPanelSessionStreamCatchupAndLive(t *testing.T) {
 	store := newFakeSessionStore()
 	now := time.Now().UTC()

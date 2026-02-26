@@ -1,0 +1,33 @@
+<div class="overview-head">
+  <h2>Recent Control Actions</h2>
+  <p>Updated {{.Now}}</p>
+</div>
+
+{{if .HasControl}}
+{{if .RecentActions}}
+<table class="node-table">
+  <thead>
+    <tr>
+      <th>Action</th>
+      <th>Session</th>
+      <th>Result</th>
+      <th>At</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .RecentActions}}
+    <tr>
+      <td>{{.Action}}</td>
+      <td class="node-id">{{.SessionID}}</td>
+      <td>{{if .OK}}ok{{else}}failed{{end}}{{if .Error}} ({{.Error}}){{end}}</td>
+      <td>{{.UpdatedAt}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<div class="empty-state">No applied control actions yet.</div>
+{{end}}
+{{else}}
+<div class="empty-state">Control directory unavailable for this runtime.</div>
+{{end}}

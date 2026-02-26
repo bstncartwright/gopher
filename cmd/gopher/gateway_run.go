@@ -446,7 +446,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 			}, true
 		}
 	}
-	if err := startGatewayPanel(ctx, cfg, process, panelStore, panelSessionMetadata, dataDir, logger); err != nil {
+	if err := startGatewayPanel(ctx, cfg, process, agentRuntime, panelStore, panelSessionMetadata, dataDir, logger); err != nil {
 		slog.Error("gateway_run: failed to start panel server", "error", err)
 		return err
 	}
@@ -603,6 +603,7 @@ func startGatewayPanel(
 	ctx context.Context,
 	cfg config.GatewayConfig,
 	process *gatewayProcess,
+	runtime *gatewayAgentRuntime,
 	store panel.SessionStore,
 	sessionMetadata panel.SessionMetadataResolver,
 	controlDir string,
@@ -619,6 +620,41 @@ func startGatewayPanel(
 		ControlDir:      filepath.Join(controlDir, "control"),
 		NodeSnapshot: func() []scheduler.NodeInfo {
 			return process.registry.Snapshot()
+		},
+		AgentSnapshot: func() []panel.AgentInfo {
+			if runtime == nil {
+				return nil
+			}
+			snapshot := make([]panel.AgentInfo, 0, len(runtime.Agents))
+			for actorID, agent := range runtime.Agents {
+				if agent == nil {
+					continue
+				}
+				agentID := strings.TrimSpace(agent.ID)
+				if agentID == "" {
+					agentID = strings.TrimSpace(string(actorID))
+				}
+				snapshot = append(snapshot, panel.AgentInfo{
+					AgentID:              agentID,
+					Name:                 strings.TrimSpace(agent.Name),
+					Role:                 strings.TrimSpace(agent.Role),
+					Workspace:            strings.TrimSpace(agent.Workspace),
+					ModelPolicy:          strings.TrimSpace(agent.Config.ModelPolicy),
+					RequiredCapabilities: append([]string(nil), agent.Config.Execution.RequiredCapabilities...),
+					EnabledTools:         append([]string(nil), agent.Config.EnabledTools...),
+					SkillsPaths:          append([]string(nil), agent.Config.SkillsPaths...),
+					KnownAgents:          append([]string(nil), agent.KnownAgents...),
+					FSRoots:              append([]string(nil), agent.Policies.FSRoots...),
+					AllowDomains:         append([]string(nil), agent.Policies.Network.AllowDomains...),
+					BlockDomains:         append([]string(nil), agent.Policies.Network.BlockDomains...),
+					CanShell:             agent.Policies.CanShell,
+					ApplyPatchEnabled:    agent.Policies.ApplyPatchEnabled,
+					CaptureThinking:      agent.CaptureThinkingDeltas,
+					NetworkEnabled:       agent.Policies.Network.Enabled,
+					MaxContextMessages:   agent.Config.MaxContextMessages,
+				})
+			}
+			return snapshot
 		},
 	})
 	if err != nil {

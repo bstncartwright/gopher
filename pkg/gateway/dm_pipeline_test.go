@@ -182,6 +182,33 @@ func (e *dmErrorExecutor) Step(_ context.Context, input sessionrt.AgentInput) (s
 	}, nil
 }
 
+type dmRecoverableErrorExecutor struct {
+	errorMessage string
+	replyText    string
+}
+
+func (e *dmRecoverableErrorExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventError,
+				Payload: sessionrt.ErrorPayload{
+					Message: e.errorMessage,
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: e.replyText,
+				},
+			},
+		},
+	}, nil
+}
+
 type dmPromptExecutor struct {
 	defaultText string
 	responses   map[string]string
@@ -1503,6 +1530,10 @@ func TestDMPipelineKeepsConversationSessionAfterAgentStepError(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("first HandleInbound() error: %v", err)
 	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	beforeSecond := fake.sentCount()
 
 	waitFor(t, 2*time.Second, func() bool {
 		sessions, listErr := store.ListSessions(context.Background())
@@ -1521,11 +1552,7 @@ func TestDMPipelineKeepsConversationSessionAfterAgentStepError(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		sent := fake.sentCount()
-		if sent == 0 {
-			return false
-		}
-		return fake.lastSent().Text == "ack"
+		return fake.sentCount() > beforeSecond
 	})
 
 	sessions, err := store.ListSessions(context.Background())
@@ -1828,6 +1855,54 @@ func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
 	}
 	if !signals[0].Typing || signals[len(signals)-1].Typing {
 		t.Fatalf("typing lifecycle = %#v, want starts true and ends false", signals)
+	}
+}
+
+func TestDMPipelineDoesNotSendFallbackWhenAgentRecoversAfterError(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmRecoverableErrorExecutor{
+			errorMessage: "validation failed for tool \"read\": root.path: required field missing",
+			replyText:    "Morning, bstn! What can I help you with today?",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:recoverable-error",
+		SenderID:       "@user:hs",
+		Text:           "good morning milo!",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+	time.Sleep(dmErrorFallbackDelay + 300*time.Millisecond)
+	messages := fake.sentMessages()
+	if len(messages) != 1 {
+		t.Fatalf("sent message count = %d, want 1", len(messages))
+	}
+	if got := strings.TrimSpace(messages[0].Text); got != "Morning, bstn! What can I help you with today?" {
+		t.Fatalf("final response = %q, want recovered assistant message", got)
+	}
+	if strings.Contains(messages[0].Text, "I ran into an upstream error while processing that message.") {
+		t.Fatalf("unexpected fallback reply in recovered response: %q", messages[0].Text)
 	}
 }
 

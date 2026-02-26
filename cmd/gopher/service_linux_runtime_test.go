@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/config"
 )
@@ -623,5 +624,53 @@ func TestLinuxServiceUninstallRemovesNodeUnitInUserScope(t *testing.T) {
 	}
 	if !foundRemoveNode {
 		t.Fatalf("expected node unit removal path, removed=%#v", removed)
+	}
+}
+
+func TestFormatUnitUptimeActive(t *testing.T) {
+	now := time.Date(2026, time.February, 26, 15, 4, 5, 0, time.UTC)
+	status := unitStatus{
+		LoadState:   "loaded",
+		ActiveState: "active",
+		ActiveSince: "Thu 2026-02-26 14:00:00 UTC",
+	}
+	if got := formatUnitUptime(status, now); got != "1h4m5s" {
+		t.Fatalf("formatUnitUptime() = %q, want %q", got, "1h4m5s")
+	}
+}
+
+func TestFormatUnitUptimeInactiveReturnsNA(t *testing.T) {
+	now := time.Date(2026, time.February, 26, 15, 4, 5, 0, time.UTC)
+	status := unitStatus{
+		LoadState:   "loaded",
+		ActiveState: "inactive",
+		ActiveSince: "Thu 2026-02-26 14:00:00 UTC",
+	}
+	if got := formatUnitUptime(status, now); got != "n/a" {
+		t.Fatalf("formatUnitUptime() = %q, want %q", got, "n/a")
+	}
+}
+
+func TestFormatUnitUptimeUnknownWhenTimestampInvalid(t *testing.T) {
+	now := time.Date(2026, time.February, 26, 15, 4, 5, 0, time.UTC)
+	status := unitStatus{
+		LoadState:   "loaded",
+		ActiveState: "active",
+		ActiveSince: "not-a-time",
+	}
+	if got := formatUnitUptime(status, now); got != "unknown" {
+		t.Fatalf("formatUnitUptime() = %q, want %q", got, "unknown")
+	}
+}
+
+func TestFormatUnitUptimeClampsFutureStartToZero(t *testing.T) {
+	now := time.Date(2026, time.February, 26, 15, 4, 5, 0, time.UTC)
+	status := unitStatus{
+		LoadState:   "loaded",
+		ActiveState: "active",
+		ActiveSince: "Thu 2026-02-26 15:10:00 UTC",
+	}
+	if got := formatUnitUptime(status, now); got != "0s" {
+		t.Fatalf("formatUnitUptime() = %q, want %q", got, "0s")
 	}
 }

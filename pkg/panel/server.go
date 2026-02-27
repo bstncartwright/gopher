@@ -401,6 +401,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		s.renderTemplate(w, "sessions.html", data)
 		return
 	}
+	includeStale := false
+	if r != nil {
+		includeStale = parseTruthy(r.URL.Query().Get("include_stale"))
+	}
+	now := time.Now()
 
 	records, err := s.store.ListSessions(r.Context())
 	if err != nil {
@@ -414,6 +419,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]sessionRow, 0, len(records))
 	for _, record := range records {
+		if !includeStale && isStaleSessionRecord(record, now) {
+			continue
+		}
 		sessionID := strings.TrimSpace(string(record.SessionID))
 		metadata := s.lookupSessionMetadata(record.SessionID)
 		title := metadata.ConversationName
@@ -1048,6 +1056,23 @@ func sessionStatusText(status sessionrt.SessionStatus) string {
 		return "failed"
 	default:
 		return "unknown"
+	}
+}
+
+func isStaleSessionRecord(record sessionrt.SessionRecord, now time.Time) bool {
+	lastActivity := record.UpdatedAt
+	if lastActivity.IsZero() {
+		lastActivity = record.CreatedAt
+	}
+	return sessionrt.IsStaleByDailyReset(lastActivity, now, sessionrt.DefaultDailyResetPolicy())
+}
+
+func parseTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

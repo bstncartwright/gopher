@@ -21,6 +21,8 @@ type DMPipelineOptions struct {
 	RecipientByAgent   map[sessionrt.ActorID]string
 	Conversations      *ConversationSessionMap
 	Bindings           ConversationBindingStore
+	SessionLifecycle   *sessionrt.DailyResetPolicy
+	Now                func() time.Time
 	TracePublisher     TracePublisher
 	TraceProvisioner   TraceConversationProvisioner
 	AttachmentResolver func(conversationID string, agentID sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment
@@ -66,6 +68,8 @@ type DMPipeline struct {
 	recipByAgent  map[sessionrt.ActorID]string
 	conversations *ConversationSessionMap
 	bindings      ConversationBindingStore
+	now           func() time.Time
+	lifecycle     sessionrt.DailyResetPolicy
 
 	setupMu            sync.Mutex
 	subscribedMu       sync.Mutex
@@ -205,6 +209,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		recipByAgent:       recipByAgent,
 		conversations:      conversations,
 		bindings:           bindings,
+		now:                opts.Now,
 		subscribed:         map[sessionrt.SessionID]struct{}{},
 		lastFallback:       map[string]time.Time{},
 		errorFallbacks:     map[string]pendingErrorFallback{},
@@ -220,6 +225,14 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		tracePublisher:     opts.TracePublisher,
 		traceProvisioner:   opts.TraceProvisioner,
 		attachmentResolver: opts.AttachmentResolver,
+	}
+	if pipeline.now == nil {
+		pipeline.now = time.Now
+	}
+	if opts.SessionLifecycle != nil {
+		pipeline.lifecycle = *opts.SessionLifecycle
+	} else {
+		pipeline.lifecycle = sessionrt.DefaultDailyResetPolicy()
 	}
 	for _, binding := range bindings.List() {
 		pipeline.conversations.Set(binding.ConversationID, binding.SessionID)
@@ -534,6 +547,12 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 					"session_id", existing,
 					"expected_agent_id", route.AgentID,
 				)
+			} else if p.isConversationSessionStale(conversationID, existing) {
+				slog.Info("dm_pipeline: conversation session expired by lifecycle; creating replacement",
+					"conversation_id", conversationID,
+					"session_id", existing,
+				)
+				p.cancelConversationSession(ctx, existing)
 			} else {
 				if err := p.ensureSubscription(conversationID, existing); err != nil {
 					return "", err
@@ -571,6 +590,12 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 					"session_id", existing,
 					"expected_agent_id", route.AgentID,
 				)
+			} else if p.isConversationSessionStale(conversationID, existing) {
+				slog.Info("dm_pipeline: conversation session expired by lifecycle after lock; creating replacement",
+					"conversation_id", conversationID,
+					"session_id", existing,
+				)
+				p.cancelConversationSession(ctx, existing)
 			} else {
 				if err := p.ensureSubscription(conversationID, existing); err != nil {
 					return "", err
@@ -658,6 +683,36 @@ func (p *DMPipeline) isSessionActive(ctx context.Context, sessionID sessionrt.Se
 		return false
 	}
 	return session.Status == sessionrt.SessionActive
+}
+
+func (p *DMPipeline) isConversationSessionStale(conversationID string, sessionID sessionrt.SessionID) bool {
+	if !p.lifecycle.Enabled || p.bindings == nil {
+		return false
+	}
+	binding, ok := p.bindings.GetByConversation(strings.TrimSpace(conversationID))
+	if !ok {
+		return false
+	}
+	boundSessionID := sessionrt.SessionID(strings.TrimSpace(string(binding.SessionID)))
+	if boundSessionID != "" && boundSessionID != sessionID {
+		return false
+	}
+
+	lastActivity := binding.UpdatedAt
+	if lastActivity.IsZero() {
+		lastActivity = binding.CreatedAt
+	}
+	return sessionrt.IsStaleByDailyReset(lastActivity, p.now(), p.lifecycle)
+}
+
+func (p *DMPipeline) cancelConversationSession(ctx context.Context, sessionID sessionrt.SessionID) {
+	err := p.manager.CancelSession(ctx, sessionID)
+	if err != nil && err != sessionrt.ErrSessionNotFound && err != sessionrt.ErrSessionNotActive {
+		slog.Warn("dm_pipeline: cancel stale conversation session failed",
+			"session_id", sessionID,
+			"error", err,
+		)
+	}
 }
 
 func (p *DMPipeline) ensureSubscription(conversationID string, sessionID sessionrt.SessionID) error {
@@ -1191,10 +1246,10 @@ func (p *DMPipeline) bindConversation(conversationID string, sessionID sessionrt
 }
 
 func (p *DMPipeline) markInboundEventProcessed(conversationID string, sessionID sessionrt.SessionID, eventID string) {
-	eventID = strings.TrimSpace(eventID)
-	if eventID == "" || p.bindings == nil {
+	if p.bindings == nil {
 		return
 	}
+	eventID = strings.TrimSpace(eventID)
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return
@@ -1203,10 +1258,12 @@ func (p *DMPipeline) markInboundEventProcessed(conversationID string, sessionID 
 	if !ok {
 		return
 	}
-	if binding.LastInboundEvent == eventID {
+	if eventID != "" && binding.LastInboundEvent == eventID && strings.TrimSpace(string(sessionID)) == strings.TrimSpace(string(binding.SessionID)) {
 		return
 	}
-	binding.LastInboundEvent = eventID
+	if eventID != "" {
+		binding.LastInboundEvent = eventID
+	}
 	if strings.TrimSpace(string(sessionID)) != "" {
 		binding.SessionID = sessionID
 	}

@@ -414,3 +414,72 @@ func TestGatewaySessionDelegationCreateReturnsBeforeDelegatedTurnCompletes(t *te
 	}
 	close(exec.release)
 }
+
+func TestGatewaySessionDelegationListHidesStaleByDefault(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil)
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and reply with next steps.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	if err := store.UpsertSession(ctx, sessionrt.SessionRecord{
+		SessionID: sessionrt.SessionID(created.SessionID),
+		Status:    sessionrt.SessionActive,
+		CreatedAt: old.Add(-24 * time.Hour),
+		UpdatedAt: old,
+		LastSeq:   1,
+	}); err != nil {
+		t.Fatalf("UpsertSession(stale delegation) error: %v", err)
+	}
+
+	listActive, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{SourceSessionID: string(source.ID)})
+	if err != nil {
+		t.Fatalf("ListDelegationSessions(active) error: %v", err)
+	}
+	if len(listActive) != 0 {
+		t.Fatalf("active list count = %d, want 0 for stale delegation", len(listActive))
+	}
+
+	listAll, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{
+		SourceSessionID: string(source.ID),
+		IncludeInactive: true,
+	})
+	if err != nil {
+		t.Fatalf("ListDelegationSessions(include inactive) error: %v", err)
+	}
+	if len(listAll) != 1 {
+		t.Fatalf("all list count = %d, want 1", len(listAll))
+	}
+	if listAll[0].Status != "stale" {
+		t.Fatalf("stale delegation status = %q, want stale", listAll[0].Status)
+	}
+}

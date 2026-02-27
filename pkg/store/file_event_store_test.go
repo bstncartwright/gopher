@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,5 +129,59 @@ func TestFileEventStoreIdempotentDuplicateAndSequenceGap(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected only 1 persisted event, got %d", len(events))
+	}
+}
+
+func TestFileEventStoreListSessionsWithLargeEventLine(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileEventStore(FileEventStoreOptions{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewFileEventStore() error: %v", err)
+	}
+
+	now := time.Now().UTC()
+	first := sessionrt.Event{
+		ID:        "large-000001",
+		SessionID: "large-session",
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventControl,
+		Payload:   sessionrt.ControlPayload{Action: sessionrt.ControlActionSessionCreated},
+		Timestamp: now,
+		Seq:       1,
+	}
+	if err := store.Append(context.Background(), first); err != nil {
+		t.Fatalf("Append(first) error: %v", err)
+	}
+
+	second := sessionrt.Event{
+		ID:        "large-000002",
+		SessionID: "large-session",
+		From:      "user:me",
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: strings.Repeat("x", 5*1024*1024),
+		},
+		Timestamp: now.Add(time.Second),
+		Seq:       2,
+	}
+	if err := store.Append(context.Background(), second); err != nil {
+		t.Fatalf("Append(second) error: %v", err)
+	}
+
+	reopened, err := NewFileEventStore(FileEventStoreOptions{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewFileEventStore(reopen) error: %v", err)
+	}
+
+	records, err := reopened.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions() error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 session record, got %d", len(records))
+	}
+	if records[0].LastSeq != 2 {
+		t.Fatalf("expected last seq 2, got %d", records[0].LastSeq)
 	}
 }

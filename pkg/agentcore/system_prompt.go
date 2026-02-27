@@ -339,8 +339,10 @@ func buildCollaborationSection(input systemPromptInput) string {
 	if len(known) > 0 {
 		lines = append(lines, "Known agents in this runtime: "+strings.Join(known, ", "))
 	}
-	if delegateEnabled {
+	if delegateEnabled && len(known) > 1 {
 		lines = append(lines, "When delegation helps, use `delegate` with `action:\"create\"` and a task-specific `message`; provide `target_agent` when you want a specific worker.")
+	} else if delegateEnabled {
+		lines = append(lines, "Delegation is unavailable in a single-agent runtime. Do not call `delegate` unless another agent is configured.")
 	} else if len(known) > 1 {
 		lines = append(lines, "Delegation requires the `delegate` tool; if missing from Tooling, ask the user to enable collaboration tools.")
 	}

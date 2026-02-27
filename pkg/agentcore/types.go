@@ -189,9 +189,17 @@ type ExecutionConfig struct {
 }
 
 type HeartbeatConfig struct {
-	Every       string `json:"every"`
-	Prompt      string `json:"prompt"`
-	AckMaxChars int    `json:"ack_max_chars"`
+	Every       string                      `json:"every"`
+	Prompt      string                      `json:"prompt"`
+	AckMaxChars int                         `json:"ack_max_chars"`
+	Session     string                      `json:"session,omitempty"`
+	ActiveHours *HeartbeatActiveHoursConfig `json:"active_hours,omitempty"`
+}
+
+type HeartbeatActiveHoursConfig struct {
+	Start    string `json:"start"`
+	End      string `json:"end"`
+	Timezone string `json:"timezone,omitempty"`
 }
 
 type AgentHeartbeat struct {
@@ -199,6 +207,18 @@ type AgentHeartbeat struct {
 	Every       time.Duration
 	Prompt      string
 	AckMaxChars int
+	SessionID   string
+	ActiveHours AgentHeartbeatActiveHours
+}
+
+type AgentHeartbeatActiveHours struct {
+	Enabled     bool
+	Start       string
+	End         string
+	StartMinute int
+	EndMinute   int
+	Timezone    string
+	Location    *time.Location
 }
 
 type NetworkPolicy struct {

@@ -27,6 +27,16 @@ func (t *heartbeatTool) Schema() ToolSchema {
 				"every":         map[string]any{"type": "string"},
 				"prompt":        map[string]any{"type": "string"},
 				"ack_max_chars": map[string]any{"type": "integer"},
+				"session":       map[string]any{"type": "string"},
+				"active_hours": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"start":    map[string]any{"type": "string"},
+						"end":      map[string]any{"type": "string"},
+						"timezone": map[string]any{"type": "string"},
+					},
+					"required": []any{"start", "end"},
+				},
 				"user_timezone": map[string]any{"type": "string"},
 			},
 			"required": []any{"action"},
@@ -82,6 +92,18 @@ func (t *heartbeatTool) Run(ctx context.Context, input ToolInput) (ToolOutput, e
 			promptValue := prompt
 			req.Prompt = &promptValue
 		}
+		if session, ok := optionalStringArg(input.Args, "session"); ok {
+			sessionValue := session
+			req.Session = &sessionValue
+		}
+		if rawActiveHours, ok := input.Args["active_hours"]; ok {
+			activeHours, parseErr := parseHeartbeatActiveHoursArg(rawActiveHours)
+			if parseErr != nil {
+				slog.Error("heartbeat_tool: invalid active_hours", "error", parseErr)
+				return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": parseErr.Error()}}, parseErr
+			}
+			req.ActiveHours = activeHours
+		}
 		if tz, ok := optionalStringArg(input.Args, "user_timezone"); ok {
 			timezoneValue := tz
 			req.UserTimezone = &timezoneValue
@@ -126,4 +148,43 @@ func (t *heartbeatTool) Run(ctx context.Context, input ToolInput) (ToolOutput, e
 		slog.Error("heartbeat_tool: unsupported action", "action", action)
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
 	}
+}
+
+func parseHeartbeatActiveHoursArg(raw any) (*HeartbeatActiveHoursConfig, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	body, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("active_hours must be an object")
+	}
+	startRaw, ok := body["start"]
+	if !ok {
+		return nil, fmt.Errorf("active_hours.start is required")
+	}
+	start, ok := startRaw.(string)
+	if !ok {
+		return nil, fmt.Errorf("active_hours.start must be a string")
+	}
+	endRaw, ok := body["end"]
+	if !ok {
+		return nil, fmt.Errorf("active_hours.end is required")
+	}
+	end, ok := endRaw.(string)
+	if !ok {
+		return nil, fmt.Errorf("active_hours.end must be a string")
+	}
+	timezone := ""
+	if timezoneRaw, exists := body["timezone"]; exists {
+		timezoneValue, ok := timezoneRaw.(string)
+		if !ok {
+			return nil, fmt.Errorf("active_hours.timezone must be a string")
+		}
+		timezone = timezoneValue
+	}
+	return &HeartbeatActiveHoursConfig{
+		Start:    start,
+		End:      end,
+		Timezone: timezone,
+	}, nil
 }

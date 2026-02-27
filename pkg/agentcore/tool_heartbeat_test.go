@@ -30,11 +30,22 @@ func (s *fakeHeartbeatToolService) SetHeartbeat(_ context.Context, req Heartbeat
 	if req.UserTimezone != nil {
 		timezone = *req.UserTimezone
 	}
+	session := ""
+	if req.Session != nil {
+		session = *req.Session
+	}
+	var activeHours *HeartbeatActiveHoursConfig
+	if req.ActiveHours != nil {
+		value := *req.ActiveHours
+		activeHours = &value
+	}
 	s.state = HeartbeatState{
 		Enabled:      true,
 		Every:        req.Every,
 		Prompt:       prompt,
 		AckMaxChars:  ackMaxChars,
+		Session:      session,
+		ActiveHours:  activeHours,
 		UserTimezone: timezone,
 	}
 	return s.state, nil
@@ -65,6 +76,12 @@ func TestHeartbeatToolSetAndGet(t *testing.T) {
 		"every":         "15m",
 		"prompt":        "hb-check",
 		"ack_max_chars": ackMaxChars,
+		"session":       "sess-target",
+		"active_hours": map[string]any{
+			"start":    "09:00",
+			"end":      "18:00",
+			"timezone": "America/New_York",
+		},
 		"user_timezone": "America/New_York",
 	}))
 	if err != nil {
@@ -82,6 +99,18 @@ func TestHeartbeatToolSetAndGet(t *testing.T) {
 	if fake.lastSet.AckMaxChars == nil || *fake.lastSet.AckMaxChars != ackMaxChars {
 		t.Fatalf("ack max chars = %#v, want 120", fake.lastSet.AckMaxChars)
 	}
+	if fake.lastSet.Session == nil || *fake.lastSet.Session != "sess-target" {
+		t.Fatalf("session = %#v, want sess-target", fake.lastSet.Session)
+	}
+	if fake.lastSet.ActiveHours == nil {
+		t.Fatalf("active_hours = nil, want non-nil")
+	}
+	if fake.lastSet.ActiveHours.Start != "09:00" || fake.lastSet.ActiveHours.End != "18:00" {
+		t.Fatalf("active_hours = %#v, want 09:00-18:00", fake.lastSet.ActiveHours)
+	}
+	if fake.lastSet.ActiveHours.Timezone != "America/New_York" {
+		t.Fatalf("active_hours.timezone = %q, want America/New_York", fake.lastSet.ActiveHours.Timezone)
+	}
 	if fake.lastSet.UserTimezone == nil || *fake.lastSet.UserTimezone != "America/New_York" {
 		t.Fatalf("timezone = %#v, want America/New_York", fake.lastSet.UserTimezone)
 	}
@@ -94,6 +123,24 @@ func TestHeartbeatToolSetAndGet(t *testing.T) {
 	}
 	if getOut.Status != ToolStatusOK {
 		t.Fatalf("get status = %q, want ok", getOut.Status)
+	}
+	result, ok := getOut.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("get result type = %T, want map[string]any", getOut.Result)
+	}
+	rawHeartbeat, ok := result["heartbeat"]
+	if !ok {
+		t.Fatalf("get result missing heartbeat payload")
+	}
+	state, ok := rawHeartbeat.(HeartbeatState)
+	if !ok {
+		t.Fatalf("get heartbeat type = %T, want HeartbeatState", rawHeartbeat)
+	}
+	if state.Session != "sess-target" {
+		t.Fatalf("heartbeat session = %q, want sess-target", state.Session)
+	}
+	if state.ActiveHours == nil || state.ActiveHours.Start != "09:00" || state.ActiveHours.End != "18:00" {
+		t.Fatalf("heartbeat active_hours = %#v, want 09:00-18:00", state.ActiveHours)
 	}
 }
 
@@ -148,5 +195,27 @@ func TestHeartbeatToolSetRejectsInvalidAckMaxCharsType(t *testing.T) {
 	}))
 	if err == nil {
 		t.Fatalf("expected invalid ack_max_chars type error")
+	}
+}
+
+func TestHeartbeatToolSetRejectsInvalidActiveHoursType(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"heartbeat"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	agent.HeartbeatService = &fakeHeartbeatToolService{}
+	runner := NewToolRunner(agent)
+	session := agent.NewSession()
+
+	_, err = runner.Run(context.Background(), session, toolCall("heartbeat", map[string]any{
+		"action":       "set",
+		"every":        "15m",
+		"active_hours": "09:00-18:00",
+	}))
+	if err == nil {
+		t.Fatalf("expected invalid active_hours type error")
 	}
 }

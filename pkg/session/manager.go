@@ -288,6 +288,42 @@ func (m *Manager) CancelSession(ctx context.Context, id SessionID) error {
 	})
 }
 
+func (m *Manager) GetSessionRecord(ctx context.Context, sessionID SessionID) (SessionRecord, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return SessionRecord{}, ctx.Err()
+	default:
+	}
+	if strings.TrimSpace(string(sessionID)) == "" {
+		return SessionRecord{}, fmt.Errorf("%w: session ID is required", ErrInvalidSession)
+	}
+	if m.registry == nil {
+		return SessionRecord{}, fmt.Errorf("session registry store is unavailable")
+	}
+	return m.registry.GetSessionRecord(ctx, sessionID)
+}
+
+func (m *Manager) UpsertSessionRecord(ctx context.Context, record SessionRecord) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if strings.TrimSpace(string(record.SessionID)) == "" {
+		return fmt.Errorf("%w: session ID is required", ErrInvalidSession)
+	}
+	if m.registry == nil {
+		return fmt.Errorf("session registry store is unavailable")
+	}
+	return m.registry.UpsertSession(ctx, record)
+}
+
 func (m *Manager) newSessionID() SessionID {
 	seq := atomic.AddUint64(&m.counter, 1)
 	ts := m.now().UTC().UnixNano()

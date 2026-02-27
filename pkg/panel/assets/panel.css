@@ -564,6 +564,13 @@ body[data-active-tab="sessions"] .payload {
   border-color: var(--line-strong);
 }
 
+.session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .session-selected {
   border-color: var(--accent-strong);
   background: linear-gradient(140deg, rgba(16, 33, 26, 0.95), rgba(7, 16, 13, 0.92));
@@ -593,12 +600,28 @@ body[data-active-tab="sessions"] .payload {
 
 .session-meta {
   margin-top: 8px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: flex-start;
   gap: 6px;
   color: var(--ink-muted);
   font-size: 0.7rem;
+}
+
+.session-data-point {
+  border: 1px solid rgba(149, 167, 159, 0.24);
+  border-radius: 4px;
+  background: rgba(8, 13, 13, 0.66);
+  padding: 4px 6px;
+  display: grid;
+  gap: 2px;
+}
+
+.session-data-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7f938a;
 }
 
 .session-working {
@@ -614,6 +637,7 @@ body[data-active-tab="sessions"] .payload {
   text-transform: uppercase;
   color: #9ff3c4;
   background: rgba(117, 212, 166, 0.14);
+  width: fit-content;
 }
 
 .session-working::before {
@@ -869,6 +893,21 @@ body[data-active-tab="sessions"] .payload {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.timeline-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.session-drawer-toggle {
+  display: none;
+}
+
+.session-drawer-backdrop {
+  display: none;
 }
 
 .timeline-view-toggle {
@@ -1205,10 +1244,15 @@ body[data-active-tab="sessions"] .payload {
     min-height: auto;
   }
 
-  .workspace-grid {
+  .workspace-grid,
+  body[data-active-tab="sessions"] .workspace-grid {
     grid-template-columns: 1fr;
     min-height: auto;
     flex: none;
+  }
+
+  .detail {
+    min-height: 50vh;
   }
 
   #sessions-list,
@@ -1227,11 +1271,58 @@ body[data-active-tab="sessions"] .payload {
     min-height: auto;
     height: auto;
   }
+
+  .session-drawer-toggle {
+    display: inline-flex;
+    align-self: flex-start;
+  }
+
+  .session-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(92vw, 360px);
+    z-index: 60;
+    border-radius: 0;
+    border-left: 0;
+    border-top: 0;
+    border-bottom: 0;
+    transform: translateX(-102%);
+    transition: transform 180ms ease;
+  }
+
+  .session-drawer #sessions-list {
+    padding-bottom: 24px;
+  }
+
+  body.session-drawer-open .session-drawer {
+    transform: translateX(0);
+  }
+
+  .session-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: rgba(1, 4, 4, 0.66);
+    z-index: 50;
+    cursor: pointer;
+  }
+
+  body.session-drawer-open .session-drawer-backdrop {
+    display: block;
+  }
+
+  .timeline-heading-row {
+    align-items: center;
+  }
 }
 
 @media (max-width: 620px) {
   .layout {
-    padding: 18px 12px 22px;
+    padding: 18px 12px calc(72px + env(safe-area-inset-bottom, 0px));
   }
 
   .hero {
@@ -1253,4 +1344,69 @@ body[data-active-tab="sessions"] .payload {
   #actions-list {
     padding: 10px;
   }
+
+  .panel-tabs {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    margin: 0;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    background: rgba(4, 8, 8, 0.96);
+    backdrop-filter: blur(10px);
+  }
+
+  .tab-btn {
+    width: 100%;
+    min-height: 42px;
+    padding: 8px 6px;
+    font-size: 0.62rem;
+    line-height: 1.2;
+  }
+
+  body[data-active-tab="sessions"] .panel-tabs {
+    margin-bottom: 0;
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+
+  body[data-active-tab="sessions"] .tab-btn {
+    padding: 8px 6px;
+    font-size: 0.62rem;
+  }
+
+  .session-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-heading-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .session-drawer-toggle {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .timeline-toolbar {
+    align-items: stretch;
+  }
+
+  .timeline-view-toggle {
+    margin-left: 0;
+  }
+
+  .timeline-view-toggle .chip {
+    flex: 1;
+    text-align: center;
+  }
+
 }

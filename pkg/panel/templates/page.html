@@ -44,7 +44,7 @@
 
     <section class="tab-pane" data-tab-pane="sessions">
       <section class="workspace-grid">
-        <article class="card sessions">
+        <article class="card sessions session-drawer" aria-label="Session selector">
           <header class="section-header">
             <h2>Sessions</h2>
             <p>{{if .HasSessionStore}}Live runtime with fast filtering{{else}}Limited mode (session runtime unavailable){{end}}</p>
@@ -65,9 +65,14 @@
         </article>
 
         <article class="card detail">
-          <header class="section-header">
-            <h2>Timeline</h2>
-            <p>Switch between a compact work summary and full payload JSON.</p>
+          <header class="section-header timeline-header">
+            <div class="timeline-heading-row">
+              <div>
+                <h2>Timeline</h2>
+                <p>Switch between a compact work summary and full payload JSON.</p>
+              </div>
+              <button type="button" class="chip session-drawer-toggle" data-session-drawer-toggle aria-expanded="false" aria-controls="sessions-list">Choose session</button>
+            </div>
             <div class="timeline-toolbar">
               <div id="timeline-activity" class="timeline-activity is-idle" data-working="false" aria-live="polite">
                 <span class="timeline-activity-dot" aria-hidden="true"></span>
@@ -84,6 +89,7 @@
           </div>
         </article>
       </section>
+      <button type="button" class="session-drawer-backdrop" data-session-drawer-close aria-label="Close session selector"></button>
     </section>
 
     <section class="tab-pane" data-tab-pane="nodes">
@@ -552,6 +558,16 @@
         });
       }
 
+
+      function setSessionDrawerOpen(open) {
+        var isOpen = !!open;
+        document.body.classList.toggle("session-drawer-open", isOpen);
+        var toggle = document.querySelector("[data-session-drawer-toggle]");
+        if (toggle) {
+          toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        }
+      }
+
       function highlightSelected() {
         var nodes = document.querySelectorAll("#sessions-list [data-session-card]");
         for (var i = 0; i < nodes.length; i++) {
@@ -765,6 +781,7 @@
         if (state.activeTab === "sessions") {
           ensureSelectedSession({ forceLatest: forceLatest || (state.previousTab !== "sessions" && !state.sessionID) });
         } else {
+          setSessionDrawerOpen(false);
           closeSource();
         }
         state.previousTab = state.activeTab;
@@ -803,11 +820,27 @@
           return;
         }
 
+        var drawerToggle = event.target.closest("[data-session-drawer-toggle]");
+        if (drawerToggle) {
+          event.preventDefault();
+          var nextOpen = !document.body.classList.contains("session-drawer-open");
+          setSessionDrawerOpen(nextOpen);
+          return;
+        }
+
+        var drawerClose = event.target.closest("[data-session-drawer-close]");
+        if (drawerClose) {
+          event.preventDefault();
+          setSessionDrawerOpen(false);
+          return;
+        }
+
         var node = event.target.closest("[data-session-card]");
         if (node) {
           selectSession(node.getAttribute("data-session-id") || "", node.getAttribute("data-last-seq") || "0", {
             loadDetail: true
           });
+          setSessionDrawerOpen(false);
           return;
         }
 
@@ -875,6 +908,12 @@
           ensureSelectedSession();
         });
       }
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          setSessionDrawerOpen(false);
+        }
+      });
 
       applyPayloadView();
       applySessionFilters();

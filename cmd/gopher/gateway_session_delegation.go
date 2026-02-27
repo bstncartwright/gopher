@@ -29,6 +29,8 @@ type gatewaySessionDelegationToolService struct {
 	logger  *log.Logger
 }
 
+const delegationAsyncSendTimeout = 10 * time.Minute
+
 func newGatewaySessionDelegationToolService(
 	manager sessionrt.SessionManager,
 	store gatewaySessionDelegationStore,
@@ -86,20 +88,19 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		return agentcore.DelegationSession{}, fmt.Errorf("create delegation session: %w", err)
 	}
 	kickoff := buildDelegationKickoffMessage(displayTargetAgentID, message)
-	sendErr := s.manager.SendEvent(ctx, sessionrt.Event{
-		SessionID: createdSession.ID,
-		From:      sourceAgentID,
-		Type:      sessionrt.EventMessage,
-		Payload: sessionrt.Message{
-			Role:          sessionrt.RoleAgent,
-			Content:       kickoff,
-			TargetActorID: resolvedTargetAgentID,
+	s.sendSessionEventAsync(
+		sessionrt.Event{
+			SessionID: createdSession.ID,
+			From:      sourceAgentID,
+			Type:      sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:          sessionrt.RoleAgent,
+				Content:       kickoff,
+				TargetActorID: resolvedTargetAgentID,
+			},
 		},
-	})
-	if sendErr != nil {
-		_ = s.manager.CancelSession(context.Background(), createdSession.ID)
-		return agentcore.DelegationSession{}, fmt.Errorf("enqueue delegation kickoff event: %w", sendErr)
-	}
+		"delegation kickoff event",
+	)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	announcement := buildDelegationAnnouncement(displayTargetAgentID, string(createdSession.ID))
@@ -118,7 +119,7 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		"updated_at":               now,
 	}
 	s.appendDelegationRecord(record)
-	_ = s.sendDelegationControlEvent(ctx, sourceSessionID, "delegation.created", map[string]any{
+	s.sendDelegationControlEventAsync(sourceSessionID, "delegation.created", map[string]any{
 		"delegation_id":         string(createdSession.ID),
 		"target_agent":          displayTargetAgentID,
 		"resolved_target_agent": string(resolvedTargetAgentID),
@@ -299,7 +300,7 @@ func (s *gatewaySessionDelegationToolService) KillDelegationSession(ctx context.
 		"created_at":        stringFromMap(record, "created_at"),
 		"updated_at":        now,
 	})
-	_ = s.sendDelegationControlEvent(ctx, sessionrt.SessionID(sourceSessionID), "delegation.cancelled", map[string]any{
+	s.sendDelegationControlEventAsync(sessionrt.SessionID(sourceSessionID), "delegation.cancelled", map[string]any{
 		"delegation_id": delegationID,
 	})
 
@@ -436,6 +437,38 @@ func (s *gatewaySessionDelegationToolService) sendDelegationControlEvent(ctx con
 		return err
 	}
 	return nil
+}
+
+func (s *gatewaySessionDelegationToolService) sendDelegationControlEventAsync(sourceSessionID sessionrt.SessionID, action string, metadata map[string]any) {
+	if s == nil || s.manager == nil {
+		return
+	}
+	if strings.TrimSpace(string(sourceSessionID)) == "" || strings.TrimSpace(action) == "" {
+		return
+	}
+	event := sessionrt.Event{
+		SessionID: sourceSessionID,
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventControl,
+		Payload: sessionrt.ControlPayload{
+			Action:   strings.TrimSpace(action),
+			Metadata: metadata,
+		},
+	}
+	s.sendSessionEventAsync(event, "delegation control event")
+}
+
+func (s *gatewaySessionDelegationToolService) sendSessionEventAsync(event sessionrt.Event, label string) {
+	if s == nil || s.manager == nil {
+		return
+	}
+	go func() {
+		sendCtx, cancel := context.WithTimeout(context.Background(), delegationAsyncSendTimeout)
+		defer cancel()
+		if err := s.manager.SendEvent(sendCtx, event); err != nil && s.logger != nil {
+			s.logger.Printf("%s send failed session=%s err=%v", strings.TrimSpace(label), strings.TrimSpace(string(event.SessionID)), err)
+		}
+	}()
 }
 
 func (s *gatewaySessionDelegationToolService) appendDelegationRecord(record map[string]any) {

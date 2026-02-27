@@ -1843,6 +1843,88 @@ func TestDMPipelineRebindInactiveSessionPreservesBoundRoute(t *testing.T) {
 	}
 }
 
+func TestDMPipelineRebindsConversationWhenSessionExpiredByLifecycle(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	stale, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	bindings := NewInMemoryConversationBindingStore()
+	fixedNow := time.Date(2026, time.February, 27, 10, 0, 0, 0, time.UTC)
+	if err := bindings.Set(ConversationBinding{
+		ConversationID: "!dm:lifecycle",
+		SessionID:      stale.ID,
+		AgentID:        "agent:a",
+		RecipientID:    "@agent:a",
+		Mode:           ConversationModeDM,
+		CreatedAt:      fixedNow.Add(-48 * time.Hour),
+		UpdatedAt:      fixedNow.Add(-26 * time.Hour),
+	}); err != nil {
+		t.Fatalf("bindings.Set() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		Bindings:  bindings,
+		Now: func() time.Time {
+			return fixedNow
+		},
+		SessionLifecycle: &sessionrt.DailyResetPolicy{
+			Enabled:     true,
+			ResetHour:   4,
+			ResetMinute: 0,
+			Location:    time.UTC,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:lifecycle",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	currentSessionID, ok := pipeline.conversations.Get("!dm:lifecycle")
+	if !ok {
+		t.Fatalf("expected conversation mapping")
+	}
+	if currentSessionID == stale.ID {
+		t.Fatalf("expected lifecycle-expired session to be replaced")
+	}
+	staleSession, err := manager.GetSession(context.Background(), stale.ID)
+	if err != nil {
+		t.Fatalf("GetSession(stale) error: %v", err)
+	}
+	if staleSession.Status != sessionrt.SessionPaused {
+		t.Fatalf("stale session status = %v, want paused", staleSession.Status)
+	}
+}
+
 func TestDMPipelineReplacesActiveSessionWhenAgentRouteMismatches(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

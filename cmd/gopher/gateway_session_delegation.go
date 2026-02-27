@@ -189,6 +189,7 @@ func (s *gatewaySessionDelegationToolService) ListDelegationSessions(ctx context
 
 	reqSourceSessionID := strings.TrimSpace(req.SourceSessionID)
 	sessionRecords := s.readSessionRecordMap(ctx)
+	now := time.Now()
 	items := make([]agentcore.DelegationListItem, 0, len(records))
 	for delegationID, record := range records {
 		sourceSessionID := stringFromMap(record, "source_session_id")
@@ -199,6 +200,9 @@ func (s *gatewaySessionDelegationToolService) ListDelegationSessions(ctx context
 		sessionRecord, hasSession := sessionRecords[sessionrt.SessionID(delegationID)]
 		if hasSession {
 			status = delegationStatusFromSessionRecord(status, sessionRecord)
+			if status == "active" && delegationSessionRecordIsStale(sessionRecord, now) {
+				status = "stale"
+			}
 		}
 		if !req.IncludeInactive && status != "active" {
 			continue
@@ -616,4 +620,12 @@ func parseRFC3339(value string) time.Time {
 		return time.Time{}
 	}
 	return parsed
+}
+
+func delegationSessionRecordIsStale(record sessionrt.SessionRecord, now time.Time) bool {
+	lastActivity := record.UpdatedAt
+	if lastActivity.IsZero() {
+		lastActivity = record.CreatedAt
+	}
+	return sessionrt.IsStaleByDailyReset(lastActivity, now, sessionrt.DefaultDailyResetPolicy())
 }

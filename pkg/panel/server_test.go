@@ -322,6 +322,53 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 }
 
+func TestPanelSessionsHideStaleByDefault(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	store.addSession("sess-fresh", sessionrt.SessionActive, []sessionrt.Event{
+		{SessionID: "sess-fresh", Seq: 1, Type: sessionrt.EventMessage, Timestamp: now},
+	})
+	store.addSession("sess-stale", sessionrt.SessionActive, []sessionrt.Event{
+		{SessionID: "sess-stale", Seq: 1, Type: sessionrt.EventMessage, Timestamp: now.Add(-48 * time.Hour)},
+	})
+	store.mu.Lock()
+	staleRecord := store.records["sess-stale"]
+	staleRecord.CreatedAt = now.Add(-72 * time.Hour)
+	staleRecord.UpdatedAt = now.Add(-48 * time.Hour)
+	store.records["sess-stale"] = staleRecord
+	store.mu.Unlock()
+
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	mux := srv.newMux()
+
+	defaultRec := httptest.NewRecorder()
+	defaultReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/sessions", nil)
+	mux.ServeHTTP(defaultRec, defaultReq)
+	if defaultRec.Code != http.StatusOK {
+		t.Fatalf("default sessions status = %d, want 200", defaultRec.Code)
+	}
+	body := defaultRec.Body.String()
+	if !strings.Contains(body, "sess-fresh") {
+		t.Fatalf("expected fresh session in default list, got: %s", body)
+	}
+	if strings.Contains(body, "sess-stale") {
+		t.Fatalf("expected stale session to be hidden by default, got: %s", body)
+	}
+
+	includeRec := httptest.NewRecorder()
+	includeReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/sessions?include_stale=true", nil)
+	mux.ServeHTTP(includeRec, includeReq)
+	if includeRec.Code != http.StatusOK {
+		t.Fatalf("include stale sessions status = %d, want 200", includeRec.Code)
+	}
+	if !strings.Contains(includeRec.Body.String(), "sess-stale") {
+		t.Fatalf("expected stale session when include_stale=true, got: %s", includeRec.Body.String())
+	}
+}
+
 func TestToEventRowsFiltersDeltasAndLabelsBuiltInTools(t *testing.T) {
 	now := time.Now().UTC()
 	rows := toEventRows([]sessionrt.Event{

@@ -238,6 +238,7 @@ func (w *controlSessionWatcher) rebuildIndex(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].UpdatedAt.After(records[j].UpdatedAt)
 	})
@@ -253,6 +254,9 @@ func (w *controlSessionWatcher) rebuildIndex(ctx context.Context) error {
 		"delegated": 0,
 	}
 	for _, record := range records {
+		if controlSessionRecordIsStale(record, now) {
+			continue
+		}
 		events, _ := w.store.List(ctx, record.SessionID)
 		waiting, waitingText := detectWaitingOnHuman(events)
 		statusText := strings.ToLower(strings.TrimSpace(controlSessionStatusText(record.Status)))
@@ -360,6 +364,14 @@ func controlSessionStatusText(status sessionrt.SessionStatus) string {
 	default:
 		return "unknown"
 	}
+}
+
+func controlSessionRecordIsStale(record sessionrt.SessionRecord, now time.Time) bool {
+	lastActivity := record.UpdatedAt
+	if lastActivity.IsZero() {
+		lastActivity = record.CreatedAt
+	}
+	return sessionrt.IsStaleByDailyReset(lastActivity, now, sessionrt.DefaultDailyResetPolicy())
 }
 
 func appendJSONLRecord(path string, record map[string]any) {

@@ -423,6 +423,7 @@ func readTelegramStatusLine(_ context.Context, dataDir string, cfg config.Gatewa
 	if cfgErr != nil || !cfg.Telegram.Enabled {
 		return "", ""
 	}
+	mode := normalizeTelegramMode(cfg.Telegram.Mode)
 	pairedChatID := strings.TrimSpace(cfg.Telegram.AllowedChatID)
 	if dataDir != "" {
 		if state, err := readTelegramPairingState(dataDir); err == nil && strings.TrimSpace(state.PairedChatID) != "" {
@@ -430,15 +431,28 @@ func readTelegramStatusLine(_ context.Context, dataDir string, cfg config.Gatewa
 		}
 	}
 	if pairedChatID == "" {
-		return "telegram bridge: waiting for pairing", "telegram warning: allowed_chat_id is empty; approve a pending pair with gopher pair approve"
+		return fmt.Sprintf("telegram bridge: waiting for pairing (mode=%s)", mode), "telegram warning: allowed_chat_id is empty; approve a pending pair with gopher pair approve"
 	}
-	line = fmt.Sprintf(
-		"telegram bridge: healthy (poll_interval=%s poll_timeout=%s allowed_user_id=%s allowed_chat_id=%s)",
-		cfg.Telegram.PollInterval,
-		cfg.Telegram.PollTimeout,
-		cfg.Telegram.AllowedUserID,
-		pairedChatID,
-	)
+	if mode == "webhook" {
+		line = fmt.Sprintf(
+			"telegram bridge: healthy (mode=%s webhook_listen_addr=%s webhook_path=%s webhook_url_set=%t allowed_user_id=%s allowed_chat_id=%s)",
+			mode,
+			cfg.Telegram.Webhook.ListenAddr,
+			cfg.Telegram.Webhook.Path,
+			strings.TrimSpace(cfg.Telegram.Webhook.URL) != "",
+			cfg.Telegram.AllowedUserID,
+			pairedChatID,
+		)
+	} else {
+		line = fmt.Sprintf(
+			"telegram bridge: healthy (mode=%s poll_interval=%s poll_timeout=%s allowed_user_id=%s allowed_chat_id=%s)",
+			mode,
+			cfg.Telegram.PollInterval,
+			cfg.Telegram.PollTimeout,
+			cfg.Telegram.AllowedUserID,
+			pairedChatID,
+		)
+	}
 	if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
 		warning = "telegram warning: bot_token is empty"
 	}

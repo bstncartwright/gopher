@@ -28,7 +28,12 @@ func TestParseGatewayRunFlagsDefaults(t *testing.T) {
 		inputs.Overrides.TelegramPollInterval != nil ||
 		inputs.Overrides.TelegramPollTimeout != nil ||
 		inputs.Overrides.TelegramAllowedUserID != nil ||
-		inputs.Overrides.TelegramAllowedChatID != nil {
+		inputs.Overrides.TelegramAllowedChatID != nil ||
+		inputs.Overrides.TelegramMode != nil ||
+		inputs.Overrides.TelegramWebhookListen != nil ||
+		inputs.Overrides.TelegramWebhookPath != nil ||
+		inputs.Overrides.TelegramWebhookURL != nil ||
+		inputs.Overrides.TelegramWebhookSecret != nil {
 		t.Fatalf("expected no overrides, got %#v", inputs.Overrides)
 	}
 }
@@ -45,6 +50,11 @@ func TestParseGatewayRunFlagsTelegramOverrides(t *testing.T) {
 		"--telegram-poll-timeout", "40s",
 		"--telegram-allowed-user-id", "1001",
 		"--telegram-allowed-chat-id", "2002",
+		"--telegram-mode", "webhook",
+		"--telegram-webhook-listen-addr", "127.0.0.1:29330",
+		"--telegram-webhook-path", "/_gopher/telegram/webhook",
+		"--telegram-webhook-url", "https://example.ts.net/_gopher/telegram/webhook",
+		"--telegram-webhook-secret", "secret",
 		"--capability", "tool:gpu",
 	})
 	if err != nil {
@@ -80,6 +90,21 @@ func TestParseGatewayRunFlagsTelegramOverrides(t *testing.T) {
 	if inputs.Overrides.TelegramAllowedChatID == nil || *inputs.Overrides.TelegramAllowedChatID != "2002" {
 		t.Fatalf("telegram allowed chat override = %#v", inputs.Overrides.TelegramAllowedChatID)
 	}
+	if inputs.Overrides.TelegramMode == nil || *inputs.Overrides.TelegramMode != "webhook" {
+		t.Fatalf("telegram mode override = %#v", inputs.Overrides.TelegramMode)
+	}
+	if inputs.Overrides.TelegramWebhookListen == nil || *inputs.Overrides.TelegramWebhookListen != "127.0.0.1:29330" {
+		t.Fatalf("telegram webhook listen override = %#v", inputs.Overrides.TelegramWebhookListen)
+	}
+	if inputs.Overrides.TelegramWebhookPath == nil || *inputs.Overrides.TelegramWebhookPath != "/_gopher/telegram/webhook" {
+		t.Fatalf("telegram webhook path override = %#v", inputs.Overrides.TelegramWebhookPath)
+	}
+	if inputs.Overrides.TelegramWebhookURL == nil || *inputs.Overrides.TelegramWebhookURL != "https://example.ts.net/_gopher/telegram/webhook" {
+		t.Fatalf("telegram webhook url override = %#v", inputs.Overrides.TelegramWebhookURL)
+	}
+	if inputs.Overrides.TelegramWebhookSecret == nil || *inputs.Overrides.TelegramWebhookSecret != "secret" {
+		t.Fatalf("telegram webhook secret override = %#v", inputs.Overrides.TelegramWebhookSecret)
+	}
 	if inputs.Overrides.Capabilities == nil || len(*inputs.Overrides.Capabilities) != 1 {
 		t.Fatalf("capability override = %#v", inputs.Overrides.Capabilities)
 	}
@@ -107,6 +132,9 @@ func TestRunGatewaySubcommandHelp(t *testing.T) {
 	if !strings.Contains(got, "--telegram-enabled") {
 		t.Fatalf("help output missing telegram flag: %q", got)
 	}
+	if !strings.Contains(got, "--telegram-mode") {
+		t.Fatalf("help output missing telegram mode flag: %q", got)
+	}
 }
 
 func TestRunGatewayConfigSubcommandInitWritesTelegramTemplate(t *testing.T) {
@@ -123,6 +151,9 @@ func TestRunGatewayConfigSubcommandInitWritesTelegramTemplate(t *testing.T) {
 	text := string(body)
 	if !strings.Contains(text, "[gateway.telegram]") {
 		t.Fatalf("generated config missing telegram block: %q", text)
+	}
+	if !strings.Contains(text, "[gateway.telegram.webhook]") {
+		t.Fatalf("generated config missing telegram webhook block: %q", text)
 	}
 }
 

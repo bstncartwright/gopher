@@ -316,6 +316,41 @@ func (t *Transport) SetCommands(ctx context.Context, commands []BotCommand) erro
 	})
 }
 
+func (t *Transport) SetWebhook(ctx context.Context, webhookURL, secret string) error {
+	webhookURL = strings.TrimSpace(webhookURL)
+	if webhookURL == "" {
+		return fmt.Errorf("telegram webhook url is required")
+	}
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return fmt.Errorf("telegram webhook secret is required")
+	}
+	payload := map[string]any{
+		"url":          webhookURL,
+		"secret_token": secret,
+	}
+	return t.sendAPI(ctx, "setWebhook", payload)
+}
+
+func (t *Transport) DeleteWebhook(ctx context.Context, dropPending bool) error {
+	payload := map[string]any{
+		"drop_pending_updates": dropPending,
+	}
+	return t.sendAPI(ctx, "deleteWebhook", payload)
+}
+
+func (t *Transport) HandleWebhookUpdate(ctx context.Context, payload []byte) error {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return fmt.Errorf("telegram webhook payload is required")
+	}
+	var event telegramEvent
+	if err := json.Unmarshal(trimmed, &event); err != nil {
+		return fmt.Errorf("decode telegram webhook update: %w", err)
+	}
+	return t.dispatchEvent(ctx, event)
+}
+
 func (t *Transport) pollAndDispatch(ctx context.Context, offset int64) (int64, error) {
 	endpoint := fmt.Sprintf("%s/bot%s/getUpdates", t.apiBaseURL, url.PathEscape(t.botToken))
 	logEndpoint := fmt.Sprintf("%s/getUpdates", t.apiBaseURL)

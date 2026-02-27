@@ -176,6 +176,9 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 	}
 
 	fmt.Fprintf(stdout, "updated binary to %s\n", release.TagName)
+	if resolvedServiceName != "" {
+		fmt.Fprintf(stdout, "restarted service %s\n", resolvedServiceName)
+	}
 	return nil
 }
 

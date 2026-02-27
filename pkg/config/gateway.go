@@ -43,11 +43,20 @@ type GatewayConfig struct {
 
 type TelegramConfig struct {
 	Enabled       bool
+	Mode          string
 	BotToken      string
 	PollInterval  time.Duration
 	PollTimeout   time.Duration
 	AllowedUserID string
 	AllowedChatID string
+	Webhook       TelegramWebhookConfig
+}
+
+type TelegramWebhookConfig struct {
+	ListenAddr string
+	Path       string
+	URL        string
+	Secret     string
 }
 
 type PanelConfig struct {
@@ -83,6 +92,11 @@ type GatewayOverrides struct {
 	TelegramPollTimeout   *time.Duration
 	TelegramAllowedUserID *string
 	TelegramAllowedChatID *string
+	TelegramMode          *string
+	TelegramWebhookListen *string
+	TelegramWebhookPath   *string
+	TelegramWebhookURL    *string
+	TelegramWebhookSecret *string
 	PanelListenAddr       *string
 	PanelCaptureThinking  *bool
 	CronEnabled           *bool
@@ -136,12 +150,21 @@ type rawCapabilityItem struct {
 }
 
 type rawTelegramConfig struct {
-	Enabled       *bool   `toml:"enabled"`
-	BotToken      *string `toml:"bot_token"`
-	PollInterval  *string `toml:"poll_interval"`
-	PollTimeout   *string `toml:"poll_timeout"`
-	AllowedUserID *string `toml:"allowed_user_id"`
-	AllowedChatID *string `toml:"allowed_chat_id"`
+	Enabled       *bool                     `toml:"enabled"`
+	Mode          *string                   `toml:"mode"`
+	BotToken      *string                   `toml:"bot_token"`
+	PollInterval  *string                   `toml:"poll_interval"`
+	PollTimeout   *string                   `toml:"poll_timeout"`
+	AllowedUserID *string                   `toml:"allowed_user_id"`
+	AllowedChatID *string                   `toml:"allowed_chat_id"`
+	Webhook       *rawTelegramWebhookConfig `toml:"webhook"`
+}
+
+type rawTelegramWebhookConfig struct {
+	ListenAddr *string `toml:"listen_addr"`
+	Path       *string `toml:"path"`
+	URL        *string `toml:"url"`
+	Secret     *string `toml:"secret"`
 }
 
 type rawPanelConfig struct {
@@ -255,11 +278,18 @@ name = "agent"
 
 [gateway.telegram]
 enabled = false
+mode = "polling"
 bot_token = "replace-telegram-bot-token"
 poll_interval = "2s"
 poll_timeout = "30s"
 allowed_user_id = ""
 allowed_chat_id = ""
+
+[gateway.telegram.webhook]
+listen_addr = "127.0.0.1:29330"
+path = "/_gopher/telegram/webhook"
+url = ""
+secret = ""
 
 [gateway.panel]
 listen_addr = "127.0.0.1:29329"
@@ -318,11 +348,18 @@ func defaultGatewayConfig() GatewayConfig {
 		},
 		Telegram: TelegramConfig{
 			Enabled:       false,
+			Mode:          "polling",
 			BotToken:      "",
 			PollInterval:  2 * time.Second,
 			PollTimeout:   30 * time.Second,
 			AllowedUserID: "",
 			AllowedChatID: "",
+			Webhook: TelegramWebhookConfig{
+				ListenAddr: "127.0.0.1:29330",
+				Path:       "/_gopher/telegram/webhook",
+				URL:        "",
+				Secret:     "",
+			},
 		},
 		Panel: PanelConfig{
 			ListenAddr:      "127.0.0.1:29329",
@@ -448,6 +485,9 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 		if gateway.Telegram.Enabled != nil {
 			cfg.Telegram.Enabled = *gateway.Telegram.Enabled
 		}
+		if gateway.Telegram.Mode != nil {
+			cfg.Telegram.Mode = strings.TrimSpace(*gateway.Telegram.Mode)
+		}
 		if gateway.Telegram.BotToken != nil {
 			cfg.Telegram.BotToken = strings.TrimSpace(*gateway.Telegram.BotToken)
 		}
@@ -470,6 +510,20 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 		}
 		if gateway.Telegram.AllowedChatID != nil {
 			cfg.Telegram.AllowedChatID = strings.TrimSpace(*gateway.Telegram.AllowedChatID)
+		}
+		if gateway.Telegram.Webhook != nil {
+			if gateway.Telegram.Webhook.ListenAddr != nil {
+				cfg.Telegram.Webhook.ListenAddr = strings.TrimSpace(*gateway.Telegram.Webhook.ListenAddr)
+			}
+			if gateway.Telegram.Webhook.Path != nil {
+				cfg.Telegram.Webhook.Path = strings.TrimSpace(*gateway.Telegram.Webhook.Path)
+			}
+			if gateway.Telegram.Webhook.URL != nil {
+				cfg.Telegram.Webhook.URL = strings.TrimSpace(*gateway.Telegram.Webhook.URL)
+			}
+			if gateway.Telegram.Webhook.Secret != nil {
+				cfg.Telegram.Webhook.Secret = strings.TrimSpace(*gateway.Telegram.Webhook.Secret)
+			}
 		}
 	}
 	if gateway.Panel != nil {
@@ -608,6 +662,21 @@ func applyGatewayEnv(cfg *GatewayConfig, env map[string]string) error {
 	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_ALLOWED_CHAT_ID"]; ok {
 		cfg.Telegram.AllowedChatID = strings.TrimSpace(value)
 	}
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_MODE"]; ok {
+		cfg.Telegram.Mode = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_WEBHOOK_LISTEN_ADDR"]; ok {
+		cfg.Telegram.Webhook.ListenAddr = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_WEBHOOK_PATH"]; ok {
+		cfg.Telegram.Webhook.Path = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_WEBHOOK_URL"]; ok {
+		cfg.Telegram.Webhook.URL = strings.TrimSpace(value)
+	}
+	if value, ok := env["GOPHER_GATEWAY_TELEGRAM_WEBHOOK_SECRET"]; ok {
+		cfg.Telegram.Webhook.Secret = strings.TrimSpace(value)
+	}
 	if value, ok := env["GOPHER_GATEWAY_PANEL_LISTEN_ADDR"]; ok {
 		cfg.Panel.ListenAddr = strings.TrimSpace(value)
 	}
@@ -701,6 +770,21 @@ func applyGatewayOverrides(cfg *GatewayConfig, overrides GatewayOverrides) error
 	if overrides.TelegramAllowedChatID != nil {
 		cfg.Telegram.AllowedChatID = strings.TrimSpace(*overrides.TelegramAllowedChatID)
 	}
+	if overrides.TelegramMode != nil {
+		cfg.Telegram.Mode = strings.TrimSpace(*overrides.TelegramMode)
+	}
+	if overrides.TelegramWebhookListen != nil {
+		cfg.Telegram.Webhook.ListenAddr = strings.TrimSpace(*overrides.TelegramWebhookListen)
+	}
+	if overrides.TelegramWebhookPath != nil {
+		cfg.Telegram.Webhook.Path = strings.TrimSpace(*overrides.TelegramWebhookPath)
+	}
+	if overrides.TelegramWebhookURL != nil {
+		cfg.Telegram.Webhook.URL = strings.TrimSpace(*overrides.TelegramWebhookURL)
+	}
+	if overrides.TelegramWebhookSecret != nil {
+		cfg.Telegram.Webhook.Secret = strings.TrimSpace(*overrides.TelegramWebhookSecret)
+	}
 	if overrides.PanelListenAddr != nil {
 		cfg.Panel.ListenAddr = strings.TrimSpace(*overrides.PanelListenAddr)
 	}
@@ -782,15 +866,50 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 			return fmt.Errorf("gateway capability name is required")
 		}
 	}
+	cfg.Telegram.Mode = strings.ToLower(strings.TrimSpace(cfg.Telegram.Mode))
+	if cfg.Telegram.Mode == "" {
+		cfg.Telegram.Mode = "polling"
+	}
+	if cfg.Telegram.Mode != "polling" && cfg.Telegram.Mode != "webhook" {
+		return fmt.Errorf("gateway.telegram.mode must be either polling or webhook")
+	}
 	if cfg.Telegram.Enabled {
 		if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
 			return fmt.Errorf("gateway.telegram.bot_token is required when telegram is enabled")
 		}
-		if cfg.Telegram.PollInterval <= 0 {
-			return fmt.Errorf("gateway.telegram.poll_interval must be > 0 when telegram is enabled")
-		}
-		if cfg.Telegram.PollTimeout <= 0 {
-			return fmt.Errorf("gateway.telegram.poll_timeout must be > 0 when telegram is enabled")
+		switch cfg.Telegram.Mode {
+		case "polling":
+			if cfg.Telegram.PollInterval <= 0 {
+				return fmt.Errorf("gateway.telegram.poll_interval must be > 0 when telegram is enabled in polling mode")
+			}
+			if cfg.Telegram.PollTimeout <= 0 {
+				return fmt.Errorf("gateway.telegram.poll_timeout must be > 0 when telegram is enabled in polling mode")
+			}
+		case "webhook":
+			if err := validateLoopbackListenAddr(strings.TrimSpace(cfg.Telegram.Webhook.ListenAddr), "gateway.telegram.webhook.listen_addr"); err != nil {
+				return err
+			}
+			path := strings.TrimSpace(cfg.Telegram.Webhook.Path)
+			if path == "" {
+				return fmt.Errorf("gateway.telegram.webhook.path is required when telegram webhook mode is enabled")
+			}
+			if !strings.HasPrefix(path, "/") {
+				return fmt.Errorf("gateway.telegram.webhook.path must start with /")
+			}
+			if strings.TrimSpace(cfg.Telegram.Webhook.Secret) == "" {
+				return fmt.Errorf("gateway.telegram.webhook.secret is required when telegram webhook mode is enabled")
+			}
+			webhookURL := strings.TrimSpace(cfg.Telegram.Webhook.URL)
+			if webhookURL == "" {
+				return fmt.Errorf("gateway.telegram.webhook.url is required when telegram webhook mode is enabled")
+			}
+			parsedWebhookURL, err := url.Parse(webhookURL)
+			if err != nil || strings.TrimSpace(parsedWebhookURL.Scheme) == "" || strings.TrimSpace(parsedWebhookURL.Host) == "" {
+				return fmt.Errorf("gateway.telegram.webhook.url is invalid: %q", cfg.Telegram.Webhook.URL)
+			}
+			if !strings.EqualFold(strings.TrimSpace(parsedWebhookURL.Scheme), "https") {
+				return fmt.Errorf("gateway.telegram.webhook.url must use https")
+			}
 		}
 	}
 	if err := validateLoopbackListenAddr(strings.TrimSpace(cfg.Panel.ListenAddr), "gateway.panel.listen_addr"); err != nil {
@@ -871,6 +990,11 @@ func hasGatewayOverrides(overrides GatewayOverrides) bool {
 		overrides.TelegramPollTimeout != nil ||
 		overrides.TelegramAllowedUserID != nil ||
 		overrides.TelegramAllowedChatID != nil ||
+		overrides.TelegramMode != nil ||
+		overrides.TelegramWebhookListen != nil ||
+		overrides.TelegramWebhookPath != nil ||
+		overrides.TelegramWebhookURL != nil ||
+		overrides.TelegramWebhookSecret != nil ||
 		overrides.PanelListenAddr != nil ||
 		overrides.PanelCaptureThinking != nil ||
 		overrides.CronEnabled != nil ||

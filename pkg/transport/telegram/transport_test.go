@@ -298,3 +298,103 @@ func TestSetCommandsRegistersTelegramCommands(t *testing.T) {
 		t.Fatalf("first description = %v, want Show status", first["description"])
 	}
 }
+
+func TestSetWebhookCallsTelegramAPI(t *testing.T) {
+	var requestPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/setWebhook" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestPayload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SetWebhook(context.Background(), "https://example.ts.net/_gopher/telegram/webhook", "shared-secret"); err != nil {
+		t.Fatalf("SetWebhook() error: %v", err)
+	}
+	if gotURL, _ := requestPayload["url"].(string); gotURL != "https://example.ts.net/_gopher/telegram/webhook" {
+		t.Fatalf("setWebhook url = %q", gotURL)
+	}
+	if gotSecret, _ := requestPayload["secret_token"].(string); gotSecret != "shared-secret" {
+		t.Fatalf("setWebhook secret_token = %q", gotSecret)
+	}
+}
+
+func TestDeleteWebhookCallsTelegramAPI(t *testing.T) {
+	var requestPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/deleteWebhook" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestPayload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.DeleteWebhook(context.Background(), true); err != nil {
+		t.Fatalf("DeleteWebhook() error: %v", err)
+	}
+	if gotDropPending, ok := requestPayload["drop_pending_updates"].(bool); !ok || !gotDropPending {
+		t.Fatalf("deleteWebhook drop_pending_updates = %#v", requestPayload["drop_pending_updates"])
+	}
+}
+
+func TestHandleWebhookUpdateDispatchesEvent(t *testing.T) {
+	tr, err := New(Options{BotToken: "token"})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	var got transport.InboundMessage
+	tr.SetInboundHandler(func(_ context.Context, inbound transport.InboundMessage) error {
+		got = inbound
+		return nil
+	})
+	payload := []byte(`{
+		"update_id": 99,
+		"message": {
+			"from": {"id": 501},
+			"chat": {"id": 777, "title": "Ops"},
+			"text": "hi from webhook"
+		}
+	}`)
+	if err := tr.HandleWebhookUpdate(context.Background(), payload); err != nil {
+		t.Fatalf("HandleWebhookUpdate() error: %v", err)
+	}
+	if got.EventID != "99" {
+		t.Fatalf("event id = %q, want 99", got.EventID)
+	}
+	if got.ConversationID != "telegram:777" {
+		t.Fatalf("conversation id = %q, want telegram:777", got.ConversationID)
+	}
+}
+
+func TestHandleWebhookUpdateRejectsInvalidJSON(t *testing.T) {
+	tr, err := New(Options{BotToken: "token"})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.HandleWebhookUpdate(context.Background(), []byte(`{`)); err == nil {
+		t.Fatalf("expected HandleWebhookUpdate() error")
+	}
+}

@@ -14,17 +14,25 @@
     data-session-status="{{.Status}}"
     data-session-working="{{if .Working}}true{{else}}false{{end}}"
   >
-    <span class="session-title">{{.Title}}</span>
+    <span class="session-head">
+      <span class="session-title">{{.Title}}</span>
+      <span class="session-status status-{{.Status}}">{{.Status}}</span>
+    </span>
     {{if and .ConversationID (ne .ConversationID .Title)}}
-    <span class="session-room-id">{{.ConversationID}}</span>
+    <span class="session-room-id">room {{.ConversationID}}</span>
     {{end}}
     <span class="session-meta">
       {{if .Working}}
       <span class="session-working">working</span>
       {{end}}
-      <span class="session-status status-{{.Status}}">{{.Status}}</span>
-      <span class="session-seq">seq {{.LastSeq}}</span>
-      <span class="session-time">{{.UpdatedAt}}</span>
+      <span class="session-data-point">
+        <span class="session-data-label">Seq</span>
+        <span class="session-seq">{{.LastSeq}}</span>
+      </span>
+      <span class="session-data-point">
+        <span class="session-data-label">Updated</span>
+        <span class="session-time">{{.UpdatedAt}}</span>
+      </span>
     </span>
   </button>
   {{end}}

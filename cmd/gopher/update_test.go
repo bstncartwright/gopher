@@ -141,6 +141,9 @@ func TestRunUpdateSubcommandAutoDetectsGatewayServiceName(t *testing.T) {
 	if !applyCalled {
 		t.Fatalf("expected update to be applied")
 	}
+	if !strings.Contains(out.String(), "restarted service gopher-gateway.service") {
+		t.Fatalf("expected output to mention service restart, got: %q", out.String())
+	}
 }
 
 func TestRunUpdateSubcommandNoServiceRestartDisablesAutoDetection(t *testing.T) {
@@ -177,6 +180,9 @@ func TestRunUpdateSubcommandNoServiceRestartDisablesAutoDetection(t *testing.T) 
 	var out bytes.Buffer
 	if err := runUpdateSubcommand([]string{"--github-token", "token", "--no-service-restart"}, &out, io.Discard); err != nil {
 		t.Fatalf("runUpdateSubcommand() error: %v", err)
+	}
+	if strings.Contains(out.String(), "restarted service") {
+		t.Fatalf("did not expect restart log when --no-service-restart is set, got: %q", out.String())
 	}
 }
 

@@ -77,6 +77,21 @@ func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentc
 			}
 		}
 	}
+	if req.ActiveHours != nil {
+		start := strings.TrimSpace(req.ActiveHours.Start)
+		end := strings.TrimSpace(req.ActiveHours.End)
+		if start == "" || end == "" {
+			slog.Warn("gateway_heartbeat_tool: invalid active_hours", "agent_id", actorID, "start", start, "end", end)
+			return agentcore.HeartbeatState{}, fmt.Errorf("active_hours.start and active_hours.end are required")
+		}
+		timezone := strings.TrimSpace(req.ActiveHours.Timezone)
+		if timezone != "" {
+			if _, err := time.LoadLocation(timezone); err != nil {
+				slog.Warn("gateway_heartbeat_tool: invalid active_hours.timezone", "agent_id", actorID, "timezone", timezone, "error", err)
+				return agentcore.HeartbeatState{}, fmt.Errorf("invalid active_hours.timezone %q: %w", timezone, err)
+			}
+		}
+	}
 
 	configPath := filepath.Join(agent.Workspace, "config.json")
 	doc, err := readJSONDocument(configPath)
@@ -95,6 +110,22 @@ func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentc
 	}
 	if req.AckMaxChars != nil {
 		heartbeatDoc["ack_max_chars"] = *req.AckMaxChars
+	}
+	if req.Session != nil {
+		sessionID := strings.TrimSpace(*req.Session)
+		if sessionID != "" {
+			heartbeatDoc["session"] = sessionID
+		}
+	}
+	if req.ActiveHours != nil {
+		heartbeatDoc["active_hours"] = map[string]any{
+			"start": strings.TrimSpace(req.ActiveHours.Start),
+			"end":   strings.TrimSpace(req.ActiveHours.End),
+		}
+		timezone := strings.TrimSpace(req.ActiveHours.Timezone)
+		if timezone != "" {
+			heartbeatDoc["active_hours"].(map[string]any)["timezone"] = timezone
+		}
 	}
 	doc["heartbeat"] = heartbeatDoc
 	if req.UserTimezone != nil {
@@ -118,7 +149,17 @@ func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentc
 			Every:       updatedHeartbeat.Every,
 			Prompt:      updatedHeartbeat.Prompt,
 			AckMaxChars: updatedHeartbeat.AckMaxChars,
-			Timezone:    strings.TrimSpace(updatedConfig.UserTimezone),
+			SessionID:   sessionrt.SessionID(strings.TrimSpace(updatedHeartbeat.SessionID)),
+			Workspace:   strings.TrimSpace(agent.Workspace),
+			ActiveHours: gateway.HeartbeatActiveHours{
+				Enabled:     updatedHeartbeat.ActiveHours.Enabled,
+				Start:       updatedHeartbeat.ActiveHours.Start,
+				End:         updatedHeartbeat.ActiveHours.End,
+				StartMinute: updatedHeartbeat.ActiveHours.StartMinute,
+				EndMinute:   updatedHeartbeat.ActiveHours.EndMinute,
+				Timezone:    updatedHeartbeat.ActiveHours.Timezone,
+				Location:    updatedHeartbeat.ActiveHours.Location,
+			},
 		}); err != nil {
 			slog.Error("gateway_heartbeat_tool: upsert schedule failed", "agent_id", actorID, "error", err)
 			return agentcore.HeartbeatState{}, err
@@ -212,6 +253,14 @@ func heartbeatStateFromAgent(agent *agentcore.Agent) agentcore.HeartbeatState {
 	state.Every = agent.Heartbeat.Every.String()
 	state.Prompt = agent.Heartbeat.Prompt
 	state.AckMaxChars = agent.Heartbeat.AckMaxChars
+	state.Session = strings.TrimSpace(agent.Heartbeat.SessionID)
+	if agent.Heartbeat.ActiveHours.Enabled {
+		state.ActiveHours = &agentcore.HeartbeatActiveHoursConfig{
+			Start:    agent.Heartbeat.ActiveHours.Start,
+			End:      agent.Heartbeat.ActiveHours.End,
+			Timezone: agent.Heartbeat.ActiveHours.Timezone,
+		}
+	}
 	return state
 }
 

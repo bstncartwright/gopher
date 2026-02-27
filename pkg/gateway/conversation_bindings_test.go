@@ -3,6 +3,7 @@ package gateway
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
@@ -13,6 +14,7 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileConversationBindingStore() error: %v", err)
 	}
+	lastHeartbeatSentAt := time.Date(2026, 2, 18, 12, 34, 0, 0, time.UTC)
 	err = store.Set(ConversationBinding{
 		ConversationID:        "!dm:one",
 		ConversationName:      "Writer Room",
@@ -24,6 +26,8 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 		TraceMode:             TraceModeReadOnly,
 		TraceRender:           TraceRenderCards,
 		LastInboundEvent:      "$evt-99",
+		LastHeartbeatText:     "disk is full",
+		LastHeartbeatSentAt:   lastHeartbeatSentAt,
 		Mode:                  ConversationModeDM,
 	})
 	if err != nil {
@@ -58,6 +62,12 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 	}
 	if got.TraceRender != TraceRenderCards {
 		t.Fatalf("trace render = %q, want %q", got.TraceRender, TraceRenderCards)
+	}
+	if got.LastHeartbeatText != "disk is full" {
+		t.Fatalf("last heartbeat text = %q, want disk is full", got.LastHeartbeatText)
+	}
+	if !got.LastHeartbeatSentAt.Equal(lastHeartbeatSentAt) {
+		t.Fatalf("last heartbeat sent at = %s, want %s", got.LastHeartbeatSentAt, lastHeartbeatSentAt)
 	}
 }
 
@@ -170,5 +180,36 @@ func TestInMemoryConversationBindingStorePersistsTraceModeOff(t *testing.T) {
 	}
 	if got.TraceMode != TraceModeOff {
 		t.Fatalf("trace mode = %q, want %q", got.TraceMode, TraceModeOff)
+	}
+}
+
+func TestInMemoryConversationBindingStoreKeepsHeartbeatFieldsForSameSession(t *testing.T) {
+	store := NewInMemoryConversationBindingStore()
+	lastHeartbeatSentAt := time.Date(2026, 2, 20, 9, 10, 0, 0, time.UTC)
+	if err := store.Set(ConversationBinding{
+		ConversationID:      "!room:a",
+		SessionID:           "sess-1",
+		LastHeartbeatText:   "disk is full",
+		LastHeartbeatSentAt: lastHeartbeatSentAt,
+		Mode:                ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("first Set() error: %v", err)
+	}
+	if err := store.Set(ConversationBinding{
+		ConversationID: "!room:a",
+		SessionID:      "sess-1",
+		Mode:           ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("second Set() error: %v", err)
+	}
+	got, ok := store.GetByConversation("!room:a")
+	if !ok {
+		t.Fatalf("expected conversation binding")
+	}
+	if got.LastHeartbeatText != "disk is full" {
+		t.Fatalf("last heartbeat text = %q, want disk is full", got.LastHeartbeatText)
+	}
+	if !got.LastHeartbeatSentAt.Equal(lastHeartbeatSentAt) {
+		t.Fatalf("last heartbeat sent at = %s, want %s", got.LastHeartbeatSentAt, lastHeartbeatSentAt)
 	}
 }

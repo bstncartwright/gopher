@@ -2394,7 +2394,7 @@ func TestDMPipelineSuppressesHeartbeatOKReplies(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected mapped session")
 	}
-	pipeline.MarkHeartbeatPending("!dm:heartbeat", 300)
+	pipeline.MarkHeartbeatPending("!dm:heartbeat", 300, sessionID, time.Now().UTC(), time.Now().UTC())
 	if err := manager.SendEvent(ctx, sessionrt.Event{
 		SessionID: sessionID,
 		From:      sessionrt.SystemActorID,
@@ -2410,6 +2410,66 @@ func TestDMPipelineSuppressesHeartbeatOKReplies(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if got := fake.sentCount(); got != 1 {
 		t.Fatalf("outbound count = %d, want 1 (heartbeat ack suppressed)", got)
+	}
+}
+
+func TestDMPipelineSuppressesMarkupWrappedHeartbeatOKReplies(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmPromptExecutor{
+			defaultText: "ack",
+			responses: map[string]string{
+				"__heartbeat__": "<b>HEARTBEAT_OK</b>!!!",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:heartbeat-markup",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+
+	sessionID, ok := pipeline.conversations.Get("!dm:heartbeat-markup")
+	if !ok {
+		t.Fatalf("expected mapped session")
+	}
+	pipeline.MarkHeartbeatPending("!dm:heartbeat-markup", 300, sessionID, time.Now().UTC(), time.Now().UTC())
+	if err := manager.SendEvent(ctx, sessionrt.Event{
+		SessionID: sessionID,
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "__heartbeat__",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent() heartbeat failed: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if got := fake.sentCount(); got != 1 {
+		t.Fatalf("outbound count = %d, want 1 (wrapped heartbeat ack suppressed)", got)
 	}
 }
 
@@ -2455,7 +2515,7 @@ func TestDMPipelineStripsHeartbeatTokenWhenAlertExceedsAckLimit(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected mapped session")
 	}
-	pipeline.MarkHeartbeatPending("!dm:heartbeat-alert", 300)
+	pipeline.MarkHeartbeatPending("!dm:heartbeat-alert", 300, sessionID, time.Now().UTC(), time.Now().UTC())
 	if err := manager.SendEvent(ctx, sessionrt.Event{
 		SessionID: sessionID,
 		From:      sessionrt.SystemActorID,
@@ -2477,6 +2537,269 @@ func TestDMPipelineStripsHeartbeatTokenWhenAlertExceedsAckLimit(t *testing.T) {
 	}
 	if len([]rune(got.Text)) != len([]rune(alert)) {
 		t.Fatalf("forwarded alert length = %d, want %d", len([]rune(got.Text)), len([]rune(alert)))
+	}
+}
+
+func TestDMPipelineRestoresSessionUpdatedAtOnAckOnlyHeartbeat(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "human:a", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	record, err := manager.GetSessionRecord(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	previousUpdatedAt := record.UpdatedAt.Add(-2 * time.Minute).UTC()
+	dispatchedAt := record.UpdatedAt.Add(-1 * time.Minute).UTC()
+	record.UpdatedAt = dispatchedAt
+	if err := manager.UpsertSessionRecord(context.Background(), record); err != nil {
+		t.Fatalf("UpsertSessionRecord() error: %v", err)
+	}
+
+	pipeline := &DMPipeline{
+		manager:    manager,
+		heartbeats: map[string]heartbeatState{},
+	}
+	pipeline.heartbeats["!dm:heartbeat-updated-at"] = heartbeatState{
+		pending: []heartbeatPending{{
+			AckMaxChars:       300,
+			SessionID:         created.ID,
+			PreviousUpdatedAt: previousUpdatedAt,
+			DispatchedAt:      dispatchedAt,
+		}},
+	}
+
+	result := pipeline.consumeHeartbeatReply("!dm:heartbeat-updated-at", "HEARTBEAT_OK")
+	if !result.Suppress {
+		t.Fatalf("expected heartbeat ack to be suppressed")
+	}
+
+	loaded, err := manager.GetSessionRecord(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() after consume error: %v", err)
+	}
+	if !loaded.UpdatedAt.UTC().Equal(previousUpdatedAt) {
+		t.Fatalf("updated_at = %s, want %s", loaded.UpdatedAt.UTC(), previousUpdatedAt)
+	}
+}
+
+func TestDMPipelineDoesNotRollbackUpdatedAtWhenSessionAdvancedAfterHeartbeat(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "human:a", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	now := time.Now().UTC()
+	record, err := manager.GetSessionRecord(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	previousUpdatedAt := now.Add(-10 * time.Minute)
+	dispatchedAt := now.Add(-5 * time.Minute)
+	record.UpdatedAt = now
+	if err := manager.UpsertSessionRecord(context.Background(), record); err != nil {
+		t.Fatalf("UpsertSessionRecord() error: %v", err)
+	}
+
+	pipeline := &DMPipeline{
+		manager:    manager,
+		heartbeats: map[string]heartbeatState{},
+	}
+	pipeline.heartbeats["!dm:heartbeat-updated-at-race"] = heartbeatState{
+		pending: []heartbeatPending{{
+			AckMaxChars:       300,
+			SessionID:         created.ID,
+			PreviousUpdatedAt: previousUpdatedAt,
+			DispatchedAt:      dispatchedAt,
+		}},
+	}
+
+	result := pipeline.consumeHeartbeatReply("!dm:heartbeat-updated-at-race", "HEARTBEAT_OK")
+	if !result.Suppress {
+		t.Fatalf("expected heartbeat ack to be suppressed")
+	}
+
+	loaded, err := manager.GetSessionRecord(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() after consume error: %v", err)
+	}
+	if !loaded.UpdatedAt.UTC().Equal(now) {
+		t.Fatalf("updated_at = %s, want %s", loaded.UpdatedAt.UTC(), now)
+	}
+}
+
+func TestDMPipelineSuppressesDuplicateHeartbeatAlertWithin24Hours(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	alert := "Disk usage is above threshold"
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmPromptExecutor{
+			defaultText: "ack",
+			responses: map[string]string{
+				"__heartbeat__": alert,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "human:a", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!dm:hb-dedupe", created.ID, "agent:a", "@agent:a", ConversationModeDM); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+	binding, ok := pipeline.bindings.GetByConversation("!dm:hb-dedupe")
+	if !ok {
+		t.Fatalf("expected conversation binding")
+	}
+	binding.LastHeartbeatText = alert
+	binding.LastHeartbeatSentAt = time.Now().UTC().Add(-1 * time.Hour)
+	if err := pipeline.bindings.Set(binding); err != nil {
+		t.Fatalf("bindings.Set() error: %v", err)
+	}
+
+	now := time.Now().UTC()
+	pipeline.MarkHeartbeatPending("!dm:hb-dedupe", 300, created.ID, now.Add(-2*time.Minute), now.Add(-1*time.Minute))
+	if err := manager.SendEvent(context.Background(), sessionrt.Event{
+		SessionID: created.ID,
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "__heartbeat__",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent() heartbeat failed: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if got := fake.sentCount(); got != 0 {
+		t.Fatalf("outbound count = %d, want 0 (duplicate within 24h suppressed)", got)
+	}
+}
+
+func TestDMPipelineDeliversDuplicateHeartbeatAlertOutside24Hours(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	alert := "Disk usage is above threshold"
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmPromptExecutor{
+			defaultText: "ack",
+			responses: map[string]string{
+				"__heartbeat__": alert,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "human:a", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := pipeline.BindConversation("!dm:hb-dedupe-old", created.ID, "agent:a", "@agent:a", ConversationModeDM); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+	binding, ok := pipeline.bindings.GetByConversation("!dm:hb-dedupe-old")
+	if !ok {
+		t.Fatalf("expected conversation binding")
+	}
+	binding.LastHeartbeatText = alert
+	oldSentAt := time.Now().UTC().Add(-25 * time.Hour)
+	binding.LastHeartbeatSentAt = oldSentAt
+	if err := pipeline.bindings.Set(binding); err != nil {
+		t.Fatalf("bindings.Set() error: %v", err)
+	}
+
+	now := time.Now().UTC()
+	pipeline.MarkHeartbeatPending("!dm:hb-dedupe-old", 300, created.ID, now.Add(-2*time.Minute), now.Add(-1*time.Minute))
+	if err := manager.SendEvent(context.Background(), sessionrt.Event{
+		SessionID: created.ID,
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: "__heartbeat__",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent() heartbeat failed: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+	got := fake.lastSent()
+	if got.Text != alert {
+		t.Fatalf("sent text = %q, want %q", got.Text, alert)
+	}
+	updatedBinding, ok := pipeline.bindings.GetByConversation("!dm:hb-dedupe-old")
+	if !ok {
+		t.Fatalf("expected updated conversation binding")
+	}
+	if !strings.EqualFold(updatedBinding.LastHeartbeatText, alert) {
+		t.Fatalf("last heartbeat text = %q, want %q", updatedBinding.LastHeartbeatText, alert)
+	}
+	if !updatedBinding.LastHeartbeatSentAt.After(oldSentAt) {
+		t.Fatalf("last heartbeat sent at = %s, want > %s", updatedBinding.LastHeartbeatSentAt, oldSentAt)
 	}
 }
 

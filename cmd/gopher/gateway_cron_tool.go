@@ -8,6 +8,7 @@ import (
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/gateway"
+	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
 type gatewayCronToolService struct {
@@ -96,12 +97,40 @@ func collectHeartbeatSchedules(runtime *gatewayAgentRuntime) []gateway.Heartbeat
 		if agent == nil || !agent.Heartbeat.Enabled || agent.Heartbeat.Every <= 0 {
 			continue
 		}
+		activeHours := gateway.HeartbeatActiveHours{
+			Enabled:     agent.Heartbeat.ActiveHours.Enabled,
+			Start:       agent.Heartbeat.ActiveHours.Start,
+			End:         agent.Heartbeat.ActiveHours.End,
+			StartMinute: agent.Heartbeat.ActiveHours.StartMinute,
+			EndMinute:   agent.Heartbeat.ActiveHours.EndMinute,
+			Timezone:    strings.TrimSpace(agent.Heartbeat.ActiveHours.Timezone),
+			Location:    agent.Heartbeat.ActiveHours.Location,
+		}
+		if activeHours.Enabled && activeHours.Location == nil {
+			fallbackTimezone := strings.TrimSpace(agent.Config.UserTimezone)
+			if fallbackTimezone != "" {
+				if location, err := time.LoadLocation(fallbackTimezone); err == nil {
+					activeHours.Location = location
+					if activeHours.Timezone == "" {
+						activeHours.Timezone = fallbackTimezone
+					}
+				}
+			}
+			if activeHours.Location == nil {
+				activeHours.Location = time.Local
+				if activeHours.Timezone == "" {
+					activeHours.Timezone = time.Local.String()
+				}
+			}
+		}
 		out = append(out, gateway.HeartbeatSchedule{
 			AgentID:     actorID,
 			Every:       agent.Heartbeat.Every,
 			Prompt:      agent.Heartbeat.Prompt,
 			AckMaxChars: agent.Heartbeat.AckMaxChars,
-			Timezone:    strings.TrimSpace(agent.Config.UserTimezone),
+			SessionID:   sessionrt.SessionID(strings.TrimSpace(agent.Heartbeat.SessionID)),
+			Workspace:   strings.TrimSpace(agent.Workspace),
+			ActiveHours: activeHours,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

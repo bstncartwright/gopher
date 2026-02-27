@@ -195,11 +195,19 @@ Heartbeats run only when config.json includes heartbeat settings, for example:
 
 {
   "heartbeat": {
-    "every": "15m"
+    "every": "15m",
+    "session": "sess-123",
+    "active_hours": {
+      "start": "09:00",
+      "end": "18:00",
+      "timezone": "America/New_York"
+    }
   }
 }
 
-Keep this file empty (or comment-only) to skip heartbeat work even when enabled.
+- heartbeat.session is optional; when set, heartbeat runs only target that session id.
+- heartbeat.active_hours is optional; when omitted there are no implicit quiet hours.
+- Keep this file effectively empty (blank, markdown headers, empty checklist items) to skip heartbeat work even when enabled.
 
 Add short checklist items when you want periodic checks, for example:
 

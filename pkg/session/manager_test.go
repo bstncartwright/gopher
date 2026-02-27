@@ -4,7 +4,24 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
+
+type eventStoreWithoutRegistry struct {
+	base *InMemoryEventStore
+}
+
+func (s eventStoreWithoutRegistry) Append(ctx context.Context, e Event) error {
+	return s.base.Append(ctx, e)
+}
+
+func (s eventStoreWithoutRegistry) List(ctx context.Context, sessionID SessionID) ([]Event, error) {
+	return s.base.List(ctx, sessionID)
+}
+
+func (s eventStoreWithoutRegistry) Stream(ctx context.Context, sessionID SessionID) (<-chan Event, error) {
+	return s.base.Stream(ctx, sessionID)
+}
 
 func TestManagerCreateAndGetSession(t *testing.T) {
 	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
@@ -154,5 +171,54 @@ func TestManagerCancelSessionRejectsFurtherEvents(t *testing.T) {
 	}
 	if ctrl.Action != ControlActionSessionCancelled {
 		t.Fatalf("expected cancel control action, got %q", ctrl.Action)
+	}
+}
+
+func TestManagerSessionRecordAccessorsWithRegistry(t *testing.T) {
+	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
+	manager, err := NewManager(ManagerOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	created, err := manager.CreateSession(context.Background(), CreateSessionOptions{
+		Participants: []Participant{
+			{ID: "agent:a", Type: ActorAgent},
+			{ID: "user:me", Type: ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+
+	record, err := manager.GetSessionRecord(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	updatedAt := record.UpdatedAt.Add(-5 * time.Minute)
+	record.UpdatedAt = updatedAt
+	if err := manager.UpsertSessionRecord(context.Background(), record); err != nil {
+		t.Fatalf("UpsertSessionRecord() error: %v", err)
+	}
+	loaded, err := manager.GetSessionRecord(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() second error: %v", err)
+	}
+	if !loaded.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("updated_at = %s, want %s", loaded.UpdatedAt, updatedAt)
+	}
+}
+
+func TestManagerSessionRecordAccessorsWithoutRegistry(t *testing.T) {
+	base := NewInMemoryEventStore(InMemoryEventStoreOptions{})
+	store := eventStoreWithoutRegistry{base: base}
+	manager, err := NewManager(ManagerOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	if _, err := manager.GetSessionRecord(context.Background(), "sess-missing"); err == nil {
+		t.Fatalf("expected GetSessionRecord to fail without registry")
+	}
+	if err := manager.UpsertSessionRecord(context.Background(), SessionRecord{SessionID: "sess-missing"}); err == nil {
+		t.Fatalf("expected UpsertSessionRecord to fail without registry")
 	}
 }

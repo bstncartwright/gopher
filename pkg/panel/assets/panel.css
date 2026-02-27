@@ -1120,6 +1120,28 @@ body[data-active-tab="sessions"] .event-keyfacts {
   font-size: 0.72rem;
 }
 
+.context-health {
+  margin: 8px 0 10px;
+  border: 1px solid rgba(118, 168, 150, 0.32);
+  border-radius: 6px;
+  background: rgba(12, 20, 18, 0.7);
+  padding: 8px 10px;
+}
+
+.context-health h4 {
+  margin: 0 0 4px;
+  color: #b8f5d2;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.context-health p {
+  margin: 2px 0 0;
+  font-size: 0.69rem;
+  color: #95b4a5;
+}
+
 .timeline-events {
   display: grid;
   gap: 10px;

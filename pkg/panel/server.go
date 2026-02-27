@@ -196,6 +196,24 @@ type sessionDetailData struct {
 	Error           string
 	LastSeq         uint64
 	Events          []eventRow
+	ContextHealth   *contextHealthData
+}
+
+type contextHealthData struct {
+	ModelContextWindow       int
+	ReserveTokens            int
+	ReserveFloorTokens       int
+	EstimatedInputTokens     int
+	OverflowRetries          int
+	OverflowStage            string
+	SummaryStrategy          string
+	ToolResultTruncation     int
+	RecentMessagesUsedTokens int
+	RecentMessagesCapTokens  int
+	MemoryUsedTokens         int
+	MemoryCapTokens          int
+	CompactionUsedTokens     int
+	CompactionCapTokens      int
 }
 
 type eventRow struct {
@@ -468,6 +486,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data.Events = toEventRows(events)
+	data.ContextHealth = extractContextHealth(events)
 	if len(events) > 0 {
 		data.LastSeq = events[len(events)-1].Seq
 	}
@@ -1018,6 +1037,70 @@ func nodeRoleText(isGateway bool) string {
 		return "gateway"
 	}
 	return "node"
+}
+
+func extractContextHealth(events []sessionrt.Event) *contextHealthData {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != sessionrt.EventStatePatch {
+			continue
+		}
+		payload := clonePayloadMap(event.Payload)
+		if len(payload) == 0 {
+			continue
+		}
+		return &contextHealthData{
+			ModelContextWindow:       intPayloadValue(payload, "model_context_window"),
+			ReserveTokens:            intPayloadValue(payload, "reserve_tokens"),
+			ReserveFloorTokens:       intPayloadValue(payload, "reserve_floor_tokens"),
+			EstimatedInputTokens:     intPayloadValue(payload, "estimated_input_tokens"),
+			OverflowRetries:          intPayloadValue(payload, "overflow_retries"),
+			OverflowStage:            stringPayloadValue(payload, "overflow_stage"),
+			SummaryStrategy:          stringPayloadValue(payload, "summary_strategy"),
+			ToolResultTruncation:     intPayloadValue(payload, "tool_result_truncation_count"),
+			RecentMessagesUsedTokens: intPayloadValue(payload, "recent_messages_used_tokens"),
+			RecentMessagesCapTokens:  intPayloadValue(payload, "recent_messages_cap_tokens"),
+			MemoryUsedTokens:         intPayloadValue(payload, "retrieved_memory_used_tokens"),
+			MemoryCapTokens:          intPayloadValue(payload, "retrieved_memory_cap_tokens"),
+			CompactionUsedTokens:     intPayloadValue(payload, "compaction_used_tokens"),
+			CompactionCapTokens:      intPayloadValue(payload, "compaction_cap_tokens"),
+		}
+	}
+	return nil
+}
+
+func intPayloadValue(payload map[string]any, key string) int {
+	raw, ok := payload[key]
+	if !ok {
+		return 0
+	}
+	switch v := raw.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		value, err := v.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(value)
+	default:
+		return 0
+	}
+}
+
+func stringPayloadValue(payload map[string]any, key string) string {
+	raw, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	if text, ok := raw.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
 }
 
 func formatCapabilities(capabilities []scheduler.Capability) string {

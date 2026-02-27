@@ -11,20 +11,27 @@ import (
 )
 
 type ContextRequest struct {
-	BaseSystemPrompt    string
-	Messages            []ai.Message
-	Retrieved           []memory.MemoryRecord
-	CompactionSummaries []string
-	CurrentTask         string
-	MaxTokens           int
-	MaxMemories         int
-	EnablePruning       bool
-	EnableCompaction    bool
-	BootstrapTokens     int
-	WorkingTokens       int
-	OverflowRetries     int
-	Warnings            []string
+	BaseSystemPrompt         string
+	Messages                 []ai.Message
+	Retrieved                []memory.MemoryRecord
+	CompactionSummaries      []string
+	CurrentTask              string
+	MaxTokens                int
+	MaxMemories              int
+	ReserveMinTokens         int
+	EnablePruning            bool
+	EnableRepair             bool
+	EnableCompaction         bool
+	PruneOptions             PruneOptions
+	BootstrapTokens          int
+	WorkingTokens            int
+	OverflowRetries          int
+	OverflowStage            string
+	Warnings                 []string
+	CompactionSummaryBuilder CompactionSummaryBuilder
 }
+
+type CompactionSummaryBuilder func(ctx context.Context, dropped []ai.Message, fallback func([]ai.Message) CompactionResult) (CompactionResult, string, error)
 
 type ContextBundle struct {
 	SystemPrompt         string
@@ -97,8 +104,10 @@ func (a *DefaultAssembler) Build(ctx context.Context, input ContextRequest) (Con
 
 	diagnostics := ContextDiagnostics{
 		ModelContextWindow: maxTokens,
-		ReserveTokens:      ComputeReserveTokens(maxTokens),
+		ReserveFloorTokens: input.ReserveMinTokens,
+		ReserveTokens:      ComputeReserveTokens(maxTokens, input.ReserveMinTokens),
 		OverflowRetries:    input.OverflowRetries,
+		OverflowStage:      strings.TrimSpace(input.OverflowStage),
 		BootstrapLane: LaneDiagnostics{
 			UsedTokens: input.BootstrapTokens,
 			CapTokens:  maxTokens,
@@ -111,9 +120,15 @@ func (a *DefaultAssembler) Build(ctx context.Context, input ContextRequest) (Con
 	diagnostics.Warnings = append(diagnostics.Warnings, cloneStrings(input.Warnings)...)
 
 	if input.EnablePruning {
-		pruned, pruneActions := PruneMessages(messages, PruneOptions{})
-		messages = pruned
-		diagnostics.PruneActions = append(diagnostics.PruneActions, pruneActions...)
+		prunedResult := PruneMessagesDetailed(messages, input.PruneOptions)
+		messages = prunedResult.Messages
+		diagnostics.PruneActions = append(diagnostics.PruneActions, prunedResult.Actions...)
+		diagnostics.ToolResultTruncation += prunedResult.ToolResultTruncations
+	}
+	if input.EnableRepair {
+		repaired, repairActions := RepairMessages(messages, RepairOptions{})
+		messages = repaired
+		diagnostics.PairRepairActions = append(diagnostics.PairRepairActions, repairActions...)
 	}
 
 	usable := maxTokens - diagnostics.ReserveTokens
@@ -171,12 +186,34 @@ func (a *DefaultAssembler) Build(ctx context.Context, input ContextRequest) (Con
 	selectedMessages, droppedMessages, messageTokens := SelectMessagesForBudget(messages, messageBudget)
 	if input.EnableCompaction && len(droppedMessages) > 0 {
 		compacted := BuildCompactionSummary(droppedMessages)
+		strategy := "deterministic"
+		if input.CompactionSummaryBuilder != nil {
+			candidate, summaryStrategy, err := input.CompactionSummaryBuilder(ctx, droppedMessages, BuildCompactionSummary)
+			if err != nil {
+				diagnostics.Warnings = append(diagnostics.Warnings, "model compaction summary failed: "+err.Error())
+			}
+			if strings.TrimSpace(candidate.Summary) != "" {
+				compacted = candidate
+				if strings.TrimSpace(summaryStrategy) != "" {
+					strategy = strings.TrimSpace(summaryStrategy)
+				}
+			}
+		}
 		if strings.TrimSpace(compacted.Summary) != "" {
 			newCompaction = compacted.Summary
 			selectedCompactions = prependSummary(selectedCompactions, newCompaction, 3)
 			compactionSection = renderCompactionSection(selectedCompactions)
 			compactionTokens = EstimateTextTokens(compactionSection)
 			diagnostics.CompactionActions = append(diagnostics.CompactionActions, compacted.Actions...)
+			diagnostics.SummaryStrategy = strategy
+		}
+	}
+	if input.EnableRepair {
+		repairedSelected, repairActions := RepairMessages(selectedMessages, RepairOptions{})
+		if len(repairActions) > 0 {
+			selectedMessages = repairedSelected
+			messageTokens = EstimateMessagesTokens(selectedMessages)
+			diagnostics.PairRepairActions = append(diagnostics.PairRepairActions, repairActions...)
 		}
 	}
 

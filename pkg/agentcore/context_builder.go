@@ -49,6 +49,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 		ctx = context.Background()
 	}
 	mode := normalizePromptMode(opts.Mode)
+	activeTools := activeToolRegistry(a.Tools, ToolInput{Agent: a, Session: s})
 
 	working, err := a.Memory.LoadWorking()
 	if err != nil {
@@ -74,7 +75,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	}
 
 	skillsPrompt := ""
-	if mode == PromptModeFull && hasTool(a.Tools, "read") {
+	if mode == PromptModeFull && hasTool(activeTools, "read") {
 		skillsPrompt = strings.TrimSpace(formatSkillsForPrompt(a.skills))
 	}
 
@@ -83,7 +84,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 		AgentID:        a.ID,
 		KnownAgents:    a.KnownAgents,
 		PromptMode:     mode,
-		Tools:          a.Tools,
+		Tools:          activeTools,
 		Policies:       a.Policies,
 		SkillsPrompt:   skillsPrompt,
 		ContextFiles:   contextFiles,
@@ -177,7 +178,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	return ai.Context{
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
-		Tools:        toolSchemasToAITools(a.Tools),
+		Tools:        toolSchemasToAITools(activeTools),
 	}, diagnostics, nil
 }
 

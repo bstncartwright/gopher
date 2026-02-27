@@ -54,18 +54,23 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 		"tool_id", call.ID,
 		"session_id", s.ID,
 	)
-	tool, ok := r.agent.Tools.Get(call.Name)
+	activeTools := activeToolRegistry(r.agent.Tools, ToolInput{
+		Agent:   r.agent,
+		Session: s,
+		Args:    call.Arguments,
+	})
+	tool, ok := activeTools.Get(call.Name)
 	if !ok {
 		err := fmt.Errorf("tool %q is not registered", call.Name)
 		slog.Error("tool_runner: tool not registered",
 			"tool_name", call.Name,
 			"session_id", s.ID,
-			"available_tools", r.getToolNames(),
+			"available_tools", r.getToolNames(activeTools),
 		)
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
 	}
 
-	validatedArgs, err := ai.ValidateToolCall(toolSchemasToAITools(r.agent.Tools), call)
+	validatedArgs, err := ai.ValidateToolCall(toolSchemasToAITools(activeTools), call)
 	if err != nil {
 		slog.Error("tool_runner: tool call validation failed",
 			"tool_name", call.Name,
@@ -151,8 +156,8 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 	return output, runErr
 }
 
-func (r *ToolRunner) getToolNames() []string {
-	schemas := r.agent.Tools.Schemas()
+func (r *ToolRunner) getToolNames(registry ToolRegistry) []string {
+	schemas := registry.Schemas()
 	names := make([]string, len(schemas))
 	for i, s := range schemas {
 		names[i] = s.Name
@@ -274,6 +279,50 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		if len(blockedDomains) > 0 {
 			return nil, &PolicyError{Message: fmt.Sprintf("web_search denied: %q blocked by policies.network.block_domains", strings.Join(blockedDomains, ","))}
 		}
+		return out, nil
+
+	case "message":
+		rawAttachments, exists := out["attachments"]
+		if !exists || rawAttachments == nil {
+			return out, nil
+		}
+		entries, ok := rawAttachments.([]any)
+		if !ok {
+			return nil, fmt.Errorf("attachments must be an array")
+		}
+		normalized := make([]any, 0, len(entries))
+		for idx, entry := range entries {
+			attachment, ok := entry.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("attachments[%d] must be an object", idx)
+			}
+			rawPath, err := requiredStringArg(attachment, "path")
+			if err != nil {
+				return nil, fmt.Errorf("attachments[%d].path: %w", idx, err)
+			}
+			resolvedPath, err := r.resolvePathInAllowedRoots(rawPath)
+			if err != nil {
+				return nil, err
+			}
+
+			item := map[string]any{"path": resolvedPath}
+			if rawName, exists := attachment["name"]; exists && rawName != nil {
+				name, ok := rawName.(string)
+				if !ok {
+					return nil, fmt.Errorf("attachments[%d].name must be a string", idx)
+				}
+				item["name"] = strings.TrimSpace(name)
+			}
+			if rawMimeType, exists := attachment["mime_type"]; exists && rawMimeType != nil {
+				mimeType, ok := rawMimeType.(string)
+				if !ok {
+					return nil, fmt.Errorf("attachments[%d].mime_type must be a string", idx)
+				}
+				item["mime_type"] = strings.TrimSpace(mimeType)
+			}
+			normalized = append(normalized, item)
+		}
+		out["attachments"] = normalized
 		return out, nil
 
 	default:

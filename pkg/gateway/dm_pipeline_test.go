@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -302,6 +303,87 @@ func (e *dmPromptExecutor) Step(_ context.Context, input sessionrt.AgentInput) (
 				Payload: sessionrt.Message{
 					Role:    sessionrt.RoleAgent,
 					Content: text,
+				},
+			},
+		},
+	}, nil
+}
+
+type dmMessageToolThenReplyExecutor struct {
+	toolText  string
+	finalText string
+}
+
+func (e *dmMessageToolThenReplyExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventToolResult,
+				Payload: map[string]any{
+					"name":   "message",
+					"status": "ok",
+					"result": map[string]any{
+						"text": e.toolText,
+					},
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: e.finalText,
+				},
+			},
+		},
+	}, nil
+}
+
+type dmMessageDedupResetExecutor struct {
+	mu    sync.Mutex
+	calls int
+	text  string
+}
+
+func (e *dmMessageDedupResetExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+	if call == 1 {
+		return sessionrt.AgentOutput{
+			Events: []sessionrt.Event{
+				{
+					From: input.ActorID,
+					Type: sessionrt.EventToolResult,
+					Payload: map[string]any{
+						"name":   "message",
+						"status": "ok",
+						"result": map[string]any{
+							"text": e.text,
+						},
+					},
+				},
+				{
+					From: input.ActorID,
+					Type: sessionrt.EventMessage,
+					Payload: sessionrt.Message{
+						Role:    sessionrt.RoleAgent,
+						Content: e.text,
+					},
+				},
+			},
+		}, nil
+	}
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: e.text,
 				},
 			},
 		},
@@ -2477,6 +2559,221 @@ func TestDMPipelineStripsHeartbeatTokenWhenAlertExceedsAckLimit(t *testing.T) {
 	}
 	if len([]rune(got.Text)) != len([]rune(alert)) {
 		t.Fatalf("forwarded alert length = %d, want %d", len([]rune(got.Text)), len([]rune(alert)))
+	}
+}
+
+func TestDMPipelineSuppressesDuplicateFinalReplyAfterMessageToolSend(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmMessageToolThenReplyExecutor{
+			toolText:  "status update",
+			finalText: " status update ",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:message-dedupe",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if got := fake.sentCount(); got != 0 {
+		t.Fatalf("outbound count = %d, want 0 (duplicate final reply should be suppressed)", got)
+	}
+}
+
+func TestDMPipelineDoesNotSuppressDifferentFinalReplyAfterMessageToolSend(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmMessageToolThenReplyExecutor{
+			toolText:  "first",
+			finalText: "second",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:message-no-dedupe",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	if got := strings.TrimSpace(fake.lastSent().Text); got != "second" {
+		t.Fatalf("final reply text = %q, want second", got)
+	}
+}
+
+func TestDMPipelineSuppressesNoReplyToken(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: " NO_REPLY "},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:no-reply",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if got := fake.sentCount(); got != 0 {
+		t.Fatalf("outbound count = %d, want 0 (NO_REPLY should be suppressed)", got)
+	}
+}
+
+func TestDMPipelineDoesNotSuppressDuplicateWhenAttachmentsArePending(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmMessageToolThenReplyExecutor{
+			toolText:  "artifact ready",
+			finalText: "artifact ready",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	reportPath := filepath.Join(t.TempDir(), "artifact.md")
+	if err := os.WriteFile(reportPath, []byte("artifact"), 0o644); err != nil {
+		t.Fatalf("write report file: %v", err)
+	}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		AttachmentResolver: func(_ string, _ sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment {
+			if event.Type != sessionrt.EventToolResult {
+				return nil
+			}
+			return []transport.OutboundAttachment{{Path: reportPath}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:message-attachment",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	message := fake.lastSent()
+	if strings.TrimSpace(message.Text) != "artifact ready" {
+		t.Fatalf("text = %q, want artifact ready", message.Text)
+	}
+	if len(message.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(message.Attachments))
+	}
+}
+
+func TestDMPipelineMessageDedupStateResetsBetweenTurns(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmMessageDedupResetExecutor{text: "done"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:dedupe-reset",
+		SenderID:       "@user:hs",
+		Text:           "first turn",
+	}); err != nil {
+		t.Fatalf("HandleInbound(first) error: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := fake.sentCount(); got != 0 {
+		t.Fatalf("first turn outbound count = %d, want 0", got)
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:dedupe-reset",
+		SenderID:       "@user:hs",
+		Text:           "second turn",
+	}); err != nil {
+		t.Fatalf("HandleInbound(second) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	if got := strings.TrimSpace(fake.lastSent().Text); got != "done" {
+		t.Fatalf("second turn final reply = %q, want done", got)
 	}
 }
 

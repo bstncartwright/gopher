@@ -103,6 +103,7 @@ type Agent struct {
 	Cron                  CronToolService
 	Delegation            DelegationToolService
 	HeartbeatService      HeartbeatToolService
+	MessageService        MessageToolService
 	Heartbeat             AgentHeartbeat
 	KnownAgents           []string
 	CaptureThinkingDeltas bool

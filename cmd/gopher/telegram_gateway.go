@@ -175,6 +175,11 @@ func startTelegramDMBridgeWithRuntime(
 		return nil, fmt.Errorf("create telegram dm pipeline: %w", err)
 	}
 
+	messageTool := newGatewayMessageToolService(pipeline, telegramBridge)
+	for _, agent := range agentRuntime.Agents {
+		agent.MessageService = messageTool
+	}
+
 	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger)
 	for _, agent := range agentRuntime.Agents {
 		agent.Delegation = delegationTool

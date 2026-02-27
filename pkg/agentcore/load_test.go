@@ -401,6 +401,9 @@ func TestLoadAgentImplicitlyEnablesDefaultTools(t *testing.T) {
 	if _, ok := agent.Tools.Get("heartbeat"); !ok {
 		t.Fatalf("expected implicit heartbeat tool to be enabled")
 	}
+	if _, ok := agent.Tools.Get("message"); !ok {
+		t.Fatalf("expected implicit message tool to be enabled")
+	}
 	if !containsTool(agent.Config.EnabledTools, "web_search") {
 		t.Fatalf("expected web_search in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
 	}
@@ -427,6 +430,9 @@ func TestLoadAgentDisableDefaultSearchMCPSkipsImplicitTool(t *testing.T) {
 	}
 	if _, ok := agent.Tools.Get("heartbeat"); !ok {
 		t.Fatalf("expected implicit heartbeat tool to remain enabled")
+	}
+	if _, ok := agent.Tools.Get("message"); !ok {
+		t.Fatalf("expected implicit message tool to remain enabled")
 	}
 }
 

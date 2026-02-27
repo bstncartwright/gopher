@@ -245,6 +245,197 @@ func TestSendMessageDoesNotRetryOnNonParseTelegramError(t *testing.T) {
 	}
 }
 
+func TestSendMessageAttachmentRoutesImageToSendPhoto(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "image.png")
+	if err := os.WriteFile(attachmentPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/sendPhoto" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			t.Fatalf("parse multipart form: %v", err)
+		}
+		if chatID := r.FormValue("chat_id"); chatID != "777" {
+			t.Fatalf("chat_id = %q, want 777", chatID)
+		}
+		file, _, err := r.FormFile("photo")
+		if err != nil {
+			t.Fatalf("photo form file missing: %v", err)
+		}
+		_ = file.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Attachments: []transport.OutboundAttachment{{
+			Path:     attachmentPath,
+			MIMEType: "image/png",
+		}},
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+}
+
+func TestSendMessageAttachmentRoutesUnknownTypeToSendDocument(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "archive.bin")
+	if err := os.WriteFile(attachmentPath, []byte("binary"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/sendDocument" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			t.Fatalf("parse multipart form: %v", err)
+		}
+		file, _, err := r.FormFile("document")
+		if err != nil {
+			t.Fatalf("document form file missing: %v", err)
+		}
+		_ = file.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Attachments: []transport.OutboundAttachment{{
+			Path: attachmentPath,
+		}},
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+}
+
+func TestSendMessageWithTextAndAttachmentSendsTextThenMedia(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(attachmentPath, []byte("jpg"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/bottoken/sendMessage":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode sendMessage payload: %v", err)
+			}
+		case "/bottoken/sendPhoto":
+			if err := r.ParseMultipartForm(4 << 20); err != nil {
+				t.Fatalf("parse multipart form: %v", err)
+			}
+			file, _, err := r.FormFile("photo")
+			if err != nil {
+				t.Fatalf("photo form file missing: %v", err)
+			}
+			_ = file.Close()
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Text:           "done",
+		Attachments: []transport.OutboundAttachment{{
+			Path:     attachmentPath,
+			MIMEType: "image/jpeg",
+		}},
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("request count = %d, want 2", len(paths))
+	}
+	if paths[0] != "/bottoken/sendMessage" || paths[1] != "/bottoken/sendPhoto" {
+		t.Fatalf("request order = %#v, want sendMessage then sendPhoto", paths)
+	}
+}
+
+func TestSendMessageAttachmentOnlySkipsTextRequest(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "voice.ogg")
+	if err := os.WriteFile(attachmentPath, []byte("ogg"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/bottoken/sendVoice" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			t.Fatalf("parse multipart form: %v", err)
+		}
+		file, _, err := r.FormFile("voice")
+		if err != nil {
+			t.Fatalf("voice form file missing: %v", err)
+		}
+		_ = file.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Attachments: []transport.OutboundAttachment{{
+			Path:     attachmentPath,
+			MIMEType: "audio/ogg",
+		}},
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if len(paths) != 1 || paths[0] != "/bottoken/sendVoice" {
+		t.Fatalf("request paths = %#v, want only sendVoice", paths)
+	}
+}
+
+func TestSendMessageAttachmentMissingFileReturnsError(t *testing.T) {
+	tr, err := New(Options{BotToken: "token", APIBaseURL: "https://example.invalid"})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	err = tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Attachments: []transport.OutboundAttachment{{
+			Path: "/tmp/does-not-exist.bin",
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected attachment read error")
+	}
+}
+
 func TestSetCommandsRegistersTelegramCommands(t *testing.T) {
 	var payloads []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -37,6 +37,8 @@ type ConversationBinding struct {
 	TraceMode             string              `json:"trace_mode,omitempty"`
 	TraceRender           string              `json:"trace_render,omitempty"`
 	LastInboundEvent      string              `json:"last_inbound_event,omitempty"`
+	LastHeartbeatText     string              `json:"last_heartbeat_text,omitempty"`
+	LastHeartbeatSentAt   time.Time           `json:"last_heartbeat_sent_at,omitempty"`
 	Mode                  ConversationMode    `json:"mode"`
 	CreatedAt             time.Time           `json:"created_at"`
 	UpdatedAt             time.Time           `json:"updated_at"`
@@ -116,6 +118,7 @@ func (s *FileConversationBindingStore) Set(binding ConversationBinding) error {
 			normalized.ConversationName = existing.ConversationName
 		}
 		normalized = mergeTraceFields(normalized, existing)
+		normalized = mergeHeartbeatFields(normalized, existing)
 	}
 	for conversationID, existing := range s.items {
 		if conversationID == normalized.ConversationID {
@@ -247,6 +250,7 @@ func (s *InMemoryConversationBindingStore) Set(binding ConversationBinding) erro
 			normalized.ConversationName = existing.ConversationName
 		}
 		normalized = mergeTraceFields(normalized, existing)
+		normalized = mergeHeartbeatFields(normalized, existing)
 	}
 	for conversationID, existing := range s.items {
 		if conversationID == normalized.ConversationID {
@@ -290,6 +294,8 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 	traceMode := normalizeTraceMode(binding.TraceMode)
 	traceRender := normalizeTraceRender(binding.TraceRender)
 	lastInboundEvent := strings.TrimSpace(binding.LastInboundEvent)
+	lastHeartbeatText := strings.TrimSpace(binding.LastHeartbeatText)
+	lastHeartbeatSentAt := binding.LastHeartbeatSentAt.UTC()
 	mode := normalizeConversationMode(binding.Mode)
 
 	now := time.Now().UTC()
@@ -312,6 +318,8 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 		TraceMode:             traceMode,
 		TraceRender:           traceRender,
 		LastInboundEvent:      lastInboundEvent,
+		LastHeartbeatText:     lastHeartbeatText,
+		LastHeartbeatSentAt:   lastHeartbeatSentAt,
 		Mode:                  mode,
 		CreatedAt:             createdAt,
 		UpdatedAt:             updatedAt,
@@ -339,6 +347,8 @@ func cloneConversationBinding(in ConversationBinding) ConversationBinding {
 	out.TraceMode = normalizeTraceMode(out.TraceMode)
 	out.TraceRender = normalizeTraceRender(out.TraceRender)
 	out.LastInboundEvent = strings.TrimSpace(out.LastInboundEvent)
+	out.LastHeartbeatText = strings.TrimSpace(out.LastHeartbeatText)
+	out.LastHeartbeatSentAt = out.LastHeartbeatSentAt.UTC()
 	out.Mode = normalizeConversationMode(out.Mode)
 	out.CreatedAt = out.CreatedAt.UTC()
 	out.UpdatedAt = out.UpdatedAt.UTC()
@@ -370,6 +380,16 @@ func mergeTraceFields(target ConversationBinding, existing ConversationBinding) 
 	}
 	if strings.TrimSpace(target.TraceRender) == "" {
 		target.TraceRender = existing.TraceRender
+	}
+	return target
+}
+
+func mergeHeartbeatFields(target ConversationBinding, existing ConversationBinding) ConversationBinding {
+	if strings.TrimSpace(target.LastHeartbeatText) == "" {
+		target.LastHeartbeatText = existing.LastHeartbeatText
+	}
+	if target.LastHeartbeatSentAt.IsZero() {
+		target.LastHeartbeatSentAt = existing.LastHeartbeatSentAt
 	}
 	return target
 }

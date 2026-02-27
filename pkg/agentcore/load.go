@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -500,13 +501,86 @@ func NormalizeHeartbeatConfig(input HeartbeatConfig) (AgentHeartbeat, error) {
 	if ackMaxChars <= 0 {
 		ackMaxChars = defaultHeartbeatAckMaxChars
 	}
+	sessionID := strings.TrimSpace(input.Session)
+	activeHours, err := normalizeHeartbeatActiveHours(input.ActiveHours)
+	if err != nil {
+		return AgentHeartbeat{}, fmt.Errorf("invalid config.heartbeat.active_hours: %w", err)
+	}
 
 	return AgentHeartbeat{
 		Enabled:     true,
 		Every:       every,
 		Prompt:      prompt,
 		AckMaxChars: ackMaxChars,
+		SessionID:   sessionID,
+		ActiveHours: activeHours,
 	}, nil
+}
+
+func normalizeHeartbeatActiveHours(input *HeartbeatActiveHoursConfig) (AgentHeartbeatActiveHours, error) {
+	if input == nil {
+		return AgentHeartbeatActiveHours{}, nil
+	}
+
+	startMinute, start, err := parseHeartbeatClock(input.Start, false, "start")
+	if err != nil {
+		return AgentHeartbeatActiveHours{}, err
+	}
+	endMinute, end, err := parseHeartbeatClock(input.End, true, "end")
+	if err != nil {
+		return AgentHeartbeatActiveHours{}, err
+	}
+	timezone := strings.TrimSpace(input.Timezone)
+	var location *time.Location
+	if timezone != "" {
+		loaded, loadErr := time.LoadLocation(timezone)
+		if loadErr != nil {
+			return AgentHeartbeatActiveHours{}, fmt.Errorf("timezone %q: %w", timezone, loadErr)
+		}
+		location = loaded
+	}
+	return AgentHeartbeatActiveHours{
+		Enabled:     true,
+		Start:       start,
+		End:         end,
+		StartMinute: startMinute,
+		EndMinute:   endMinute,
+		Timezone:    timezone,
+		Location:    location,
+	}, nil
+}
+
+func parseHeartbeatClock(raw string, allow24 bool, field string) (int, string, error) {
+	value := strings.TrimSpace(raw)
+	if len(value) != 5 || value[2] != ':' {
+		return 0, "", fmt.Errorf("%s must be HH:MM", field)
+	}
+	hourPart := value[:2]
+	minutePart := value[3:]
+	if !isDigits(hourPart) || !isDigits(minutePart) {
+		return 0, "", fmt.Errorf("%s must be HH:MM", field)
+	}
+	hour, err := strconv.Atoi(hourPart)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s hour must be numeric", field)
+	}
+	minute, err := strconv.Atoi(minutePart)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s minute must be numeric", field)
+	}
+	if minute < 0 || minute > 59 {
+		return 0, "", fmt.Errorf("%s minute must be between 00 and 59", field)
+	}
+	if hour == 24 {
+		if !allow24 || minute != 0 {
+			return 0, "", fmt.Errorf("%s hour must be between 00 and 23", field)
+		}
+		return 24 * 60, "24:00", nil
+	}
+	if hour < 0 || hour > 23 {
+		return 0, "", fmt.Errorf("%s hour must be between 00 and 23", field)
+	}
+	return hour*60 + minute, fmt.Sprintf("%02d:%02d", hour, minute), nil
 }
 
 func parseHeartbeatEvery(raw string) (time.Duration, error) {

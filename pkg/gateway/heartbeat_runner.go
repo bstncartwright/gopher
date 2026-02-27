@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -13,19 +16,31 @@ import (
 )
 
 const defaultHeartbeatPollInterval = time.Second
-const (
-	defaultHeartbeatSleepStartHour = 22
-	defaultHeartbeatSleepEndHour   = 8
+
+var (
+	heartbeatMarkdownHeaderPattern = regexp.MustCompile(`^#+(\s|$)`)
+	heartbeatEmptyListPattern      = regexp.MustCompile(`^[-*+]\s*(\[[\sXx]?\]\s*)?$`)
+	heartbeatHTMLCommentPattern    = regexp.MustCompile(`^<!--.*-->$`)
 )
+
+type HeartbeatActiveHours struct {
+	Enabled     bool
+	Start       string
+	End         string
+	StartMinute int
+	EndMinute   int
+	Timezone    string
+	Location    *time.Location
+}
 
 type HeartbeatSchedule struct {
 	AgentID     sessionrt.ActorID
 	Every       time.Duration
 	Prompt      string
 	AckMaxChars int
-	Timezone    string
-
-	location *time.Location
+	SessionID   sessionrt.SessionID
+	Workspace   string
+	ActiveHours HeartbeatActiveHours
 }
 
 type HeartbeatRunnerOptions struct {
@@ -47,6 +62,10 @@ type HeartbeatRunner struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+}
+
+type sessionRecordReader interface {
+	GetSessionRecord(ctx context.Context, sessionID sessionrt.SessionID) (sessionrt.SessionRecord, error)
 }
 
 func NewHeartbeatRunner(opts HeartbeatRunnerOptions) (*HeartbeatRunner, error) {
@@ -113,18 +132,47 @@ func normalizeHeartbeatSchedule(schedule HeartbeatSchedule) (HeartbeatSchedule, 
 	if schedule.AckMaxChars <= 0 {
 		schedule.AckMaxChars = heartbeatAckDefaultChars
 	}
-	schedule.Timezone = strings.TrimSpace(schedule.Timezone)
-	schedule.location = nil
-	if schedule.Timezone != "" {
-		location, err := time.LoadLocation(schedule.Timezone)
-		if err != nil {
-			slog.Warn("heartbeat_runner: invalid timezone ignored", "agent_id", agentID, "timezone", schedule.Timezone, "error", err)
-			schedule.Timezone = ""
+	schedule.SessionID = sessionrt.SessionID(strings.TrimSpace(string(schedule.SessionID)))
+	schedule.Workspace = strings.TrimSpace(schedule.Workspace)
+	activeHours, err := normalizeHeartbeatScheduleActiveHours(schedule.ActiveHours)
+	if err != nil {
+		return HeartbeatSchedule{}, fmt.Errorf("invalid active_hours for agent %q: %w", agentID, err)
+	}
+	schedule.ActiveHours = activeHours
+	return schedule, nil
+}
+
+func normalizeHeartbeatScheduleActiveHours(input HeartbeatActiveHours) (HeartbeatActiveHours, error) {
+	if !input.Enabled {
+		return HeartbeatActiveHours{}, nil
+	}
+	start := input.StartMinute
+	end := input.EndMinute
+	if start < 0 || start >= 24*60 {
+		return HeartbeatActiveHours{}, fmt.Errorf("start minute must be in [0, 1439]")
+	}
+	if end < 0 || end > 24*60 {
+		return HeartbeatActiveHours{}, fmt.Errorf("end minute must be in [0, 1440]")
+	}
+	input.Start = strings.TrimSpace(input.Start)
+	input.End = strings.TrimSpace(input.End)
+	input.Timezone = strings.TrimSpace(input.Timezone)
+	if input.Start == "" || input.End == "" {
+		return HeartbeatActiveHours{}, fmt.Errorf("start and end are required")
+	}
+	if input.Location == nil {
+		if input.Timezone != "" {
+			location, err := time.LoadLocation(input.Timezone)
+			if err != nil {
+				return HeartbeatActiveHours{}, fmt.Errorf("timezone %q: %w", input.Timezone, err)
+			}
+			input.Location = location
 		} else {
-			schedule.location = location
+			input.Location = time.Local
+			input.Timezone = time.Local.String()
 		}
 	}
-	return schedule, nil
+	return input, nil
 }
 
 func (r *HeartbeatRunner) UpsertSchedule(schedule HeartbeatSchedule) error {
@@ -260,21 +308,40 @@ func (r *HeartbeatRunner) loop(ctx context.Context) {
 
 func (r *HeartbeatRunner) processDue(ctx context.Context) {
 	now := r.now().UTC()
-	targets := r.pipeline.HeartbeatTargets()
+	defaultTargets := r.pipeline.HeartbeatTargets()
 	sessionCache := map[sessionrt.SessionID]*sessionrt.Session{}
 	sessionErrs := map[sessionrt.SessionID]error{}
 	schedules := r.schedulesSnapshot()
-	slog.Debug("heartbeat_runner: processing due schedules", "schedules_count", len(schedules), "targets_count", len(targets))
+	slog.Debug("heartbeat_runner: processing due schedules", "schedules_count", len(schedules), "targets_count", len(defaultTargets))
 
 	for _, schedule := range schedules {
 		next := r.nextRunFor(schedule.AgentID, now)
 		if next.After(now) {
 			continue
 		}
-		if isWithinHeartbeatSleepWindow(now, schedule.location) {
-			slog.Debug("heartbeat_runner: skip sleep hours", "agent_id", schedule.AgentID, "timezone", schedule.Timezone, "local_hour", now.In(schedule.location).Hour())
+		if schedule.ActiveHours.Enabled && !isWithinHeartbeatActiveHours(now, schedule.ActiveHours) {
+			slog.Debug("heartbeat_runner: skip outside active hours", "agent_id", schedule.AgentID, "timezone", schedule.ActiveHours.Timezone, "start", schedule.ActiveHours.Start, "end", schedule.ActiveHours.End)
 			r.setNextRun(schedule.AgentID, now.Add(schedule.Every))
 			continue
+		}
+		if heartbeatFileHasNoTasks(schedule.Workspace) {
+			slog.Debug("heartbeat_runner: skip empty HEARTBEAT.md", "agent_id", schedule.AgentID, "workspace", schedule.Workspace)
+			r.setNextRun(schedule.AgentID, now.Add(schedule.Every))
+			continue
+		}
+
+		targets := defaultTargets
+		if schedule.SessionID != "" {
+			conversationID, ok := r.pipeline.ConversationForSession(schedule.SessionID)
+			if !ok || strings.TrimSpace(conversationID) == "" {
+				slog.Debug("heartbeat_runner: skip session override without conversation binding", "agent_id", schedule.AgentID, "session_id", schedule.SessionID)
+				r.setNextRun(schedule.AgentID, now.Add(schedule.Every))
+				continue
+			}
+			targets = []HeartbeatTarget{{
+				ConversationID: conversationID,
+				SessionID:      schedule.SessionID,
+			}}
 		}
 
 		for _, target := range targets {
@@ -295,7 +362,9 @@ func (r *HeartbeatRunner) processDue(ctx context.Context) {
 				slog.Debug("heartbeat_runner: skip not in room", "agent_id", schedule.AgentID, "conversation_id", target.ConversationID, "session_id", target.SessionID)
 				continue
 			}
-			r.pipeline.MarkHeartbeatPending(target.ConversationID, schedule.AckMaxChars)
+			previousUpdatedAt := r.lookupSessionUpdatedAt(ctx, target.SessionID)
+			dispatchedAt := r.now().UTC()
+			r.pipeline.MarkHeartbeatPending(target.ConversationID, schedule.AckMaxChars, target.SessionID, previousUpdatedAt, dispatchedAt)
 			sendErr := r.manager.SendEvent(ctx, sessionrt.Event{
 				SessionID: target.SessionID,
 				From:      sessionrt.SystemActorID,
@@ -350,16 +419,71 @@ func heartbeatHasAgentParticipant(session *sessionrt.Session, agentID sessionrt.
 	return participant.Type == sessionrt.ActorAgent
 }
 
-func isWithinHeartbeatSleepWindow(now time.Time, location *time.Location) bool {
-	if location == nil {
-		return false
-	}
-	hour := now.In(location).Hour()
-	if defaultHeartbeatSleepStartHour == defaultHeartbeatSleepEndHour {
+func isWithinHeartbeatActiveHours(now time.Time, activeHours HeartbeatActiveHours) bool {
+	if !activeHours.Enabled {
 		return true
 	}
-	if defaultHeartbeatSleepStartHour < defaultHeartbeatSleepEndHour {
-		return hour >= defaultHeartbeatSleepStartHour && hour < defaultHeartbeatSleepEndHour
+	location := activeHours.Location
+	if location == nil {
+		location = time.Local
 	}
-	return hour >= defaultHeartbeatSleepStartHour || hour < defaultHeartbeatSleepEndHour
+	local := now.In(location)
+	minuteOfDay := local.Hour()*60 + local.Minute()
+	start := activeHours.StartMinute
+	end := activeHours.EndMinute
+	if start == end {
+		return false
+	}
+	if start < end {
+		return minuteOfDay >= start && minuteOfDay < end
+	}
+	return minuteOfDay >= start || minuteOfDay < end
+}
+
+func heartbeatFileHasNoTasks(workspace string) bool {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return false
+	}
+	heartbeatPath := filepath.Join(workspace, "HEARTBEAT.md")
+	content, err := os.ReadFile(heartbeatPath)
+	if err != nil {
+		return false
+	}
+	return isHeartbeatContentEffectivelyEmpty(string(content))
+}
+
+func isHeartbeatContentEffectivelyEmpty(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return true
+	}
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if heartbeatMarkdownHeaderPattern.MatchString(trimmed) {
+			continue
+		}
+		if heartbeatEmptyListPattern.MatchString(trimmed) {
+			continue
+		}
+		if heartbeatHTMLCommentPattern.MatchString(trimmed) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (r *HeartbeatRunner) lookupSessionUpdatedAt(ctx context.Context, sessionID sessionrt.SessionID) time.Time {
+	reader, ok := r.manager.(sessionRecordReader)
+	if !ok || reader == nil {
+		return time.Time{}
+	}
+	record, err := reader.GetSessionRecord(ctx, sessionID)
+	if err != nil {
+		return time.Time{}
+	}
+	return record.UpdatedAt.UTC()
 }

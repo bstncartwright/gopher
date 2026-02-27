@@ -98,8 +98,20 @@ type DMPipeline struct {
 }
 
 type heartbeatState struct {
-	pending     int
-	ackMaxChars int
+	pending []heartbeatPending
+}
+
+type heartbeatPending struct {
+	AckMaxChars       int
+	SessionID         sessionrt.SessionID
+	PreviousUpdatedAt time.Time
+	DispatchedAt      time.Time
+}
+
+type heartbeatConsumeResult struct {
+	Suppress    bool
+	Normalized  string
+	IsHeartbeat bool
 }
 
 type traceProvisionState struct {
@@ -139,6 +151,8 @@ const (
 	dmTypingKeepaliveDefault = 5 * time.Second
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	heartbeatAckDefaultChars = 300
+	heartbeatDedupeWindow    = 24 * time.Hour
+	heartbeatRestoreGrace    = 2 * time.Second
 	traceProvisionBackoff    = 30 * time.Second
 )
 
@@ -151,6 +165,8 @@ var (
 	fallbackBearerPattern         = regexp.MustCompile(`(?i)\bbearer\s+[^\s,;]+`)
 	fallbackSensitiveValuePattern = regexp.MustCompile(`(?i)\b(authorization|bearer|api[-_ ]?key|token|secret|password)\b\s*[:=]?\s*([^\s,;]+)`)
 	fallbackLongTokenPattern      = regexp.MustCompile(`\b[A-Za-z0-9_-]{24,}\b`)
+	heartbeatHTMLTagPattern       = regexp.MustCompile(`<[^>]*>`)
+	heartbeatTokenSuffixPattern   = regexp.MustCompile(regexp.QuoteMeta(heartbeatOKToken) + `[^\w]{0,4}$`)
 )
 
 type typingTransport interface {
@@ -163,6 +179,11 @@ type typingSenderTransport interface {
 
 type managedConversationUsersReader interface {
 	ManagedUsersForConversation(conversationID string) []string
+}
+
+type sessionRecordReadWriter interface {
+	GetSessionRecord(ctx context.Context, sessionID sessionrt.SessionID) (sessionrt.SessionRecord, error)
+	UpsertSessionRecord(ctx context.Context, record sessionrt.SessionRecord) error
 }
 
 func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
@@ -725,13 +746,18 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			p.finishProcessing(conversationID)
 			attachments := p.takePendingAttachments(conversationID)
 			content := strings.TrimSpace(msg.Content)
-			if suppress, normalized := p.consumeHeartbeatReply(conversationID, content); suppress {
+			heartbeatResult := p.consumeHeartbeatReply(conversationID, content)
+			if heartbeatResult.Suppress {
 				continue
-			} else if normalized != "" && normalized != content {
-				msg.Content = normalized
-				content = normalized
+			}
+			if heartbeatResult.Normalized != "" && heartbeatResult.Normalized != content {
+				msg.Content = heartbeatResult.Normalized
+				content = heartbeatResult.Normalized
 			}
 			if content == "" && len(attachments) == 0 {
+				continue
+			}
+			if heartbeatResult.IsHeartbeat && len(attachments) == 0 && p.shouldSuppressDuplicateHeartbeat(conversationID, content) {
 				continue
 			}
 			slog.Debug("dm_pipeline: sending message",
@@ -749,6 +775,10 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 					"conversation_id", conversationID,
 					"error", err,
 				)
+				continue
+			}
+			if heartbeatResult.IsHeartbeat && len(attachments) == 0 {
+				p.recordHeartbeatDelivery(conversationID, content)
 			}
 		}
 	}()
@@ -1419,7 +1449,13 @@ func (p *DMPipeline) HeartbeatTargets() []HeartbeatTarget {
 	return out
 }
 
-func (p *DMPipeline) MarkHeartbeatPending(conversationID string, ackMaxChars int) {
+func (p *DMPipeline) MarkHeartbeatPending(
+	conversationID string,
+	ackMaxChars int,
+	sessionID sessionrt.SessionID,
+	previousUpdatedAt time.Time,
+	dispatchedAt time.Time,
+) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return
@@ -1427,11 +1463,18 @@ func (p *DMPipeline) MarkHeartbeatPending(conversationID string, ackMaxChars int
 	if ackMaxChars <= 0 {
 		ackMaxChars = heartbeatAckDefaultChars
 	}
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	dispatchedAt = dispatchedAt.UTC()
+	previousUpdatedAt = previousUpdatedAt.UTC()
 	p.heartbeatMu.Lock()
 	defer p.heartbeatMu.Unlock()
 	state := p.heartbeats[conversationID]
-	state.pending++
-	state.ackMaxChars = ackMaxChars
+	state.pending = append(state.pending, heartbeatPending{
+		AckMaxChars:       ackMaxChars,
+		SessionID:         sessionID,
+		PreviousUpdatedAt: previousUpdatedAt,
+		DispatchedAt:      dispatchedAt,
+	})
 	p.heartbeats[conversationID] = state
 }
 
@@ -1446,11 +1489,12 @@ func (p *DMPipeline) UnmarkHeartbeatPending(conversationID string) {
 	if !ok {
 		return
 	}
-	if state.pending <= 1 {
+	count := len(state.pending)
+	if count <= 1 {
 		delete(p.heartbeats, conversationID)
 		return
 	}
-	state.pending--
+	state.pending = append([]heartbeatPending(nil), state.pending[:count-1]...)
 	p.heartbeats[conversationID] = state
 }
 
@@ -1464,53 +1508,188 @@ func (p *DMPipeline) IsConversationProcessing(conversationID string) bool {
 	return p.processing[conversationID] > 0
 }
 
-func (p *DMPipeline) consumeHeartbeatReply(conversationID, text string) (bool, string) {
+func (p *DMPipeline) consumeHeartbeatReply(conversationID, text string) heartbeatConsumeResult {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
-		return false, text
+		return heartbeatConsumeResult{Normalized: text}
 	}
+
+	var pending heartbeatPending
+	hasPending := false
 	p.heartbeatMu.Lock()
 	state, ok := p.heartbeats[conversationID]
-	if !ok || state.pending <= 0 {
+	if !ok || len(state.pending) == 0 {
 		p.heartbeatMu.Unlock()
-		return false, text
+		return heartbeatConsumeResult{Normalized: text}
 	}
-	if state.pending <= 1 {
+	hasPending = true
+	pending = state.pending[0]
+	if len(state.pending) <= 1 {
 		delete(p.heartbeats, conversationID)
 	} else {
-		state.pending--
+		state.pending = append([]heartbeatPending(nil), state.pending[1:]...)
 		p.heartbeats[conversationID] = state
 	}
 	p.heartbeatMu.Unlock()
 
-	ackMaxChars := state.ackMaxChars
+	ackMaxChars := pending.AckMaxChars
 	if ackMaxChars <= 0 {
 		ackMaxChars = heartbeatAckDefaultChars
 	}
 	normalized, hasToken := normalizeHeartbeatReply(text)
 	if !hasToken {
-		return false, text
+		return heartbeatConsumeResult{
+			Suppress:    false,
+			Normalized:  text,
+			IsHeartbeat: hasPending,
+		}
 	}
 	if len([]rune(normalized)) <= ackMaxChars {
-		return true, ""
+		p.restoreHeartbeatSessionUpdatedAt(pending)
+		return heartbeatConsumeResult{
+			Suppress:    true,
+			Normalized:  "",
+			IsHeartbeat: true,
+		}
 	}
-	return false, normalized
+	return heartbeatConsumeResult{
+		Suppress:    false,
+		Normalized:  normalized,
+		IsHeartbeat: true,
+	}
 }
 
 func normalizeHeartbeatReply(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", false
+	}
+	candidates := []string{trimmed}
+	normalizedMarkup := stripHeartbeatMarkup(trimmed)
+	if normalizedMarkup != trimmed {
+		candidates = append(candidates, normalizedMarkup)
+	}
+	for _, candidate := range candidates {
+		normalized, hasToken := stripHeartbeatTokenAtEdges(candidate)
+		if hasToken {
+			return normalized, true
+		}
+	}
+	return trimmed, false
+}
+
+func stripHeartbeatMarkup(text string) string {
+	normalized := heartbeatHTMLTagPattern.ReplaceAllString(text, " ")
+	normalized = strings.ReplaceAll(normalized, "&nbsp;", " ")
+	normalized = strings.ReplaceAll(normalized, "&NBSP;", " ")
+	normalized = strings.TrimSpace(normalized)
+	normalized = strings.TrimLeft(normalized, "*`~_")
+	normalized = strings.TrimRight(normalized, "*`~_")
+	return strings.TrimSpace(normalized)
+}
+
+func stripHeartbeatTokenAtEdges(text string) (string, bool) {
 	normalized := strings.TrimSpace(text)
-	hasToken := false
+	if normalized == "" || !strings.Contains(normalized, heartbeatOKToken) {
+		return normalized, false
+	}
+	stripped := false
 	for {
 		switch {
 		case strings.HasPrefix(normalized, heartbeatOKToken):
 			normalized = strings.TrimSpace(strings.TrimPrefix(normalized, heartbeatOKToken))
-			hasToken = true
-		case strings.HasSuffix(normalized, heartbeatOKToken):
-			normalized = strings.TrimSpace(strings.TrimSuffix(normalized, heartbeatOKToken))
-			hasToken = true
+			stripped = true
+		case heartbeatTokenSuffixPattern.MatchString(normalized):
+			idx := strings.LastIndex(normalized, heartbeatOKToken)
+			before := strings.TrimSpace(normalized[:idx])
+			after := strings.TrimSpace(normalized[idx+len(heartbeatOKToken):])
+			if before == "" {
+				normalized = after
+			} else {
+				normalized = strings.TrimSpace(before + " " + after)
+			}
+			stripped = true
 		default:
-			return normalized, hasToken
+			return strings.Join(strings.Fields(normalized), " "), stripped
 		}
+	}
+}
+
+func (p *DMPipeline) restoreHeartbeatSessionUpdatedAt(pending heartbeatPending) {
+	if pending.SessionID == "" || pending.PreviousUpdatedAt.IsZero() || pending.DispatchedAt.IsZero() {
+		return
+	}
+	manager, ok := p.manager.(sessionRecordReadWriter)
+	if !ok || manager == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	record, err := manager.GetSessionRecord(ctx, pending.SessionID)
+	if err != nil {
+		return
+	}
+	currentUpdatedAt := record.UpdatedAt.UTC()
+	dispatchedAt := pending.DispatchedAt.UTC()
+	previousUpdatedAt := pending.PreviousUpdatedAt.UTC()
+	restoreTarget := previousUpdatedAt
+	// Allow small clock skew between dispatch timestamp and persisted event timestamp.
+	// If updated_at advanced beyond the grace window, preserve monotonic progression.
+	if currentUpdatedAt.After(dispatchedAt.Add(heartbeatRestoreGrace)) && currentUpdatedAt.After(restoreTarget) {
+		restoreTarget = currentUpdatedAt
+	}
+	if currentUpdatedAt.Equal(restoreTarget) {
+		return
+	}
+	record.UpdatedAt = restoreTarget
+	if err := manager.UpsertSessionRecord(ctx, record); err != nil {
+		slog.Warn("dm_pipeline: failed to restore heartbeat updated_at",
+			"session_id", pending.SessionID,
+			"previous_updated_at", previousUpdatedAt,
+			"current_updated_at", currentUpdatedAt,
+			"restore_target", restoreTarget,
+			"error", err,
+		)
+	}
+}
+
+func (p *DMPipeline) shouldSuppressDuplicateHeartbeat(conversationID, text string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	text = strings.TrimSpace(text)
+	if conversationID == "" || text == "" || p.bindings == nil {
+		return false
+	}
+	binding, ok := p.bindings.GetByConversation(conversationID)
+	if !ok {
+		return false
+	}
+	lastText := strings.TrimSpace(binding.LastHeartbeatText)
+	if lastText == "" || lastText != text {
+		return false
+	}
+	if binding.LastHeartbeatSentAt.IsZero() {
+		return false
+	}
+	return time.Since(binding.LastHeartbeatSentAt.UTC()) < heartbeatDedupeWindow
+}
+
+func (p *DMPipeline) recordHeartbeatDelivery(conversationID, text string) {
+	conversationID = strings.TrimSpace(conversationID)
+	text = strings.TrimSpace(text)
+	if conversationID == "" || text == "" || p.bindings == nil {
+		return
+	}
+	binding, ok := p.bindings.GetByConversation(conversationID)
+	if !ok {
+		return
+	}
+	binding.LastHeartbeatText = text
+	binding.LastHeartbeatSentAt = time.Now().UTC()
+	if err := p.bindings.Set(binding); err != nil {
+		slog.Warn("dm_pipeline: failed to persist heartbeat dedupe marker",
+			"conversation_id", conversationID,
+			"error", err,
+		)
 	}
 }
 

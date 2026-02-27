@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
@@ -138,6 +139,56 @@ func TestControlSessionWatcherBuildsSummaryAndDelegationIndex(t *testing.T) {
 	}
 	if int(summary["delegated"].(float64)) < 1 {
 		t.Fatalf("delegated summary count = %v, want >= 1", summary["delegated"])
+	}
+}
+
+func TestControlSessionWatcherOmitsStaleSessionsByDefault(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	stale, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{{ID: "milo", Type: sessionrt.ActorAgent}},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(stale) error: %v", err)
+	}
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	if err := store.UpsertSession(ctx, sessionrt.SessionRecord{
+		SessionID: stale.ID,
+		Status:    sessionrt.SessionActive,
+		CreatedAt: old.Add(-24 * time.Hour),
+		UpdatedAt: old,
+		LastSeq:   1,
+	}); err != nil {
+		t.Fatalf("UpsertSession(stale) error: %v", err)
+	}
+
+	watcher := newControlSessionWatcher(store, dataDir, nil)
+	if err := watcher.rebuildIndex(ctx); err != nil {
+		t.Fatalf("rebuildIndex() error: %v", err)
+	}
+
+	indexPath := filepath.Join(dataDir, "control", "session_index.json")
+	index := map[string]any{}
+	readJSON(t, indexPath, &index)
+	rawSessions, _ := index["sessions"].([]any)
+	if len(rawSessions) != 0 {
+		t.Fatalf("session index should omit stale sessions by default, got %d", len(rawSessions))
+	}
+	summary, _ := index["summary"].(map[string]any)
+	if summary == nil {
+		t.Fatalf("missing summary section")
+	}
+	if got := int(summary["active"].(float64)); got != 0 {
+		t.Fatalf("active summary count = %d, want 0", got)
 	}
 }
 

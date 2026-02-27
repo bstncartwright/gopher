@@ -75,6 +75,8 @@ type DMPipeline struct {
 	errorFallbackMu    sync.Mutex
 	errorFallbacks     map[string]pendingErrorFallback
 	errorFallbackSeq   uint64
+	errorRecoveryMu    sync.Mutex
+	errorRecoveryCount map[string]int
 	processingMu       sync.Mutex
 	processing         map[string]int
 	typingMu           sync.Mutex
@@ -111,6 +113,20 @@ type pendingErrorFallback struct {
 	timer  *time.Timer
 }
 
+type dmErrorClass int
+
+const (
+	dmErrorClassUnknown dmErrorClass = iota
+	dmErrorClassRateLimit
+	dmErrorClassTimeout
+	dmErrorClassConnection
+	dmErrorClassProviderUnavailable
+	dmErrorClassAuth
+	dmErrorClassForbidden
+	dmErrorClassModelNotFound
+	dmErrorClassValidation
+)
+
 const (
 	dmRateLimitFallbackReply = "I hit a temporary rate limit while processing that. Please try again in a moment."
 	dmErrorFallbackReply     = "I ran into an upstream error while processing that message. Please try again."
@@ -118,6 +134,7 @@ const (
 	dmFallbackMinInterval    = 5 * time.Second
 	dmErrorFallbackDelay     = 750 * time.Millisecond
 	dmFallbackDetailMaxChars = 120
+	dmErrorRecoveryMaxTries  = 1
 	dmTypingTimeout          = 3 * time.Second
 	dmTypingKeepaliveDefault = 5 * time.Second
 	heartbeatOKToken         = "HEARTBEAT_OK"
@@ -191,6 +208,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		subscribed:         map[sessionrt.SessionID]struct{}{},
 		lastFallback:       map[string]time.Time{},
 		errorFallbacks:     map[string]pendingErrorFallback{},
+		errorRecoveryCount: map[string]int{},
 		processing:         map[string]int{},
 		typingCancel:       map[string]context.CancelFunc{},
 		pendingFiles:       map[string][]transport.OutboundAttachment{},
@@ -753,6 +771,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldEnable {
+		p.resetErrorRecoveryState(conversationID)
 		p.clearPendingAttachments(conversationID)
 		p.sendTyping(conversationID, true)
 		p.startTypingKeepalive(conversationID)
@@ -781,6 +800,7 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 	p.processingMu.Unlock()
 
 	if shouldDisable {
+		p.clearErrorRecoveryState(conversationID)
 		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
 	}
@@ -843,9 +863,110 @@ func (p *DMPipeline) fireScheduledErrorFallback(conversationID string, seq uint6
 	delete(p.errorFallbacks, conversationID)
 	p.errorFallbackMu.Unlock()
 
+	if shouldAttemptLLMErrorRecovery(rawErr) && p.consumeErrorRecoveryAttempt(conversationID) {
+		if p.dispatchErrorRecoveryPrompt(conversationID, rawErr) {
+			// Wait for recovery completion before the final fallback.
+			p.scheduleErrorFallback(conversationID, rawErr)
+			return
+		}
+	}
+
 	p.finishProcessing(conversationID)
 	p.clearPendingAttachments(conversationID)
 	p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), rawErr)
+}
+
+func (p *DMPipeline) dispatchErrorRecoveryPrompt(conversationID, rawErr string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	sessionID, ok := p.lookupConversationSession(conversationID)
+	if !ok {
+		return false
+	}
+
+	event := sessionrt.Event{
+		SessionID: sessionID,
+		From:      p.recoveryActorForSession(sessionID),
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleUser,
+			Content: buildErrorRecoveryPrompt(rawErr),
+		},
+	}
+	if err := p.manager.SendEvent(context.Background(), event); err != nil {
+		slog.Warn("dm_pipeline: failed to dispatch error recovery prompt",
+			"conversation_id", conversationID,
+			"session_id", sessionID,
+			"error", err,
+		)
+		return false
+	}
+	slog.Info("dm_pipeline: dispatched error recovery prompt",
+		"conversation_id", conversationID,
+		"session_id", sessionID,
+		"error_detail", fallbackErrorDetail(rawErr),
+	)
+	return true
+}
+
+func buildErrorRecoveryPrompt(rawErr string) string {
+	detail := strings.TrimSpace(fallbackErrorDetail(rawErr))
+	if detail == "" {
+		detail = "upstream request failed"
+	}
+	return fmt.Sprintf(
+		"The previous attempt failed with an upstream issue (%s). Continue helping the user if possible. If it cannot be completed now, explain briefly and suggest the next step.",
+		detail,
+	)
+}
+
+func (p *DMPipeline) recoveryActorForSession(sessionID sessionrt.SessionID) sessionrt.ActorID {
+	session, err := p.manager.GetSession(context.Background(), sessionID)
+	if err == nil && session != nil {
+		for actorID, participant := range session.Participants {
+			if participant.Type == sessionrt.ActorHuman && strings.TrimSpace(string(actorID)) != "" {
+				return actorID
+			}
+		}
+	}
+	return externalActorID("dm-error-recovery")
+}
+
+func (p *DMPipeline) consumeErrorRecoveryAttempt(conversationID string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return false
+	}
+	p.errorRecoveryMu.Lock()
+	defer p.errorRecoveryMu.Unlock()
+	count := p.errorRecoveryCount[conversationID]
+	if count >= dmErrorRecoveryMaxTries {
+		return false
+	}
+	p.errorRecoveryCount[conversationID] = count + 1
+	return true
+}
+
+func (p *DMPipeline) resetErrorRecoveryState(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.errorRecoveryMu.Lock()
+	p.errorRecoveryCount[conversationID] = 0
+	p.errorRecoveryMu.Unlock()
+}
+
+func (p *DMPipeline) clearErrorRecoveryState(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.errorRecoveryMu.Lock()
+	delete(p.errorRecoveryCount, conversationID)
+	p.errorRecoveryMu.Unlock()
 }
 
 func (p *DMPipeline) captureAttachmentsFromEvent(conversationID string, event sessionrt.Event) {
@@ -1406,9 +1527,8 @@ func errorTextFromPayload(payload any) string {
 }
 
 func fallbackReplyForError(message string) string {
-	detail := fallbackErrorDetail(message)
-	text := strings.ToLower(strings.TrimSpace(message))
-	if strings.Contains(text, "rate limit") || strings.Contains(text, "429") {
+	classification, detail := classifyDMError(message)
+	if classification == dmErrorClassRateLimit {
 		if detail == "" {
 			detail = "rate limit (429)"
 		}
@@ -1418,28 +1538,48 @@ func fallbackReplyForError(message string) string {
 }
 
 func fallbackErrorDetail(message string) string {
+	_, detail := classifyDMError(message)
+	return detail
+}
+
+func classifyDMError(message string) (dmErrorClass, string) {
 	sanitized := sanitizeFallbackErrorDetail(message)
 	if sanitized == "" {
-		return ""
+		return dmErrorClassUnknown, ""
 	}
 	text := strings.ToLower(sanitized)
 	switch {
 	case strings.Contains(text, "rate limit"), strings.Contains(text, "429"), strings.Contains(text, "too many requests"):
-		return "rate limit (429)"
+		return dmErrorClassRateLimit, "rate limit (429)"
 	case strings.Contains(text, "deadline exceeded"), strings.Contains(text, "timed out"), strings.Contains(text, "timeout"):
-		return "request timed out"
-	case strings.Contains(text, "connection refused"), strings.Contains(text, "upstream connect"), strings.Contains(text, "connection reset"), strings.Contains(text, "dial tcp"), strings.Contains(text, "no such host"):
-		return "connection to provider failed"
-	case strings.Contains(text, "unauthorized"), strings.Contains(text, "invalid api key"), strings.Contains(text, "401"):
-		return "provider authentication failed (401)"
-	case strings.Contains(text, "forbidden"), strings.Contains(text, "403"):
-		return "provider rejected the request (403)"
-	case strings.Contains(text, "model not found"), strings.Contains(text, "404"):
-		return "model not found (404)"
+		return dmErrorClassTimeout, "request timed out"
+	case strings.Contains(text, "connection refused"), strings.Contains(text, "upstream connect"), strings.Contains(text, "connection reset"), strings.Contains(text, "dial tcp"), strings.Contains(text, "no such host"), strings.Contains(text, "network unreachable"), strings.Contains(text, "broken pipe"):
+		return dmErrorClassConnection, "connection to provider failed"
 	case strings.Contains(text, "service unavailable"), strings.Contains(text, "overloaded"), strings.Contains(text, "502"), strings.Contains(text, "503"), strings.Contains(text, "500"), strings.Contains(text, "bad gateway"):
-		return "provider service unavailable"
+		return dmErrorClassProviderUnavailable, "provider service unavailable"
+	case strings.Contains(text, "unauthorized"), strings.Contains(text, "invalid api key"), strings.Contains(text, "401"):
+		return dmErrorClassAuth, "provider authentication failed (401)"
+	case strings.Contains(text, "forbidden"), strings.Contains(text, "403"):
+		return dmErrorClassForbidden, "provider rejected the request (403)"
+	case strings.Contains(text, "model not found"), strings.Contains(text, "404"):
+		return dmErrorClassModelNotFound, "model not found (404)"
+	case strings.Contains(text, "validation failed"), strings.Contains(text, "required field"), strings.Contains(text, "invalid argument"), strings.Contains(text, "schema"):
+		return dmErrorClassValidation, "request validation failed"
 	}
-	return sanitized
+	return dmErrorClassUnknown, sanitized
+}
+
+func shouldAttemptLLMErrorRecovery(message string) bool {
+	classification, detail := classifyDMError(message)
+	switch classification {
+	case dmErrorClassTimeout, dmErrorClassConnection, dmErrorClassProviderUnavailable:
+		return true
+	case dmErrorClassRateLimit, dmErrorClassAuth, dmErrorClassForbidden, dmErrorClassModelNotFound, dmErrorClassValidation:
+		return false
+	default:
+		text := strings.ToLower(strings.TrimSpace(detail))
+		return strings.Contains(text, "temporary") || strings.Contains(text, "try again later")
+	}
 }
 
 func sanitizeFallbackErrorDetail(message string) string {

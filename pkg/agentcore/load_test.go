@@ -53,6 +53,27 @@ func TestLoadAgentDefaultsLegacyMissingNetworkPolicy(t *testing.T) {
 	}
 }
 
+func TestLoadAgentAppliesSafeguardContextManagementDefaults(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	cm := agent.Config.ContextManagement
+	if cm.ModeValue() != "safeguard" {
+		t.Fatalf("context_management.mode = %q, want safeguard", cm.ModeValue())
+	}
+	if cm.OverflowRetryLimitValue() != 3 {
+		t.Fatalf("overflow_retry_limit = %d, want 3", cm.OverflowRetryLimitValue())
+	}
+	if cm.ReserveMinTokensValue() != 20000 {
+		t.Fatalf("reserve_min_tokens = %d, want 20000", cm.ReserveMinTokensValue())
+	}
+	if !cm.ModelCompactionSummaryEnabled() {
+		t.Fatalf("expected model_compaction_summary default enabled")
+	}
+}
+
 func TestLoadAgentDefaultsLegacyMissingShellPolicy(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{
@@ -514,6 +535,9 @@ func TestLoadAgentImplicitlyEnablesDefaultTools(t *testing.T) {
 	if _, ok := agent.Tools.Get("heartbeat"); !ok {
 		t.Fatalf("expected implicit heartbeat tool to be enabled")
 	}
+	if _, ok := agent.Tools.Get("message"); !ok {
+		t.Fatalf("expected implicit message tool to be enabled")
+	}
 	if !containsTool(agent.Config.EnabledTools, "web_search") {
 		t.Fatalf("expected web_search in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
 	}
@@ -540,6 +564,9 @@ func TestLoadAgentDisableDefaultSearchMCPSkipsImplicitTool(t *testing.T) {
 	}
 	if _, ok := agent.Tools.Get("heartbeat"); !ok {
 		t.Fatalf("expected implicit heartbeat tool to remain enabled")
+	}
+	if _, ok := agent.Tools.Get("message"); !ok {
+		t.Fatalf("expected implicit message tool to remain enabled")
 	}
 }
 

@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -33,7 +34,37 @@ type ContextManagementConfig struct {
 	EnablePruning       *bool `json:"enable_pruning,omitempty"`
 	EnableCompaction    *bool `json:"enable_compaction,omitempty"`
 	EnableOverflowRetry *bool `json:"enable_overflow_retry,omitempty"`
+
+	Mode                       string `json:"mode,omitempty"`
+	OverflowRetryLimit         int    `json:"overflow_retry_limit,omitempty"`
+	ReserveMinTokens           int    `json:"reserve_min_tokens,omitempty"`
+	ModelCompactionSummary     *bool  `json:"model_compaction_summary,omitempty"`
+	CompactionSummaryTimeoutMS int    `json:"compaction_summary_timeout_ms,omitempty"`
+	CompactionChunkTokenTarget int    `json:"compaction_chunk_token_target,omitempty"`
+	ToolResultContextMaxChars  int    `json:"tool_result_context_max_chars,omitempty"`
+	ToolResultContextHeadChars int    `json:"tool_result_context_head_chars,omitempty"`
+	ToolResultContextTailChars int    `json:"tool_result_context_tail_chars,omitempty"`
+	RecentToolResultChars      int    `json:"recent_tool_result_chars,omitempty"`
+	HistoricalToolResultChars  int    `json:"historical_tool_result_chars,omitempty"`
 }
+
+const (
+	defaultContextMode                    = "safeguard"
+	defaultOverflowRetryLimit             = 3
+	defaultReserveMinTokens               = 20000
+	defaultCompactionSummaryTimeoutMS     = 12000
+	defaultCompactionChunkTokenTarget     = 1800
+	defaultToolResultContextMaxChars      = 12000
+	defaultToolResultContextHeadChars     = 8000
+	defaultToolResultContextTailChars     = 3000
+	defaultRecentToolResultChars          = 2400
+	defaultHistoricalToolResultChars      = 240
+	maxAllowedOverflowRetryLimit          = 6
+	maxAllowedCompactionSummaryTimeoutMS  = 120000
+	maxAllowedCompactionChunkTokenTarget  = 12000
+	maxAllowedToolResultContextMaxChars   = 200000
+	maxAllowedToolResultContextSliceChars = 120000
+)
 
 func (c ContextManagementConfig) PruningEnabled() bool {
 	return c.EnablePruning == nil || *c.EnablePruning
@@ -45,6 +76,112 @@ func (c ContextManagementConfig) CompactionEnabled() bool {
 
 func (c ContextManagementConfig) OverflowRetryEnabled() bool {
 	return c.EnableOverflowRetry == nil || *c.EnableOverflowRetry
+}
+
+func (c ContextManagementConfig) ModeValue() string {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == "" {
+		return defaultContextMode
+	}
+	switch mode {
+	case "safeguard":
+		return mode
+	default:
+		return defaultContextMode
+	}
+}
+
+func (c ContextManagementConfig) OverflowRetryLimitValue() int {
+	limit := c.OverflowRetryLimit
+	if limit <= 0 {
+		limit = defaultOverflowRetryLimit
+	}
+	if limit > maxAllowedOverflowRetryLimit {
+		limit = maxAllowedOverflowRetryLimit
+	}
+	return limit
+}
+
+func (c ContextManagementConfig) ReserveMinTokensValue() int {
+	if c.ReserveMinTokens <= 0 {
+		return defaultReserveMinTokens
+	}
+	return c.ReserveMinTokens
+}
+
+func (c ContextManagementConfig) ModelCompactionSummaryEnabled() bool {
+	return c.ModelCompactionSummary == nil || *c.ModelCompactionSummary
+}
+
+func (c ContextManagementConfig) CompactionSummaryTimeoutMSValue() int {
+	timeout := c.CompactionSummaryTimeoutMS
+	if timeout <= 0 {
+		timeout = defaultCompactionSummaryTimeoutMS
+	}
+	if timeout > maxAllowedCompactionSummaryTimeoutMS {
+		timeout = maxAllowedCompactionSummaryTimeoutMS
+	}
+	return timeout
+}
+
+func (c ContextManagementConfig) CompactionChunkTokenTargetValue() int {
+	chunkTokens := c.CompactionChunkTokenTarget
+	if chunkTokens <= 0 {
+		chunkTokens = defaultCompactionChunkTokenTarget
+	}
+	if chunkTokens > maxAllowedCompactionChunkTokenTarget {
+		chunkTokens = maxAllowedCompactionChunkTokenTarget
+	}
+	return chunkTokens
+}
+
+func (c ContextManagementConfig) ToolResultContextMaxCharsValue() int {
+	maxChars := c.ToolResultContextMaxChars
+	if maxChars <= 0 {
+		maxChars = defaultToolResultContextMaxChars
+	}
+	if maxChars > maxAllowedToolResultContextMaxChars {
+		maxChars = maxAllowedToolResultContextMaxChars
+	}
+	return maxChars
+}
+
+func (c ContextManagementConfig) ToolResultContextHeadCharsValue() int {
+	headChars := c.ToolResultContextHeadChars
+	if headChars <= 0 {
+		headChars = defaultToolResultContextHeadChars
+	}
+	if headChars > maxAllowedToolResultContextSliceChars {
+		headChars = maxAllowedToolResultContextSliceChars
+	}
+	return headChars
+}
+
+func (c ContextManagementConfig) ToolResultContextTailCharsValue() int {
+	tailChars := c.ToolResultContextTailChars
+	if tailChars <= 0 {
+		tailChars = defaultToolResultContextTailChars
+	}
+	if tailChars > maxAllowedToolResultContextSliceChars {
+		tailChars = maxAllowedToolResultContextSliceChars
+	}
+	return tailChars
+}
+
+func (c ContextManagementConfig) RecentToolResultCharsValue() int {
+	recentChars := c.RecentToolResultChars
+	if recentChars <= 0 {
+		recentChars = defaultRecentToolResultChars
+	}
+	return recentChars
+}
+
+func (c ContextManagementConfig) HistoricalToolResultCharsValue() int {
+	historicalChars := c.HistoricalToolResultChars
+	if historicalChars <= 0 {
+		historicalChars = defaultHistoricalToolResultChars
+	}
+	return historicalChars
 }
 
 type ExecutionConfig struct {
@@ -123,6 +260,7 @@ type Agent struct {
 	Cron                  CronToolService
 	Delegation            DelegationToolService
 	HeartbeatService      HeartbeatToolService
+	MessageService        MessageToolService
 	Heartbeat             AgentHeartbeat
 	KnownAgents           []string
 	CaptureThinkingDeltas bool

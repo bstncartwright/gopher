@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -12,6 +13,53 @@ type mockProvider struct {
 	rounds   []mockRound
 	calls    int
 	contexts []ai.Context
+}
+
+type countingSessionFlusher struct {
+	calls int
+}
+
+func (f *countingSessionFlusher) FlushSession(_ context.Context, _ string) error {
+	f.calls++
+	return nil
+}
+
+type summaryFallbackProvider struct {
+	mainRounds []mockRound
+	mainCalls  int
+}
+
+func (p *summaryFallbackProvider) Stream(_ ai.Model, conversation ai.Context, _ *ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+	stream := ai.CreateAssistantMessageEventStream()
+	if strings.Contains(strings.ToLower(conversation.SystemPrompt), "compressing prior conversation history") {
+		msg := ai.NewAssistantMessage(ai.Model{ID: "mock", API: ai.APIOpenAIResponses, Provider: ai.ProviderOpenAI})
+		msg.StopReason = ai.StopReasonError
+		msg.ErrorMessage = "summary model unavailable"
+		go func() {
+			stream.Push(ai.AssistantMessageEvent{Type: ai.EventError, Reason: ai.StopReasonError, Error: &msg})
+			stream.End(&msg)
+		}()
+		return stream
+	}
+
+	idx := p.mainCalls
+	p.mainCalls++
+	if idx >= len(p.mainRounds) {
+		msg := ai.NewAssistantMessage(ai.Model{ID: "mock", API: ai.APIOpenAIResponses, Provider: ai.ProviderOpenAI})
+		msg.StopReason = ai.StopReasonError
+		msg.ErrorMessage = "unexpected provider call"
+		go func() {
+			stream.Push(ai.AssistantMessageEvent{Type: ai.EventError, Reason: ai.StopReasonError, Error: &msg})
+			stream.End(&msg)
+		}()
+		return stream
+	}
+	round := p.mainRounds[idx]
+	go func() {
+		msg := round.assistant
+		stream.Push(ai.AssistantMessageEvent{Type: ai.EventDone, Reason: msg.StopReason, Message: &msg})
+	}()
+	return stream
 }
 
 type mockRound struct {
@@ -186,6 +234,8 @@ func TestRunTurnRetriesOnceOnContextOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent() error: %v", err)
 	}
+	disableModelSummary := false
+	agent.Config.ContextManagement.ModelCompactionSummary = &disableModelSummary
 
 	overflow := ai.NewAssistantMessage(agent.model)
 	overflow.StopReason = ai.StopReasonError
@@ -223,5 +273,198 @@ func TestRunTurnRetriesOnceOnContextOverflow(t *testing.T) {
 	}
 	if session.LastContextDiagnostics.OverflowRetries != 1 {
 		t.Fatalf("overflow retries = %d, want 1", session.LastContextDiagnostics.OverflowRetries)
+	}
+}
+
+func TestRunTurnRetriesUpToThreeTimesAndFlushesOnce(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	disableModelSummary := false
+	agent.Config.ContextManagement.ModelCompactionSummary = &disableModelSummary
+
+	overflow := ai.NewAssistantMessage(agent.model)
+	overflow.StopReason = ai.StopReasonError
+	overflow.ErrorMessage = "context_length_exceeded"
+	overflow.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: ""}}
+	success := ai.NewAssistantMessage(agent.model)
+	success.StopReason = ai.StopReasonStop
+	success.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "recovered after third retry"}}
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{assistant: overflow},
+			{assistant: overflow},
+			{assistant: overflow},
+			{assistant: success},
+		},
+	}
+	flusher := &countingSessionFlusher{}
+	agent.SessionMemoryFlusher = flusher
+
+	session := agent.NewSession()
+	for i := 0; i < 12; i++ {
+		role := ai.RoleUser
+		if i%2 == 1 {
+			role = ai.RoleAssistant
+		}
+		if role == ai.RoleAssistant {
+			session.Messages = append(session.Messages, ai.Message{
+				Role:      role,
+				Content:   []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "assistant message"}},
+				Timestamp: int64(i + 1),
+			})
+			continue
+		}
+		session.Messages = append(session.Messages, ai.Message{
+			Role:      role,
+			Content:   "user message",
+			Timestamp: int64(i + 1),
+		})
+	}
+
+	result, err := agent.RunTurn(context.Background(), session, TurnInput{UserMessage: "retry hard"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if result.FinalText != "recovered after third retry" {
+		t.Fatalf("final text = %q", result.FinalText)
+	}
+	if provider, ok := agent.Provider.(*mockProvider); !ok || provider.calls != 4 {
+		t.Fatalf("expected 4 provider calls (3 overflows + success), got %#v", agent.Provider)
+	}
+	if flusher.calls != 1 {
+		t.Fatalf("expected exactly one memory flush before retries, got %d", flusher.calls)
+	}
+	if session.LastContextDiagnostics.OverflowRetries != 3 {
+		t.Fatalf("overflow retries = %d, want 3", session.LastContextDiagnostics.OverflowRetries)
+	}
+	if session.LastContextDiagnostics.OverflowStage != "retry_3" {
+		t.Fatalf("overflow stage = %q, want retry_3", session.LastContextDiagnostics.OverflowStage)
+	}
+}
+
+func TestRunTurnCompactionSummaryFallsBackWhenModelSummaryFails(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	overflow := ai.NewAssistantMessage(agent.model)
+	overflow.StopReason = ai.StopReasonError
+	overflow.ErrorMessage = "too many tokens for context window"
+	overflow.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: ""}}
+	success := ai.NewAssistantMessage(agent.model)
+	success.StopReason = ai.StopReasonStop
+	success.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "fallback worked"}}
+
+	agent.Provider = &summaryFallbackProvider{
+		mainRounds: []mockRound{
+			{assistant: overflow},
+			{assistant: success},
+		},
+	}
+
+	session := agent.NewSession()
+	for i := 0; i < 8; i++ {
+		session.Messages = append(session.Messages, ai.Message{
+			Role:      ai.RoleUser,
+			Content:   "message for compaction",
+			Timestamp: int64(i + 1),
+		})
+	}
+	result, err := agent.RunTurn(context.Background(), session, TurnInput{UserMessage: "trigger overflow"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if result.FinalText != "fallback worked" {
+		t.Fatalf("final text = %q, want fallback worked", result.FinalText)
+	}
+	if session.LastContextDiagnostics.SummaryStrategy != "deterministic_fallback" {
+		t.Fatalf("summary strategy = %q, want deterministic_fallback", session.LastContextDiagnostics.SummaryStrategy)
+	}
+	if len(session.LastContextDiagnostics.Warnings) == 0 {
+		t.Fatalf("expected warning indicating model summary fallback")
+	}
+}
+
+func TestRunTurnCapsToolResultContextPayloadButKeepsEmittedResult(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:fs"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	largeContent := strings.Repeat("abcdefghijklmnopqrstuvwxyz0123456789", 600)
+	mustWriteFile(t, filepath.Join(workspace, "big.txt"), largeContent)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	roundOne := ai.NewAssistantMessage(agent.model)
+	roundOne.StopReason = ai.StopReasonToolUse
+	roundOne.Content = []ai.ContentBlock{
+		{Type: ai.ContentTypeToolCall, ID: "read_big", Name: "read", Arguments: map[string]any{"path": "big.txt"}},
+	}
+	roundTwo := ai.NewAssistantMessage(agent.model)
+	roundTwo.StopReason = ai.StopReasonStop
+	roundTwo.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{assistant: roundOne},
+			{assistant: roundTwo},
+		},
+	}
+
+	session := agent.NewSession()
+	result, err := agent.RunTurn(context.Background(), session, TurnInput{UserMessage: "read big file"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if result.FinalText != "done" {
+		t.Fatalf("final text = %q, want done", result.FinalText)
+	}
+
+	var emittedToolResultContentLen int
+	for _, event := range result.Events {
+		if event.Type != EventTypeToolResult {
+			continue
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok {
+			continue
+		}
+		resultMap, ok := payload["result"].(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := resultMap["content"].(string)
+		emittedToolResultContentLen = len(content)
+	}
+	if emittedToolResultContentLen <= agent.Config.ContextManagement.ToolResultContextMaxCharsValue() {
+		t.Fatalf("expected emitted tool.result payload to keep full content, len=%d", emittedToolResultContentLen)
+	}
+
+	foundContextTruncated := false
+	for _, msg := range session.Messages {
+		if msg.Role != ai.RoleToolResult {
+			continue
+		}
+		blocks, ok := msg.ContentBlocks()
+		if !ok || len(blocks) == 0 {
+			continue
+		}
+		if len(blocks[0].Text) > agent.Config.ContextManagement.ToolResultContextMaxCharsValue()+200 {
+			t.Fatalf("expected context toolResult text to be capped, len=%d", len(blocks[0].Text))
+		}
+		if strings.Contains(blocks[0].Text, "\"truncated\": true") {
+			foundContextTruncated = true
+		}
+	}
+	if !foundContextTruncated {
+		t.Fatalf("expected context payload truncation envelope in toolResult message")
 	}
 }

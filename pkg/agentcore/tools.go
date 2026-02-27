@@ -7,6 +7,10 @@ type simpleToolRegistry struct {
 	order []string
 }
 
+type toolAvailability interface {
+	Available(input ToolInput) bool
+}
+
 func NewToolRegistry(tools []Tool) ToolRegistry {
 	registry := &simpleToolRegistry{
 		tools: make(map[string]Tool, len(tools)),
@@ -87,6 +91,7 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 		case "group:collaboration":
 			add(&delegateTool{})
 			add(&heartbeatTool{})
+			add(&messageTool{})
 		case "group:web":
 			add(newWebSearchMCPTool())
 		case "shell", "shell.exec", "exec":
@@ -101,6 +106,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&delegateTool{})
 		case "heartbeat":
 			add(&heartbeatTool{})
+		case "message":
+			add(&messageTool{})
 		case "web_search", "search_mcp", "search":
 			add(newWebSearchMCPTool())
 		case "git", "git.status", "git.diff":
@@ -122,4 +129,25 @@ func toolSchemasToAITools(registry ToolRegistry) []ai.Tool {
 		})
 	}
 	return out
+}
+
+func activeToolRegistry(registry ToolRegistry, input ToolInput) ToolRegistry {
+	if registry == nil {
+		return NewToolRegistry(nil)
+	}
+	schemas := registry.Schemas()
+	active := make([]Tool, 0, len(schemas))
+	for _, schema := range schemas {
+		tool, ok := registry.Get(schema.Name)
+		if !ok || tool == nil {
+			continue
+		}
+		if availability, ok := tool.(toolAvailability); ok {
+			if !availability.Available(input) {
+				continue
+			}
+		}
+		active = append(active, tool)
+	}
+	return NewToolRegistry(active)
 }

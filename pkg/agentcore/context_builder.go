@@ -19,10 +19,14 @@ type memoryExistence interface {
 }
 
 type providerContextBuildOptions struct {
-	Mode                PromptMode
-	CompactionSummaries []string
-	OverflowRetries     int
-	Warnings            []string
+	Mode                         PromptMode
+	CompactionSummaries          []string
+	OverflowRetries              int
+	OverflowStage                string
+	MaxMemories                  int
+	DisableRetrievedMemory       bool
+	EnableModelCompactionSummary bool
+	Warnings                     []string
 }
 
 func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessage string, modeOverride ...PromptMode) (ai.Context, error) {
@@ -31,7 +35,8 @@ func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessag
 		mode = normalizePromptMode(modeOverride[0])
 	}
 	out, _, err := a.buildProviderContextDetailedWithOptions(ctx, s, userMessage, providerContextBuildOptions{
-		Mode: mode,
+		Mode:                         mode,
+		EnableModelCompactionSummary: true,
 	})
 	return out, err
 }
@@ -41,7 +46,10 @@ func (a *Agent) buildProviderContextDetailed(ctx context.Context, s *Session, us
 	if len(modeOverride) > 0 {
 		mode = normalizePromptMode(modeOverride[0])
 	}
-	return a.buildProviderContextDetailedWithOptions(ctx, s, userMessage, providerContextBuildOptions{Mode: mode})
+	return a.buildProviderContextDetailedWithOptions(ctx, s, userMessage, providerContextBuildOptions{
+		Mode:                         mode,
+		EnableModelCompactionSummary: true,
+	})
 }
 
 func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *Session, userMessage string, opts providerContextBuildOptions) (ai.Context, ctxbundle.ContextDiagnostics, error) {
@@ -49,6 +57,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 		ctx = context.Background()
 	}
 	mode := normalizePromptMode(opts.Mode)
+	activeTools := activeToolRegistry(a.Tools, ToolInput{Agent: a, Session: s})
 
 	working, err := a.Memory.LoadWorking()
 	if err != nil {
@@ -74,7 +83,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	}
 
 	skillsPrompt := ""
-	if mode == PromptModeFull && hasTool(a.Tools, "read") {
+	if mode == PromptModeFull && hasTool(activeTools, "read") {
 		skillsPrompt = strings.TrimSpace(formatSkillsForPrompt(a.skills))
 	}
 
@@ -83,7 +92,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 		AgentID:        a.ID,
 		KnownAgents:    a.KnownAgents,
 		PromptMode:     mode,
-		Tools:          a.Tools,
+		Tools:          activeTools,
 		Policies:       a.Policies,
 		SkillsPrompt:   skillsPrompt,
 		ContextFiles:   contextFiles,
@@ -110,7 +119,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	})
 
 	var retrieved []memory.MemoryRecord
-	if mode == PromptModeFull {
+	if mode == PromptModeFull && !opts.DisableRetrievedMemory {
 		retrieved = a.retrieveLongTermMemory(ctx, s, userMessage)
 	}
 
@@ -134,6 +143,15 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 		},
 	}
 	if a.Assembler != nil {
+		maxMemories := opts.MaxMemories
+		if maxMemories <= 0 {
+			maxMemories = 8
+		}
+		enableRepair := a.Config.ContextManagement.ModeValue() == "safeguard"
+		summaryBuilder := ctxbundle.CompactionSummaryBuilder(nil)
+		if opts.EnableModelCompactionSummary && a.Config.ContextManagement.ModelCompactionSummaryEnabled() {
+			summaryBuilder = a.newModelCompactionSummaryBuilder(s)
+		}
 		assembled, err := a.Assembler.Build(ctx, ctxbundle.ContextRequest{
 			BaseSystemPrompt:    systemPrompt,
 			Messages:            messages,
@@ -141,12 +159,21 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 			CompactionSummaries: compactionSummaries,
 			CurrentTask:         expandedUserMessage,
 			MaxTokens:           a.model.ContextWindow,
+			MaxMemories:         maxMemories,
+			ReserveMinTokens:    a.Config.ContextManagement.ReserveMinTokensValue(),
 			EnablePruning:       a.Config.ContextManagement.PruningEnabled(),
+			EnableRepair:        enableRepair,
 			EnableCompaction:    a.Config.ContextManagement.CompactionEnabled(),
-			BootstrapTokens:     bootstrapTokens,
-			WorkingTokens:       workingTokens,
-			OverflowRetries:     opts.OverflowRetries,
-			Warnings:            opts.Warnings,
+			PruneOptions: ctxbundle.PruneOptions{
+				MaxHistoricalToolResultChars: a.Config.ContextManagement.HistoricalToolResultCharsValue(),
+				MaxRecentToolResultChars:     a.Config.ContextManagement.RecentToolResultCharsValue(),
+			},
+			BootstrapTokens:          bootstrapTokens,
+			WorkingTokens:            workingTokens,
+			OverflowRetries:          opts.OverflowRetries,
+			OverflowStage:            opts.OverflowStage,
+			Warnings:                 opts.Warnings,
+			CompactionSummaryBuilder: summaryBuilder,
 		})
 		if err != nil {
 			return ai.Context{}, ctxbundle.ContextDiagnostics{}, fmt.Errorf("assemble context: %w", err)
@@ -177,7 +204,7 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	return ai.Context{
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
-		Tools:        toolSchemasToAITools(a.Tools),
+		Tools:        toolSchemasToAITools(activeTools),
 	}, diagnostics, nil
 }
 

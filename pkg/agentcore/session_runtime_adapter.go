@@ -290,8 +290,11 @@ func (a *SessionRuntimeAdapter) buildStatePatch(sessionData *Session) map[string
 		"session_message_count":        len(sessionData.Messages),
 		"compaction_summary_count":     len(sessionData.CompactionSummaries),
 		"reserve_tokens":               diagnostics.ReserveTokens,
+		"reserve_floor_tokens":         diagnostics.ReserveFloorTokens,
 		"estimated_input_tokens":       diagnostics.EstimatedInputTokens,
 		"overflow_retries":             diagnostics.OverflowRetries,
+		"overflow_stage":               diagnostics.OverflowStage,
+		"summary_strategy":             diagnostics.SummaryStrategy,
 		"recent_messages_used_tokens":  diagnostics.RecentMessagesLane.UsedTokens,
 		"recent_messages_cap_tokens":   diagnostics.RecentMessagesLane.CapTokens,
 		"retrieved_memory_used_tokens": diagnostics.RetrievedMemoryLane.UsedTokens,
@@ -303,8 +306,10 @@ func (a *SessionRuntimeAdapter) buildStatePatch(sessionData *Session) map[string
 		"bootstrap_used_tokens":        diagnostics.BootstrapLane.UsedTokens,
 		"bootstrap_cap_tokens":         diagnostics.BootstrapLane.CapTokens,
 		"selected_memory_count":        len(diagnostics.SelectedMemoryIDs),
+		"tool_result_truncation_count": diagnostics.ToolResultTruncation,
 		"warnings":                     warnings,
 		"prune_actions":                pruneActions,
 		"compaction_actions":           compactionActions,
+		"pair_repair_actions":          append([]string(nil), diagnostics.PairRepairActions...),
 	}
 }

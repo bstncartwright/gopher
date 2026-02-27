@@ -78,9 +78,40 @@
                 <span class="timeline-activity-dot" aria-hidden="true"></span>
                 <span class="timeline-activity-label" data-activity-label>Idle</span>
               </div>
+              <div id="timeline-session-state" class="timeline-session-state status-unknown" aria-live="polite">Status: unknown</div>
               <div class="chip-group timeline-view-toggle" role="group" aria-label="Timeline payload view">
                 <button type="button" class="chip" data-view-toggle="digest" aria-pressed="true">Work view</button>
                 <button type="button" class="chip" data-view-toggle="raw" aria-pressed="false">Raw JSON</button>
+              </div>
+            </div>
+            <section class="timeline-summary" aria-live="polite" aria-label="Session summary">
+              <article class="timeline-summary-card">
+                <p class="timeline-summary-label">Last Error</p>
+                <p class="timeline-summary-value" data-summary-last-error>None</p>
+              </article>
+              <article class="timeline-summary-card">
+                <p class="timeline-summary-label">Last User Message</p>
+                <p class="timeline-summary-value" data-summary-last-user>None</p>
+              </article>
+              <article class="timeline-summary-card">
+                <p class="timeline-summary-label">Last Agent Response</p>
+                <p class="timeline-summary-value" data-summary-last-agent>None</p>
+              </article>
+            </section>
+            <div class="timeline-counts" data-summary-counts aria-label="Event counts"></div>
+            <div class="chip-group timeline-recents" data-timeline-recents aria-label="Recent sessions"></div>
+            <div class="timeline-filter-controls">
+              <div class="chip-group" role="group" aria-label="Timeline event filter">
+                <button type="button" class="chip" data-timeline-filter="all" aria-pressed="true">All</button>
+                <button type="button" class="chip" data-timeline-filter="user" aria-pressed="false">User</button>
+                <button type="button" class="chip" data-timeline-filter="agent" aria-pressed="false">Agent</button>
+                <button type="button" class="chip" data-timeline-filter="tools" aria-pressed="false">Tools</button>
+                <button type="button" class="chip" data-timeline-filter="control" aria-pressed="false">Control</button>
+                <button type="button" class="chip" data-timeline-filter="errors" aria-pressed="false">Errors</button>
+              </div>
+              <div class="chip-group" role="group" aria-label="Timeline focus toggles">
+                <button type="button" class="chip" data-anomaly-toggle aria-pressed="false">Only anomalies</button>
+                <button type="button" class="chip" data-group-noise-toggle aria-pressed="true">Group noise</button>
               </div>
             </div>
           </header>
@@ -210,6 +241,14 @@
         return sessionFromLocation();
       }
 
+      function normalizeTimelineFilter(value) {
+        var candidate = normalize(value);
+        if (candidate === "all" || candidate === "user" || candidate === "agent" || candidate === "tools" || candidate === "control" || candidate === "errors") {
+          return candidate;
+        }
+        return "all";
+      }
+
       var state = {
         sessionID: resolveInitialSessionID(),
         lastSeq: 0,
@@ -220,6 +259,9 @@
         payloadView: localStorage.getItem("gopher.panel.payloadView") === "raw" ? "raw" : "digest",
         sessionQuery: "",
         statusFilter: "all",
+        timelineFilter: normalizeTimelineFilter(localStorage.getItem("gopher.panel.timelineFilter") || "all"),
+        anomalyOnly: localStorage.getItem("gopher.panel.anomalyOnly") === "true",
+        groupNoise: localStorage.getItem("gopher.panel.groupNoise") !== "false",
         activeTab: resolveInitialTab(),
         previousTab: ""
       };
@@ -438,6 +480,202 @@
         return clip(summarizeValue(parsed), 220);
       }
 
+      function formatRelativeTime(value) {
+        var text = String(value || "").trim();
+        if (!text || text === "-") {
+          return "-";
+        }
+        var timestamp = Date.parse(text);
+        if (!isFinite(timestamp)) {
+          return text;
+        }
+        var diffMS = Date.now() - timestamp;
+        var future = diffMS < 0;
+        var absSeconds = Math.floor(Math.abs(diffMS) / 1000);
+        if (absSeconds < 8) {
+          return "just now";
+        }
+        var amount = 0;
+        var unit = "";
+        if (absSeconds < 60) {
+          amount = absSeconds;
+          unit = "s";
+        } else if (absSeconds < 3600) {
+          amount = Math.floor(absSeconds / 60);
+          unit = "m";
+        } else if (absSeconds < 86400) {
+          amount = Math.floor(absSeconds / 3600);
+          unit = "h";
+        } else if (absSeconds < 86400 * 7) {
+          amount = Math.floor(absSeconds / 86400);
+          unit = "d";
+        } else {
+          var date = new Date(timestamp);
+          return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        }
+        if (future) {
+          return "in " + amount + unit;
+        }
+        return amount + unit + " ago";
+      }
+
+      function applyRelativeTimes(root) {
+        var scope = root || document;
+        var nodes = scope.querySelectorAll("[data-relative-time]");
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          var absolute = node.getAttribute("data-absolute-time") || node.getAttribute("datetime") || "";
+          if (!absolute || absolute === "-") {
+            continue;
+          }
+          var relative = formatRelativeTime(absolute);
+          node.textContent = relative;
+          node.setAttribute("title", absolute);
+          node.setAttribute("aria-label", relative + " (" + absolute + ")");
+        }
+      }
+
+      function eventCategory(type, payload) {
+        var normalizedType = normalize(type);
+        if (normalizedType === "message") {
+          var role = normalize(pickString(payload, ["role", "speaker"]));
+          if (role === "user") {
+            return "user";
+          }
+          if (role === "agent") {
+            return "agent";
+          }
+          return "system";
+        }
+        if (normalizedType === "tool_call" || normalizedType === "tool_result") {
+          return "tools";
+        }
+        if (normalizedType === "control") {
+          return "control";
+        }
+        if (normalizedType === "error") {
+          return "errors";
+        }
+        return "other";
+      }
+
+      function anomalyFlag(type, payload, digestText) {
+        var normalizedType = normalize(type);
+        if (normalizedType === "error") {
+          return true;
+        }
+        if (normalizedType === "tool_call" || normalizedType === "tool_result") {
+          var toolResult = pick(payload, ["tool_result"]);
+          var statusPayload = toolResult && typeof toolResult === "object" ? toolResult : payload;
+          var status = normalize(pickString(statusPayload, ["status", "state"]));
+          if (status && status !== "ok" && status !== "success" && status !== "completed") {
+            return true;
+          }
+          var toolError = pick(statusPayload, ["error", "stderr"]);
+          if (toolError !== null && toolError !== undefined && String(toolError).trim() !== "") {
+            return true;
+          }
+        }
+        if (normalizedType === "control") {
+          var controlAction = normalize(pickString(payload, ["action", "reason", "state", "status"]));
+          if (controlAction.indexOf("fail") >= 0 || controlAction.indexOf("cancel") >= 0 || controlAction.indexOf("abort") >= 0) {
+            return true;
+          }
+        }
+        var digest = normalize(digestText);
+        if (digest.indexOf("error") >= 0 || digest.indexOf("failed") >= 0 || digest.indexOf("exception") >= 0 || digest.indexOf("overflow") >= 0) {
+          return true;
+        }
+        return false;
+      }
+
+      function eventNoiseDescriptor(type, payload) {
+        var normalizedType = normalize(type);
+        if (normalizedType === "tool_call" || normalizedType === "tool_result") {
+          var toolName = pickString(payload, ["tool_name", "name", "tool", "id"]) || "tool";
+          var args = pick(payload, ["arguments", "args", "input", "params", "payload"]);
+          var action = pickString(args, ["action", "command", "name"]);
+          var key = "tool:" + normalize(toolName);
+          var label = toolName;
+          if (action) {
+            key += ":" + normalize(action);
+            label += "/" + action;
+          }
+          return { key: key, label: label };
+        }
+        if (normalizedType === "control") {
+          var controlAction = pickString(payload, ["action", "reason", "state", "status"]);
+          if (!controlAction) {
+            return null;
+          }
+          return {
+            key: "control:" + normalize(controlAction),
+            label: "control/" + controlAction
+          };
+        }
+        return null;
+      }
+
+      function keyFacts(type, payload, digestText) {
+        var normalizedType = normalize(type);
+        var parts = [];
+        if (normalizedType === "message") {
+          var role = pickString(payload, ["role", "speaker"]) || "message";
+          var content = extractText(pick(payload, ["content", "text", "message"]));
+          parts.push("Role: " + role);
+          if (content) {
+            parts.push("Content: " + clip(content, 120));
+          }
+        } else if (normalizedType === "tool_call" || normalizedType === "tool_result") {
+          var name = pickString(payload, ["tool_name", "name", "tool", "id"]) || "tool";
+          var toolResult = pick(payload, ["tool_result"]);
+          var args = pick(payload, ["arguments", "args", "input", "params", "payload"]);
+          var status = pickString(toolResult && typeof toolResult === "object" ? toolResult : payload, ["status", "state"]);
+          var action = pickString(args, ["action", "command", "name"]);
+          parts.push("Tool: " + name);
+          if (action) {
+            parts.push("Action: " + clip(action, 80));
+          }
+          if (status) {
+            parts.push("Status: " + status);
+          }
+        } else if (normalizedType === "error") {
+          var message = pickString(payload, ["error", "message", "detail", "reason"]);
+          if (!message) {
+            message = clip(digestText, 120);
+          }
+          parts.push("Error: " + clip(message, 120));
+        } else if (normalizedType === "control") {
+          var controlAction = pickString(payload, ["action", "command", "status", "state"]) || "event";
+          var controlReason = pickString(payload, ["reason", "message", "detail"]);
+          parts.push("Action: " + controlAction);
+          if (controlReason) {
+            parts.push("Reason: " + clip(controlReason, 90));
+          }
+        } else {
+          var keys = payload && typeof payload === "object" ? Object.keys(payload) : [];
+          if (keys.length) {
+            parts.push("Keys: " + keys.slice(0, 5).join(", "));
+          }
+          parts.push("Summary: " + clip(digestText, 120));
+        }
+        return parts.join("  •  ");
+      }
+
+      function updateSessionStatusIndicator() {
+        var statusNode = document.getElementById("timeline-session-state");
+        if (!statusNode) {
+          return;
+        }
+        var card = selectedSessionCard();
+        var status = normalize(card ? card.getAttribute("data-session-status") || "" : "");
+        if (!status) {
+          status = "unknown";
+        }
+        statusNode.className = "timeline-session-state status-" + status;
+        statusNode.textContent = "Status: " + status;
+      }
+
       function closeSource() {
         if (state.source) {
           state.source.close();
@@ -580,6 +818,7 @@
           }
         }
         syncSelectedActivityIndicator();
+        renderRecentSessions();
       }
 
       function selectedSessionCard() {
@@ -610,6 +849,7 @@
         if (label) {
           label.textContent = isWorking ? "Working" : "Idle";
         }
+        updateSessionStatusIndicator();
       }
 
       function animateIncomingTimelineRows(previousSeq) {
@@ -667,7 +907,13 @@
           if (hadSession) {
             setURLState({ replaceHistory: true });
           }
+          var detail = document.getElementById("session-detail");
+          if (detail) {
+            detail.innerHTML = '<div class="empty-state">No sessions match the current filter.</div>';
+          }
           syncSelectedActivityIndicator();
+          renderRecentSessions();
+          summarizeTimeline();
           return;
         }
 
@@ -737,6 +983,41 @@
           chip.classList.toggle("is-active", selected);
           chip.setAttribute("aria-pressed", selected ? "true" : "false");
         }
+        applyRelativeTimes(document.getElementById("sessions-list"));
+        renderRecentSessions();
+      }
+
+      function renderRecentSessions() {
+        var container = document.querySelector("[data-timeline-recents]");
+        if (!container) {
+          return;
+        }
+        var cards = document.querySelectorAll("#sessions-list [data-session-card]:not(.session-hidden)");
+        container.innerHTML = "";
+        if (!cards.length) {
+          return;
+        }
+        var limit = window.matchMedia("(max-width: 1100px)").matches ? 4 : 6;
+        for (var i = 0; i < cards.length && i < limit; i++) {
+          var card = cards[i];
+          var sessionID = card.getAttribute("data-session-id") || "";
+          if (!sessionID) {
+            continue;
+          }
+          var title = card.getAttribute("data-session-title") || sessionID;
+          var status = normalize(card.getAttribute("data-session-status") || "unknown");
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "chip recent-chip status-" + status;
+          button.setAttribute("data-recent-session", sessionID);
+          button.setAttribute("data-recent-last-seq", card.getAttribute("data-last-seq") || "0");
+          button.textContent = clip(title, 22);
+          var selected = sessionID === state.sessionID;
+          button.classList.toggle("is-active", selected);
+          button.setAttribute("aria-pressed", selected ? "true" : "false");
+          button.setAttribute("aria-label", "Open session " + title + " (" + status + ")");
+          container.appendChild(button);
+        }
       }
 
       function applyPayloadView() {
@@ -751,6 +1032,220 @@
           toggle.classList.toggle("is-active", selected);
           toggle.setAttribute("aria-pressed", selected ? "true" : "false");
         }
+      }
+
+      function applyTimelineFilterControls() {
+        var filterChips = document.querySelectorAll("[data-timeline-filter]");
+        for (var i = 0; i < filterChips.length; i++) {
+          var chip = filterChips[i];
+          var filter = chip.getAttribute("data-timeline-filter") || "all";
+          var selected = filter === state.timelineFilter;
+          chip.classList.toggle("is-active", selected);
+          chip.setAttribute("aria-pressed", selected ? "true" : "false");
+        }
+
+        var anomalyToggle = document.querySelector("[data-anomaly-toggle]");
+        if (anomalyToggle) {
+          anomalyToggle.classList.toggle("is-active", state.anomalyOnly);
+          anomalyToggle.setAttribute("aria-pressed", state.anomalyOnly ? "true" : "false");
+        }
+
+        var groupToggle = document.querySelector("[data-group-noise-toggle]");
+        if (groupToggle) {
+          groupToggle.classList.toggle("is-active", state.groupNoise);
+          groupToggle.setAttribute("aria-pressed", state.groupNoise ? "true" : "false");
+        }
+      }
+
+      function timelineEventsContainer() {
+        return document.querySelector("#session-detail [data-timeline-events]");
+      }
+
+      function clearNoiseGroups() {
+        var container = timelineEventsContainer();
+        if (!container) {
+          return;
+        }
+        var groups = container.querySelectorAll("[data-event-group]");
+        for (var i = 0; i < groups.length; i++) {
+          var group = groups[i];
+          var body = group.querySelector("[data-event-group-body]");
+          if (body) {
+            while (body.firstChild) {
+              container.insertBefore(body.firstChild, group);
+            }
+          }
+          group.remove();
+        }
+      }
+
+      function buildNoiseGroups() {
+        clearNoiseGroups();
+        if (!state.groupNoise) {
+          return;
+        }
+        var container = timelineEventsContainer();
+        if (!container) {
+          return;
+        }
+        var rows = container.querySelectorAll("[data-event-row]");
+        if (rows.length < 4) {
+          return;
+        }
+
+        var list = [];
+        for (var i = 0; i < rows.length; i++) {
+          list.push(rows[i]);
+        }
+
+        var groupStart = 0;
+        while (groupStart < list.length) {
+          var first = list[groupStart];
+          var groupKey = first.getAttribute("data-noise-group-key") || "";
+          if (!groupKey) {
+            groupStart++;
+            continue;
+          }
+          var groupEnd = groupStart + 1;
+          while (groupEnd < list.length && (list[groupEnd].getAttribute("data-noise-group-key") || "") === groupKey) {
+            groupEnd++;
+          }
+          var count = groupEnd - groupStart;
+          if (count >= 3) {
+            var label = first.getAttribute("data-noise-group-label") || "repeated activity";
+            var startSeq = first.getAttribute("data-event-seq") || "?";
+            var endSeq = list[groupEnd - 1].getAttribute("data-event-seq") || "?";
+            var details = document.createElement("details");
+            details.className = "event-group";
+            details.setAttribute("data-event-group", "true");
+
+            var summary = document.createElement("summary");
+            summary.className = "event-group-summary";
+            var title = document.createElement("span");
+            title.className = "event-group-title";
+            title.textContent = count + " repeated " + label + " events";
+            var meta = document.createElement("span");
+            meta.className = "event-group-meta";
+            meta.setAttribute("data-event-group-meta", "true");
+            meta.textContent = "Seq " + startSeq + " to " + endSeq;
+            meta.setAttribute("data-base-meta", meta.textContent);
+            summary.appendChild(title);
+            summary.appendChild(meta);
+            details.appendChild(summary);
+
+            var body = document.createElement("div");
+            body.className = "event-group-body";
+            body.setAttribute("data-event-group-body", "true");
+            details.appendChild(body);
+            container.insertBefore(details, first);
+
+            for (var j = groupStart; j < groupEnd; j++) {
+              body.appendChild(list[j]);
+            }
+          }
+          groupStart = groupEnd;
+        }
+      }
+
+      function applyTimelineFilters() {
+        var rows = document.querySelectorAll("#session-detail [data-event-row]");
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var category = row.getAttribute("data-event-category") || "other";
+          var anomaly = row.getAttribute("data-event-anomaly") === "true";
+          var typeMatch = state.timelineFilter === "all" || state.timelineFilter === category;
+          var anomalyMatch = !state.anomalyOnly || anomaly;
+          row.classList.toggle("event-filter-hidden", !(typeMatch && anomalyMatch));
+        }
+
+        var groups = document.querySelectorAll("#session-detail [data-event-group]");
+        for (var j = 0; j < groups.length; j++) {
+          var group = groups[j];
+          var members = group.querySelectorAll("[data-event-row]");
+          var visible = 0;
+          for (var k = 0; k < members.length; k++) {
+            if (!members[k].classList.contains("event-filter-hidden")) {
+              visible++;
+            }
+          }
+          group.classList.toggle("event-filter-hidden", visible === 0);
+          var meta = group.querySelector("[data-event-group-meta]");
+          if (meta) {
+            var base = meta.getAttribute("data-base-meta") || meta.textContent || "";
+            if (visible > 0 && visible < members.length) {
+              meta.textContent = base + " · showing " + visible + "/" + members.length;
+            } else {
+              meta.textContent = base;
+            }
+          }
+        }
+      }
+
+      function renderSummaryCounts(counts) {
+        var container = document.querySelector("[data-summary-counts]");
+        if (!container) {
+          return;
+        }
+        container.innerHTML = "";
+        var order = [
+          { key: "user", label: "User" },
+          { key: "agent", label: "Agent" },
+          { key: "tools", label: "Tools" },
+          { key: "control", label: "Control" },
+          { key: "errors", label: "Errors" }
+        ];
+        for (var i = 0; i < order.length; i++) {
+          var item = order[i];
+          var value = counts[item.key] || 0;
+          if (value <= 0) {
+            continue;
+          }
+          var pill = document.createElement("span");
+          pill.className = "timeline-count-pill timeline-count-" + item.key;
+          pill.textContent = item.label + ": " + value;
+          container.appendChild(pill);
+        }
+      }
+
+      function summarizeTimeline() {
+        var rows = document.querySelectorAll("#session-detail [data-event-row]");
+        var counts = { user: 0, agent: 0, tools: 0, control: 0, errors: 0 };
+        var lastError = "None";
+        var lastUser = "None";
+        var lastAgent = "None";
+
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var category = row.getAttribute("data-event-category") || "other";
+          if (Object.prototype.hasOwnProperty.call(counts, category)) {
+            counts[category] += 1;
+          }
+          var digestNode = row.querySelector("[data-event-digest]");
+          var digest = digestNode ? clip(digestNode.textContent || "", 140) : "No summary";
+          if (row.getAttribute("data-event-anomaly") === "true") {
+            lastError = digest;
+          }
+          if (category === "user") {
+            lastUser = digest;
+          }
+          if (category === "agent") {
+            lastAgent = digest;
+          }
+        }
+
+        var lastErrorNode = document.querySelector("[data-summary-last-error]");
+        if (lastErrorNode) {
+          lastErrorNode.textContent = lastError;
+        }
+        var lastUserNode = document.querySelector("[data-summary-last-user]");
+        if (lastUserNode) {
+          lastUserNode.textContent = lastUser;
+        }
+        var lastAgentNode = document.querySelector("[data-summary-last-agent]");
+        if (lastAgentNode) {
+          lastAgentNode.textContent = lastAgent;
+        }
+        renderSummaryCounts(counts);
       }
 
       function applyTabState(options) {
@@ -779,6 +1274,7 @@
         }
 
         if (state.activeTab === "sessions") {
+          applyTimelineFilterControls();
           ensureSelectedSession({ forceLatest: forceLatest || (state.previousTab !== "sessions" && !state.sessionID) });
         } else {
           setSessionDrawerOpen(false);
@@ -798,9 +1294,40 @@
           var rawNode = row.querySelector(".event-raw pre");
           var rawText = rawNode ? rawNode.textContent || "" : "";
           var payload = safeParseJSON(rawText);
-          var summary = summarizeEvent(row.getAttribute("data-event-type") || "", payload, rawText);
+          var eventType = row.getAttribute("data-event-type") || "";
+          var summary = summarizeEvent(eventType, payload, rawText);
           digestNode.textContent = summary || "No payload details.";
+          row.setAttribute("data-event-category", eventCategory(eventType, payload));
+          row.setAttribute("data-event-anomaly", anomalyFlag(eventType, payload, summary) ? "true" : "false");
+
+          var descriptor = eventNoiseDescriptor(eventType, payload);
+          if (descriptor && descriptor.key) {
+            row.setAttribute("data-noise-group-key", descriptor.key);
+            row.setAttribute("data-noise-group-label", descriptor.label || "repeated activity");
+          } else {
+            row.removeAttribute("data-noise-group-key");
+            row.removeAttribute("data-noise-group-label");
+          }
+
+          var keyFactsNode = row.querySelector("[data-event-keyfacts]");
+          if (keyFactsNode) {
+            keyFactsNode.textContent = keyFacts(eventType, payload, summary);
+          }
+          var detailsNode = row.querySelector("[data-payload-details]");
+          var payloadSummary = row.querySelector("[data-payload-summary]");
+          if (payloadSummary) {
+            var keyCount = payload && typeof payload === "object" ? Object.keys(payload).length : 0;
+            payloadSummary.textContent = keyCount > 0 ? "View payload JSON (" + keyCount + " keys)" : "View payload JSON";
+          }
+          if (detailsNode) {
+            detailsNode.open = false;
+          }
         }
+        buildNoiseGroups();
+        applyTimelineFilters();
+        applyTimelineFilterControls();
+        summarizeTimeline();
+        applyRelativeTimes(document.getElementById("session-detail"));
       }
 
       document.body.addEventListener("click", function (event) {
@@ -844,6 +1371,16 @@
           return;
         }
 
+        var recent = event.target.closest("[data-recent-session]");
+        if (recent) {
+          event.preventDefault();
+          selectSession(recent.getAttribute("data-recent-session") || "", recent.getAttribute("data-recent-last-seq") || "0", {
+            loadDetail: true
+          });
+          setSessionDrawerOpen(false);
+          return;
+        }
+
         var viewToggle = event.target.closest("[data-view-toggle]");
         if (viewToggle) {
           event.preventDefault();
@@ -859,6 +1396,40 @@
           state.statusFilter = statusFilter.getAttribute("data-status-filter") || "all";
           applySessionFilters();
           ensureSelectedSession();
+          return;
+        }
+
+        var timelineFilter = event.target.closest("[data-timeline-filter]");
+        if (timelineFilter) {
+          event.preventDefault();
+          state.timelineFilter = normalizeTimelineFilter(timelineFilter.getAttribute("data-timeline-filter") || "all");
+          localStorage.setItem("gopher.panel.timelineFilter", state.timelineFilter);
+          applyTimelineFilterControls();
+          applyTimelineFilters();
+          summarizeTimeline();
+          return;
+        }
+
+        var anomalyToggle = event.target.closest("[data-anomaly-toggle]");
+        if (anomalyToggle) {
+          event.preventDefault();
+          state.anomalyOnly = !state.anomalyOnly;
+          localStorage.setItem("gopher.panel.anomalyOnly", state.anomalyOnly ? "true" : "false");
+          applyTimelineFilterControls();
+          applyTimelineFilters();
+          summarizeTimeline();
+          return;
+        }
+
+        var groupNoiseToggle = event.target.closest("[data-group-noise-toggle]");
+        if (groupNoiseToggle) {
+          event.preventDefault();
+          state.groupNoise = !state.groupNoise;
+          localStorage.setItem("gopher.panel.groupNoise", state.groupNoise ? "true" : "false");
+          applyTimelineFilterControls();
+          buildNoiseGroups();
+          applyTimelineFilters();
+          summarizeTimeline();
         }
       });
 
@@ -916,9 +1487,14 @@
       });
 
       applyPayloadView();
+      applyTimelineFilterControls();
       applySessionFilters();
       applyTabState({ replaceHistory: true });
       hydrateTimeline();
+      applyRelativeTimes(document);
+      window.setInterval(function () {
+        applyRelativeTimes(document);
+      }, 30000);
       window.addEventListener("beforeunload", closeSource);
     })();
   </script>

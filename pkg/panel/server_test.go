@@ -295,6 +295,9 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	if !strings.Contains(sessionsRec.Body.String(), "data-session-working=\"true\"") {
 		t.Fatalf("expected data-session-working marker in sessions fragment, got: %s", sessionsRec.Body.String())
 	}
+	if !strings.Contains(sessionsRec.Body.String(), "data-updated-at=") {
+		t.Fatalf("expected machine-readable updated timestamp in sessions fragment, got: %s", sessionsRec.Body.String())
+	}
 
 	detailRec := httptest.NewRecorder()
 	detailReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/session/sess-1", nil)
@@ -319,6 +322,12 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 	if !strings.Contains(detailRec.Body.String(), "Writer Room") {
 		t.Fatalf("expected room name in detail fragment, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "data-event-keyfacts") {
+		t.Fatalf("expected key facts container in detail fragment, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "data-payload-details") {
+		t.Fatalf("expected collapsed payload details in detail fragment, got: %s", detailRec.Body.String())
 	}
 }
 

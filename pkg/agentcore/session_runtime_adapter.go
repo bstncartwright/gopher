@@ -72,6 +72,12 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 		}
 		out = append(out, mapped)
 	}
+	if patch := a.buildStatePatch(sessionData); patch != nil {
+		out = append(out, sessionrt.Event{
+			Type:    sessionrt.EventStatePatch,
+			Payload: patch,
+		})
+	}
 
 	return sessionrt.AgentOutput{Events: out}, nil
 }
@@ -109,6 +115,17 @@ func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.
 		}
 		return emitFn(mapped)
 	})
+	if err != nil {
+		return err
+	}
+	if patch := a.buildStatePatch(sessionData); patch != nil {
+		if emitErr := emitFn(sessionrt.Event{
+			Type:    sessionrt.EventStatePatch,
+			Payload: patch,
+		}); emitErr != nil {
+			return emitErr
+		}
+	}
 	return err
 }
 
@@ -249,5 +266,45 @@ func (a *SessionRuntimeAdapter) mapEvent(event Event) (sessionrt.Event, bool) {
 		}, true
 	default:
 		return sessionrt.Event{}, false
+	}
+}
+
+func (a *SessionRuntimeAdapter) buildStatePatch(sessionData *Session) map[string]any {
+	if a == nil || a.agent == nil || sessionData == nil {
+		return nil
+	}
+	diagnostics := sessionData.LastContextDiagnostics
+	warnings := make([]string, len(diagnostics.Warnings))
+	copy(warnings, diagnostics.Warnings)
+	pruneActions := make([]string, len(diagnostics.PruneActions))
+	copy(pruneActions, diagnostics.PruneActions)
+	compactionActions := make([]string, len(diagnostics.CompactionActions))
+	copy(compactionActions, diagnostics.CompactionActions)
+
+	return map[string]any{
+		"updated_at":                   time.Now().UTC().Format(time.RFC3339Nano),
+		"agent_id":                     strings.TrimSpace(a.agent.ID),
+		"model_id":                     strings.TrimSpace(a.agent.model.ID),
+		"model_provider":               strings.TrimSpace(string(a.agent.model.Provider)),
+		"model_context_window":         a.agent.model.ContextWindow,
+		"session_message_count":        len(sessionData.Messages),
+		"compaction_summary_count":     len(sessionData.CompactionSummaries),
+		"reserve_tokens":               diagnostics.ReserveTokens,
+		"estimated_input_tokens":       diagnostics.EstimatedInputTokens,
+		"overflow_retries":             diagnostics.OverflowRetries,
+		"recent_messages_used_tokens":  diagnostics.RecentMessagesLane.UsedTokens,
+		"recent_messages_cap_tokens":   diagnostics.RecentMessagesLane.CapTokens,
+		"retrieved_memory_used_tokens": diagnostics.RetrievedMemoryLane.UsedTokens,
+		"retrieved_memory_cap_tokens":  diagnostics.RetrievedMemoryLane.CapTokens,
+		"compaction_used_tokens":       diagnostics.CompactionSummaryLane.UsedTokens,
+		"compaction_cap_tokens":        diagnostics.CompactionSummaryLane.CapTokens,
+		"working_memory_used_tokens":   diagnostics.WorkingMemoryLane.UsedTokens,
+		"working_memory_cap_tokens":    diagnostics.WorkingMemoryLane.CapTokens,
+		"bootstrap_used_tokens":        diagnostics.BootstrapLane.UsedTokens,
+		"bootstrap_cap_tokens":         diagnostics.BootstrapLane.CapTokens,
+		"selected_memory_count":        len(diagnostics.SelectedMemoryIDs),
+		"warnings":                     warnings,
+		"prune_actions":                pruneActions,
+		"compaction_actions":           compactionActions,
 	}
 }

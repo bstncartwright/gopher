@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,6 +312,60 @@ func TestSessionRuntimeAdapterStepStreamEmitsMappedEvents(t *testing.T) {
 	}
 	if !hasEventType(events, sessionrt.EventMessage) {
 		t.Fatalf("expected streamed final message event")
+	}
+	if !hasEventType(events, sessionrt.EventStatePatch) {
+		t.Fatalf("expected streamed state patch event")
+	}
+}
+
+func TestSessionRuntimeAdapterStepEmitsStatePatch(t *testing.T) {
+	config := defaultConfig()
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonStop
+	assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{assistant: assistant},
+		},
+	}
+
+	adapter := NewSessionRuntimeAdapter(agent)
+	out, err := adapter.Step(context.Background(), sessionrt.AgentInput{
+		SessionID: "sess-state-patch",
+		ActorID:   sessionrt.ActorID(agent.ID),
+		History: []sessionrt.Event{
+			{
+				Type:    sessionrt.EventMessage,
+				Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "run"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Step() error: %v", err)
+	}
+
+	foundPatch := false
+	for _, event := range out.Events {
+		if event.Type != sessionrt.EventStatePatch {
+			continue
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("state patch payload type = %T, want map[string]any", event.Payload)
+		}
+		if got, _ := payload["model_id"].(string); strings.TrimSpace(got) == "" {
+			t.Fatalf("state patch missing model_id: %#v", payload)
+		}
+		foundPatch = true
+	}
+	if !foundPatch {
+		t.Fatalf("expected state patch event from adapter")
 	}
 }
 

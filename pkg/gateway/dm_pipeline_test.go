@@ -308,6 +308,45 @@ func (e *dmPromptExecutor) Step(_ context.Context, input sessionrt.AgentInput) (
 	}, nil
 }
 
+type dmStatusExecutor struct{}
+
+func (e *dmStatusExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventStatePatch,
+				Payload: map[string]any{
+					"updated_at":                   time.Now().UTC().Format(time.RFC3339Nano),
+					"agent_id":                     string(input.ActorID),
+					"model_id":                     "gpt-5-codex",
+					"model_provider":               "openai",
+					"model_context_window":         200000,
+					"session_message_count":        3,
+					"compaction_summary_count":     1,
+					"reserve_tokens":               4096,
+					"estimated_input_tokens":       2500,
+					"overflow_retries":             0,
+					"recent_messages_used_tokens":  1200,
+					"recent_messages_cap_tokens":   90000,
+					"retrieved_memory_used_tokens": 500,
+					"retrieved_memory_cap_tokens":  45000,
+					"compaction_used_tokens":       100,
+					"compaction_cap_tokens":        12000,
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: "ack",
+				},
+			},
+		},
+	}, nil
+}
+
 type dmTraceExecutor struct{}
 
 func (e *dmTraceExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
@@ -2587,6 +2626,94 @@ func TestDMPipelineSummarizeCommandDispatchesSummaryPrompt(t *testing.T) {
 	})
 	if got := fake.lastSent().Text; got != "summary reply" {
 		t.Fatalf("summary reply = %q, want summary reply", got)
+	}
+}
+
+func TestParseDMCommandRecognizesTelegramSlashCommands(t *testing.T) {
+	cases := []struct {
+		input string
+		kind  string
+		ok    bool
+	}{
+		{input: "/status", kind: "status.show", ok: true},
+		{input: "/status@gopher_bot", kind: "status.show", ok: true},
+		{input: "/context clear", kind: "context.clear", ok: true},
+		{input: "/trace status", kind: "trace.status", ok: true},
+		{input: "status", ok: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.input, func(t *testing.T) {
+			got, ok := parseDMCommand(tc.input)
+			if ok != tc.ok {
+				t.Fatalf("parseDMCommand(%q) ok = %v, want %v", tc.input, ok, tc.ok)
+			}
+			if tc.ok && got.Kind != tc.kind {
+				t.Fatalf("parseDMCommand(%q) kind = %q, want %q", tc.input, got.Kind, tc.kind)
+			}
+		})
+	}
+}
+
+func TestDMPipelineStatusCommandReportsSessionAndContext(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStatusExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:    manager,
+		Transport:  fake,
+		EventStore: store,
+		AgentID:    "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:status",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound(initial) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:status",
+		SenderID:       "@user:hs",
+		EventID:        "$evt-status",
+		Text:           "/status",
+	}); err != nil {
+		t.Fatalf("HandleInbound(/status) error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 2
+	})
+	status := fake.lastSent()
+	if status.ThreadRootEventID != "$evt-status" {
+		t.Fatalf("status thread root = %q, want $evt-status", status.ThreadRootEventID)
+	}
+	if !strings.Contains(status.Text, "session:") {
+		t.Fatalf("status reply missing session line: %q", status.Text)
+	}
+	if !strings.Contains(status.Text, "context: 2500/200000 tokens") {
+		t.Fatalf("status reply missing context utilization: %q", status.Text)
+	}
+	if !strings.Contains(status.Text, "model: gpt-5-codex (openai)") {
+		t.Fatalf("status reply missing model info: %q", status.Text)
 	}
 }
 

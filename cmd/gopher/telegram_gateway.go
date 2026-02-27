@@ -153,10 +153,20 @@ func startTelegramDMBridgeWithRuntime(
 		return nil, fmt.Errorf("create telegram transport: %w", err)
 	}
 	slog.Info("telegram_gateway: telegram transport initialized", "offset_path", filepath.Join(dataDir, "telegram", "offset.json"))
+	registerCtx, registerCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := telegramBridge.SetCommands(registerCtx, []telegramtransport.BotCommand{
+		{Command: "status", Description: "Show session and context status"},
+		{Command: "context", Description: "Context commands: clear or summarize"},
+		{Command: "trace", Description: "Trace commands: on/off/status"},
+	}); err != nil {
+		slog.Warn("telegram_gateway: register telegram bot commands failed", "error", err)
+	}
+	registerCancel()
 
 	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
 		Manager:       manager,
 		Transport:     telegramBridge,
+		EventStore:    store,
 		AgentID:       agentRuntime.DefaultActorID,
 		Conversations: gateway.NewConversationSessionMap(),
 		Bindings:      bindingStore,

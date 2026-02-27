@@ -435,6 +435,34 @@
           return "Control event: " + clip(action, 220);
         }
 
+        if (eventType === "state_patch") {
+          var reserve = pickString(parsed, ["reserve_tokens"]);
+          var estimated = pickString(parsed, ["estimated_input_tokens"]);
+          var retries = pickString(parsed, ["overflow_retries"]);
+          var stage = pickString(parsed, ["overflow_stage"]);
+          var truncations = pickString(parsed, ["tool_result_truncation_count"]);
+          var pieces = [];
+          if (reserve) {
+            pieces.push("reserve=" + reserve);
+          }
+          if (estimated) {
+            pieces.push("estimated=" + estimated);
+          }
+          if (retries) {
+            pieces.push("retries=" + retries);
+          }
+          if (stage) {
+            pieces.push("stage=" + stage);
+          }
+          if (truncations) {
+            pieces.push("tool_truncations=" + truncations);
+          }
+          if (!pieces.length) {
+            return "State patch: " + clip(summarizeValue(parsed), 220);
+          }
+          return "State patch: " + pieces.join(" | ");
+        }
+
         return clip(summarizeValue(parsed), 220);
       }
 

@@ -9,19 +9,41 @@ import (
 
 type PruneOptions struct {
 	MaxHistoricalToolResultChars int
+	MaxRecentToolResultChars     int
+	RecentWindowMessages         int
 }
 
 func PruneMessages(messages []ai.Message, opts PruneOptions) ([]ai.Message, []string) {
+	result := PruneMessagesDetailed(messages, opts)
+	return result.Messages, result.Actions
+}
+
+type PruneResult struct {
+	Messages              []ai.Message
+	Actions               []string
+	ToolResultTruncations int
+}
+
+func PruneMessagesDetailed(messages []ai.Message, opts PruneOptions) PruneResult {
 	if len(messages) == 0 {
-		return nil, nil
+		return PruneResult{}
 	}
-	maxToolChars := opts.MaxHistoricalToolResultChars
-	if maxToolChars <= 0 {
-		maxToolChars = 240
+	maxHistoricalToolChars := opts.MaxHistoricalToolResultChars
+	if maxHistoricalToolChars <= 0 {
+		maxHistoricalToolChars = 240
+	}
+	maxRecentToolChars := opts.MaxRecentToolResultChars
+	if maxRecentToolChars <= 0 {
+		maxRecentToolChars = 2400
+	}
+	recentWindowMessages := opts.RecentWindowMessages
+	if recentWindowMessages <= 0 {
+		recentWindowMessages = 4
 	}
 
 	out := make([]ai.Message, 0, len(messages))
 	actions := make([]string, 0, 4)
+	toolResultTruncations := 0
 
 	for idx, msg := range messages {
 		pruned := msg.Clone()
@@ -48,23 +70,31 @@ func PruneMessages(messages []ai.Message, opts PruneOptions) ([]ai.Message, []st
 		}
 
 		// Truncate older tool payloads to keep tool state but reduce noisy text.
-		if pruned.Role == ai.RoleToolResult && idx < len(messages)-4 {
+		if pruned.Role == ai.RoleToolResult {
 			if blocks, ok := pruned.ContentBlocks(); ok && len(blocks) > 0 {
 				changed := false
+				isHistorical := idx < len(messages)-recentWindowMessages
+				maxChars := maxRecentToolChars
+				actionPrefix := "truncated recent tool result payload"
+				if isHistorical {
+					maxChars = maxHistoricalToolChars
+					actionPrefix = "truncated historical tool result payload"
+				}
 				for blockIdx := range blocks {
 					if blocks[blockIdx].Type != ai.ContentTypeText {
 						continue
 					}
 					text := strings.TrimSpace(blocks[blockIdx].Text)
-					if len(text) <= maxToolChars {
+					if len(text) <= maxChars {
 						continue
 					}
-					blocks[blockIdx].Text = text[:maxToolChars] + "... (truncated)"
+					blocks[blockIdx].Text = text[:maxChars] + "... (truncated)"
 					changed = true
 				}
 				if changed {
 					pruned.Content = blocks
-					actions = append(actions, fmt.Sprintf("truncated historical tool result payload at index %d", idx))
+					toolResultTruncations++
+					actions = append(actions, fmt.Sprintf("%s at index %d", actionPrefix, idx))
 				}
 			}
 		}
@@ -72,5 +102,9 @@ func PruneMessages(messages []ai.Message, opts PruneOptions) ([]ai.Message, []st
 		out = append(out, pruned)
 	}
 
-	return out, actions
+	return PruneResult{
+		Messages:              out,
+		Actions:               actions,
+		ToolResultTruncations: toolResultTruncations,
+	}
 }

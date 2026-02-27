@@ -226,3 +226,47 @@ func formatToolResultText(output ToolOutput) string {
 	}
 	return string(blob)
 }
+
+func formatToolResultTextForContext(output ToolOutput, cfg ContextManagementConfig) (string, bool) {
+	text := formatToolResultText(output)
+	if text == "" {
+		return "", false
+	}
+
+	maxChars := cfg.ToolResultContextMaxCharsValue()
+	headChars := cfg.ToolResultContextHeadCharsValue()
+	tailChars := cfg.ToolResultContextTailCharsValue()
+	if maxChars <= 0 || len(text) <= maxChars {
+		return text, false
+	}
+	if headChars+tailChars > maxChars {
+		headChars = maxChars / 2
+		tailChars = maxChars - headChars
+	}
+	if headChars < 0 {
+		headChars = 0
+	}
+	if tailChars < 0 {
+		tailChars = 0
+	}
+	if len(text) < headChars {
+		headChars = len(text)
+	}
+	if len(text) < tailChars {
+		tailChars = len(text)
+	}
+
+	head := text[:headChars]
+	tail := text[len(text)-tailChars:]
+	envelope := map[string]any{
+		"truncated":      true,
+		"original_chars": len(text),
+		"head":           head,
+		"tail":           tail,
+	}
+	blob, err := marshalStableJSON(envelope)
+	if err != nil {
+		return text[:maxChars], true
+	}
+	return string(blob), true
+}

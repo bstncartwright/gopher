@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/config"
 	"github.com/bstncartwright/gopher/pkg/transport"
+	telegramtransport "github.com/bstncartwright/gopher/pkg/transport/telegram"
 )
 
 func TestTelegramBridgeStartIngressPollingMode(t *testing.T) {
@@ -107,6 +109,47 @@ func TestTelegramBridgeStartIngressWebhookModeStopsServerOnSetWebhookError(t *te
 	}
 }
 
+func TestStartTelegramDMBridgeAssignsSessionMemoryFlusher(t *testing.T) {
+	workspace := t.TempDir()
+	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, "agents", "main"), "main")
+	runtime, err := loadGatewayAgentRuntime(workspace)
+	if err != nil {
+		t.Fatalf("loadGatewayAgentRuntime() error: %v", err)
+	}
+
+	fakeTransport := &fakeTelegramBridgeTransport{startCalled: make(chan struct{})}
+	prevFactory := newTelegramBridgeTransport
+	newTelegramBridgeTransport = func(opts telegramtransport.Options) (telegramBridgeTransport, error) {
+		return fakeTransport, nil
+	}
+	defer func() {
+		newTelegramBridgeTransport = prevFactory
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bridge, err := startTelegramDMBridgeWithRuntime(ctx, config.GatewayConfig{
+		Telegram: config.TelegramConfig{
+			Enabled:      true,
+			Mode:         "polling",
+			BotToken:     "token",
+			PollInterval: 10 * time.Millisecond,
+			PollTimeout:  time.Second,
+		},
+		Cron: config.CronConfig{Enabled: false},
+	}, workspace, runtime, runtime.Executor, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("startTelegramDMBridgeWithRuntime() error: %v", err)
+	}
+	defer bridge.Stop()
+
+	for actorID, agent := range runtime.Agents {
+		if agent.SessionMemoryFlusher == nil {
+			t.Fatalf("expected session memory flusher for agent %q", actorID)
+		}
+	}
+}
+
 type fakeTelegramBridgeTransport struct {
 	mu sync.Mutex
 
@@ -138,6 +181,10 @@ func (f *fakeTelegramBridgeTransport) SendMessage(ctx context.Context, message t
 }
 
 func (f *fakeTelegramBridgeTransport) SendTyping(ctx context.Context, conversationID string, typing bool) error {
+	return nil
+}
+
+func (f *fakeTelegramBridgeTransport) SetCommands(ctx context.Context, commands []telegramtransport.BotCommand) error {
 	return nil
 }
 

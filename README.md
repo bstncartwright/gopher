@@ -300,7 +300,20 @@ example `agents/builder/config.json`:
   "role": "assistant",
   "model_policy": "zai:glm-5",
   "enabled_tools": ["group:fs", "group:runtime", "group:collaboration"],
-  "max_context_messages": 40
+  "max_context_messages": 40,
+  "context_management": {
+    "mode": "safeguard",
+    "overflow_retry_limit": 3,
+    "reserve_min_tokens": 20000,
+    "model_compaction_summary": true,
+    "compaction_summary_timeout_ms": 12000,
+    "compaction_chunk_token_target": 1800,
+    "tool_result_context_max_chars": 12000,
+    "tool_result_context_head_chars": 8000,
+    "tool_result_context_tail_chars": 3000,
+    "recent_tool_result_chars": 2400,
+    "historical_tool_result_chars": 240
+  }
 }
 ```
 

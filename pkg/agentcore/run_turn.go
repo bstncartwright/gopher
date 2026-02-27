@@ -91,6 +91,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 
 	runner := NewToolRunner(a)
 	overflowRetryUsed := 0
+	overflowFlushAttempted := false
 	for round := 0; ; round++ {
 		roundStart := time.Now()
 		slog.Debug("run_turn: starting round",
@@ -209,7 +210,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				"error", err,
 			)
 			if a.shouldRetryContextOverflow(err.Error(), overflowRetryUsed) {
-				recovered, recoverErr := a.recoverFromContextOverflow(ctx, s, in, err.Error(), overflowRetryUsed+1)
+				recovered, recoverErr := a.recoverFromContextOverflow(ctx, s, in, err.Error(), overflowRetryUsed+1, &overflowFlushAttempted)
 				if recoverErr == nil {
 					conversation = recovered
 					overflowRetryUsed++
@@ -235,7 +236,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 		}
 
 		if ai.IsContextOverflow(assistant, a.model.ContextWindow) && a.shouldRetryContextOverflow(assistant.ErrorMessage, overflowRetryUsed) {
-			recovered, recoverErr := a.recoverFromContextOverflow(ctx, s, in, assistant.ErrorMessage, overflowRetryUsed+1)
+			recovered, recoverErr := a.recoverFromContextOverflow(ctx, s, in, assistant.ErrorMessage, overflowRetryUsed+1, &overflowFlushAttempted)
 			if recoverErr == nil {
 				conversation = recovered
 				overflowRetryUsed++
@@ -377,12 +378,15 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			if toolCallID == "" {
 				toolCallID = toolCall.Name
 			}
-			toolText := formatToolResultText(output)
+			toolText, wasTruncated := formatToolResultTextForContext(output, a.Config.ContextManagement)
 			if toolText == "" && runErr != nil {
 				toolText = runErr.Error()
 			}
 			if toolText == "" {
 				toolText = "{}"
+			}
+			if wasTruncated {
+				s.LastContextDiagnostics.ToolResultTruncation++
 			}
 
 			slog.Debug("run_turn: appending tool result to conversation",
@@ -420,7 +424,7 @@ func (a *Agent) shouldRetryContextOverflow(message string, retriesUsed int) bool
 	if !a.Config.ContextManagement.OverflowRetryEnabled() {
 		return false
 	}
-	if retriesUsed >= 1 {
+	if retriesUsed >= a.Config.ContextManagement.OverflowRetryLimitValue() {
 		return false
 	}
 	candidate := ai.AssistantMessage{
@@ -438,50 +442,104 @@ func (a *Agent) isOverflowMessage(message string) bool {
 	return ai.IsContextOverflow(candidate, a.model.ContextWindow)
 }
 
-func (a *Agent) recoverFromContextOverflow(ctx context.Context, s *Session, in TurnInput, reason string, retries int) (ai.Context, error) {
+func (a *Agent) recoverFromContextOverflow(ctx context.Context, s *Session, in TurnInput, reason string, retries int, flushAttempted *bool) (ai.Context, error) {
 	if a == nil || s == nil {
 		return ai.Context{}, fmt.Errorf("cannot recover context overflow without agent/session")
 	}
-	if a.SessionMemoryFlusher != nil {
+	overflowStage := fmt.Sprintf("retry_%d", retries)
+	if a.SessionMemoryFlusher != nil && flushAttempted != nil && !*flushAttempted {
+		*flushAttempted = true
 		if err := a.SessionMemoryFlusher.FlushSession(ctx, s.ID); err != nil {
 			s.LastContextDiagnostics.Warnings = append(s.LastContextDiagnostics.Warnings, "memory flush before compaction failed: "+err.Error())
 		}
 	}
 
 	if a.Config.ContextManagement.PruningEnabled() {
-		pruned, actions := ctxbundle.PruneMessages(s.Messages, ctxbundle.PruneOptions{})
-		s.Messages = pruned
-		s.LastContextDiagnostics.PruneActions = append(s.LastContextDiagnostics.PruneActions, actions...)
+		pruned := ctxbundle.PruneMessagesDetailed(s.Messages, ctxbundle.PruneOptions{
+			MaxHistoricalToolResultChars: a.Config.ContextManagement.HistoricalToolResultCharsValue(),
+			MaxRecentToolResultChars:     a.Config.ContextManagement.RecentToolResultCharsValue(),
+		})
+		s.Messages = pruned.Messages
+		s.LastContextDiagnostics.PruneActions = append(s.LastContextDiagnostics.PruneActions, pruned.Actions...)
+		s.LastContextDiagnostics.ToolResultTruncation += pruned.ToolResultTruncations
+	}
+	if a.Config.ContextManagement.ModeValue() == "safeguard" {
+		repaired, repairActions := ctxbundle.RepairMessages(s.Messages, ctxbundle.RepairOptions{})
+		s.Messages = repaired
+		s.LastContextDiagnostics.PairRepairActions = append(s.LastContextDiagnostics.PairRepairActions, repairActions...)
 	}
 
 	if a.Config.ContextManagement.CompactionEnabled() {
 		totalTokens := ctxbundle.EstimateMessagesTokens(s.Messages)
-		target := totalTokens / 2
+		keepPercent := 50
+		if retries >= 2 {
+			keepPercent = 30
+		}
+		if retries >= 3 {
+			keepPercent = 18
+		}
+		target := (totalTokens * keepPercent) / 100
 		if target < 1 {
 			target = 1
 		}
 		kept, dropped, _ := ctxbundle.SelectMessagesForBudget(s.Messages, target)
+		if a.Config.ContextManagement.ModeValue() == "safeguard" {
+			repairedKept, repairActions := ctxbundle.RepairMessages(kept, ctxbundle.RepairOptions{})
+			kept = repairedKept
+			s.LastContextDiagnostics.PairRepairActions = append(s.LastContextDiagnostics.PairRepairActions, repairActions...)
+		}
 		if len(dropped) > 0 {
 			s.Messages = kept
-			compaction := ctxbundle.BuildCompactionSummary(dropped)
+			compaction, strategy, summaryErr := a.summarizeDroppedMessages(ctx, s, dropped)
+			if summaryErr != nil {
+				s.LastContextDiagnostics.Warnings = append(s.LastContextDiagnostics.Warnings, "overflow compaction summary fallback: "+summaryErr.Error())
+			}
 			if strings.TrimSpace(compaction.Summary) != "" {
 				s.CompactionSummaries = prependCompactionSummary(s.CompactionSummaries, compaction.Summary, 3)
+				if retries >= 2 && len(s.CompactionSummaries) > 2 {
+					s.CompactionSummaries = s.CompactionSummaries[:2]
+				}
+				if retries >= 3 && len(s.CompactionSummaries) > 1 {
+					s.CompactionSummaries = s.CompactionSummaries[:1]
+				}
 				s.LastContextDiagnostics.CompactionActions = append(s.LastContextDiagnostics.CompactionActions, compaction.Actions...)
+				if strings.TrimSpace(strategy) != "" {
+					s.LastContextDiagnostics.SummaryStrategy = strategy
+				}
 			}
 		}
 	}
 
-	warnings := []string{"context overflow detected: " + strings.TrimSpace(reason)}
+	carriedDiagnostics := s.LastContextDiagnostics
+	warnings := []string{
+		"context overflow detected: " + strings.TrimSpace(reason),
+		"overflow recovery stage: " + overflowStage,
+	}
+	mode := normalizePromptMode(in.PromptMode)
+	maxMemories := 8
+	disableRetrievedMemory := false
+	if retries >= 2 {
+		maxMemories = 4
+	}
+	if retries >= 3 {
+		mode = PromptModeMinimal
+		maxMemories = 1
+		disableRetrievedMemory = true
+	}
 	conversation, diagnostics, err := a.buildProviderContextDetailedWithOptions(ctx, s, in.UserMessage, providerContextBuildOptions{
-		Mode:                normalizePromptMode(in.PromptMode),
-		CompactionSummaries: s.CompactionSummaries,
-		OverflowRetries:     retries,
-		Warnings:            warnings,
+		Mode:                         mode,
+		CompactionSummaries:          s.CompactionSummaries,
+		OverflowRetries:              retries,
+		OverflowStage:                overflowStage,
+		MaxMemories:                  maxMemories,
+		DisableRetrievedMemory:       disableRetrievedMemory,
+		EnableModelCompactionSummary: true,
+		Warnings:                     warnings,
 	})
 	if err != nil {
 		return ai.Context{}, fmt.Errorf("overflow recovery failed: %w", err)
 	}
-	s.LastContextDiagnostics = diagnostics
+	s.LastContextDiagnostics = mergeOverflowDiagnostics(diagnostics, carriedDiagnostics)
 	return conversation, nil
 }
 
@@ -514,4 +572,54 @@ func getMapKeys(m map[string]any) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+func mergeOverflowDiagnostics(current ctxbundle.ContextDiagnostics, carried ctxbundle.ContextDiagnostics) ctxbundle.ContextDiagnostics {
+	current.OverflowRetries = maxInt(current.OverflowRetries, carried.OverflowRetries)
+	current.ToolResultTruncation += carried.ToolResultTruncation
+	if strings.TrimSpace(current.SummaryStrategy) == "" {
+		current.SummaryStrategy = strings.TrimSpace(carried.SummaryStrategy)
+	}
+	if strings.TrimSpace(current.OverflowStage) == "" {
+		current.OverflowStage = strings.TrimSpace(carried.OverflowStage)
+	}
+	current.PruneActions = mergeUniqueStrings(carried.PruneActions, current.PruneActions)
+	current.CompactionActions = mergeUniqueStrings(carried.CompactionActions, current.CompactionActions)
+	current.PairRepairActions = mergeUniqueStrings(carried.PairRepairActions, current.PairRepairActions)
+	current.Warnings = mergeUniqueStrings(carried.Warnings, current.Warnings)
+	return current
+}
+
+func mergeUniqueStrings(prefix []string, suffix []string) []string {
+	if len(prefix) == 0 && len(suffix) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(prefix)+len(suffix))
+	seen := make(map[string]struct{}, len(prefix)+len(suffix))
+	appendIfNew := func(values []string) {
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			if _, exists := seen[trimmed]; exists {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+			out = append(out, trimmed)
+		}
+	}
+	appendIfNew(prefix)
+	appendIfNew(suffix)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

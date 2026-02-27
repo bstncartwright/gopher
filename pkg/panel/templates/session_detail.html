@@ -12,6 +12,15 @@
     <p>Last sequence: {{.LastSeq}} · Events: {{len .Events}}</p>
   </header>
 
+  {{if .ContextHealth}}
+  <section class="context-health">
+    <h4>Context Health</h4>
+    <p>Window {{.ContextHealth.ModelContextWindow}} · Reserve {{.ContextHealth.ReserveTokens}} (floor {{.ContextHealth.ReserveFloorTokens}}) · Estimated {{.ContextHealth.EstimatedInputTokens}}</p>
+    <p>Retries {{.ContextHealth.OverflowRetries}}{{if .ContextHealth.OverflowStage}} · Stage {{.ContextHealth.OverflowStage}}{{end}}{{if .ContextHealth.SummaryStrategy}} · Summary {{.ContextHealth.SummaryStrategy}}{{end}} · Tool truncations {{.ContextHealth.ToolResultTruncation}}</p>
+    <p>Recent {{.ContextHealth.RecentMessagesUsedTokens}}/{{.ContextHealth.RecentMessagesCapTokens}} · Memory {{.ContextHealth.MemoryUsedTokens}}/{{.ContextHealth.MemoryCapTokens}} · Compaction {{.ContextHealth.CompactionUsedTokens}}/{{.ContextHealth.CompactionCapTokens}}</p>
+  </section>
+  {{end}}
+
   {{range .Events}}
   <article class="event-row{{if .RoleClass}} {{.RoleClass}}{{end}}" data-event-row data-event-type="{{.Type}}" data-event-seq="{{.Seq}}">
     <div class="event-topline">

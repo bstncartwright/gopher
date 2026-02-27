@@ -377,6 +377,19 @@ func applyDefaultContextManagement(cfg *AgentConfig) {
 	if cfg.ContextManagement.EnableOverflowRetry == nil {
 		cfg.ContextManagement.EnableOverflowRetry = boolPtr(true)
 	}
+	if cfg.ContextManagement.ModelCompactionSummary == nil {
+		cfg.ContextManagement.ModelCompactionSummary = boolPtr(true)
+	}
+	cfg.ContextManagement.Mode = cfg.ContextManagement.ModeValue()
+	cfg.ContextManagement.OverflowRetryLimit = cfg.ContextManagement.OverflowRetryLimitValue()
+	cfg.ContextManagement.ReserveMinTokens = cfg.ContextManagement.ReserveMinTokensValue()
+	cfg.ContextManagement.CompactionSummaryTimeoutMS = cfg.ContextManagement.CompactionSummaryTimeoutMSValue()
+	cfg.ContextManagement.CompactionChunkTokenTarget = cfg.ContextManagement.CompactionChunkTokenTargetValue()
+	cfg.ContextManagement.ToolResultContextMaxChars = cfg.ContextManagement.ToolResultContextMaxCharsValue()
+	cfg.ContextManagement.ToolResultContextHeadChars = cfg.ContextManagement.ToolResultContextHeadCharsValue()
+	cfg.ContextManagement.ToolResultContextTailChars = cfg.ContextManagement.ToolResultContextTailCharsValue()
+	cfg.ContextManagement.RecentToolResultChars = cfg.ContextManagement.RecentToolResultCharsValue()
+	cfg.ContextManagement.HistoricalToolResultChars = cfg.ContextManagement.HistoricalToolResultCharsValue()
 }
 
 func boolPtr(value bool) *bool {

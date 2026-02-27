@@ -257,6 +257,22 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 		{SessionID: "sess-1", Seq: 2, Type: sessionrt.EventMessage, From: "agent:a", Payload: sessionrt.Message{Role: sessionrt.RoleAgent, Content: "hello"}, Timestamp: now.Add(time.Second)},
 		{SessionID: "sess-1", Seq: 3, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read"}, Timestamp: now.Add(2 * time.Second)},
 		{SessionID: "sess-1", Seq: 4, Type: sessionrt.EventAgentDelta, From: "agent:a", Payload: map[string]any{"delta": "thinking"}, Timestamp: now.Add(3 * time.Second)},
+		{SessionID: "sess-1", Seq: 5, Type: sessionrt.EventStatePatch, From: "agent:a", Payload: map[string]any{
+			"model_context_window":         128000,
+			"reserve_tokens":               20000,
+			"reserve_floor_tokens":         20000,
+			"estimated_input_tokens":       44120,
+			"overflow_retries":             2,
+			"overflow_stage":               "retry_2",
+			"summary_strategy":             "model_assisted",
+			"tool_result_truncation_count": 3,
+			"recent_messages_used_tokens":  12000,
+			"recent_messages_cap_tokens":   30000,
+			"retrieved_memory_used_tokens": 1300,
+			"retrieved_memory_cap_tokens":  5000,
+			"compaction_used_tokens":       900,
+			"compaction_cap_tokens":        3600,
+		}, Timestamp: now.Add(4 * time.Second)},
 	})
 	store.setInFlight("sess-1", true)
 	srv, err := NewServer(ServerOptions{
@@ -319,6 +335,12 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 	if !strings.Contains(detailRec.Body.String(), "Writer Room") {
 		t.Fatalf("expected room name in detail fragment, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "Context Health") {
+		t.Fatalf("expected context health block in detail fragment, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "Stage retry_2") {
+		t.Fatalf("expected overflow stage in context health block, got: %s", detailRec.Body.String())
 	}
 }
 

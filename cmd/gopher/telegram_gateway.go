@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/config"
 	"github.com/bstncartwright/gopher/pkg/gateway"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
@@ -37,6 +38,7 @@ type telegramDMBridge struct {
 
 type telegramBridgeTransport interface {
 	transport.Transport
+	SetCommands(context.Context, []telegramtransport.BotCommand) error
 	SetWebhook(context.Context, string, string) error
 	DeleteWebhook(context.Context, bool) error
 	HandleWebhookUpdate(context.Context, []byte) error
@@ -44,6 +46,10 @@ type telegramBridgeTransport interface {
 
 var buildTelegramWebhookRuntime = func(opts telegramWebhookServerOptions) (telegramWebhookRuntime, error) {
 	return newTelegramWebhookServer(opts)
+}
+
+var newTelegramBridgeTransport = func(opts telegramtransport.Options) (telegramBridgeTransport, error) {
+	return telegramtransport.New(opts)
 }
 
 func startTelegramDMBridgeWithRuntime(
@@ -104,6 +110,12 @@ func startTelegramDMBridgeWithRuntime(
 		"agent_default_actor_id", agentRuntime.DefaultActorID,
 		"recover_on_start", true,
 	)
+	for _, agent := range agentRuntime.Agents {
+		if agent == nil || agent.LongTermMemory == nil {
+			continue
+		}
+		agent.SessionMemoryFlusher = agentcore.NewStoreBackedSessionMemoryFlusher(store, agent.LongTermMemory, agent.ID)
+	}
 
 	var cronRunner *gateway.CronRunner
 	if cfg.Cron.Enabled {
@@ -141,7 +153,7 @@ func startTelegramDMBridgeWithRuntime(
 		}
 	}
 
-	telegramBridge, err := telegramtransport.New(telegramtransport.Options{
+	telegramBridge, err := newTelegramBridgeTransport(telegramtransport.Options{
 		BotToken:      cfg.Telegram.BotToken,
 		PollInterval:  cfg.Telegram.PollInterval,
 		PollTimeout:   cfg.Telegram.PollTimeout,

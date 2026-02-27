@@ -1,11 +1,11 @@
 package store
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -434,24 +434,17 @@ func readEventsFile(path string) ([]sessionrt.Event, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 4*1024*1024)
-
 	events := []sessionrt.Event{}
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	decoder := json.NewDecoder(file)
+	for {
 		var event sessionrt.Event
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
+		if err := decoder.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return nil, fmt.Errorf("decode event %s: %w", path, err)
 		}
 		events = append(events, event)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan events %s: %w", path, err)
 	}
 	return events, nil
 }

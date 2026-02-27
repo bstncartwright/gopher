@@ -182,6 +182,80 @@ func (e *dmErrorExecutor) Step(_ context.Context, input sessionrt.AgentInput) (s
 	}, nil
 }
 
+type dmCountingErrorExecutor struct {
+	mu      sync.Mutex
+	calls   int
+	message string
+}
+
+func (e *dmCountingErrorExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventError,
+				Payload: sessionrt.ErrorPayload{
+					Message: e.message,
+				},
+			},
+		},
+	}, nil
+}
+
+func (e *dmCountingErrorExecutor) callCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
+type dmTransientRecoverExecutor struct {
+	mu          sync.Mutex
+	calls       int
+	errorText   string
+	recoveryMsg string
+}
+
+func (e *dmTransientRecoverExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	e.mu.Lock()
+	e.calls++
+	call := e.calls
+	e.mu.Unlock()
+	if call == 1 {
+		return sessionrt.AgentOutput{
+			Events: []sessionrt.Event{
+				{
+					From: input.ActorID,
+					Type: sessionrt.EventError,
+					Payload: sessionrt.ErrorPayload{
+						Message: e.errorText,
+					},
+				},
+			},
+		}, nil
+	}
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: e.recoveryMsg,
+				},
+			},
+		},
+	}, nil
+}
+
+func (e *dmTransientRecoverExecutor) callCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
+}
+
 type dmRecoverableErrorExecutor struct {
 	errorMessage string
 	replyText    string
@@ -1937,6 +2011,138 @@ func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
 	}
 	if !signals[0].Typing || signals[len(signals)-1].Typing {
 		t.Fatalf("typing lifecycle = %#v, want starts true and ends false", signals)
+	}
+}
+
+func TestDMPipelineRetriesRecoverableErrorWithLLMOnce(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	exec := &dmTransientRecoverExecutor{
+		errorText:   "503 service unavailable",
+		recoveryMsg: "I retried and can continue: here is the next step.",
+	}
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: exec,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:recoverable-retry",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	got := fake.lastSent()
+	if strings.TrimSpace(got.Text) != "I retried and can continue: here is the next step." {
+		t.Fatalf("final response = %q, want recovery response", got.Text)
+	}
+	if strings.Contains(got.Text, "I ran into an upstream error while processing that message.") {
+		t.Fatalf("unexpected fallback reply: %q", got.Text)
+	}
+	if calls := exec.callCount(); calls != 2 {
+		t.Fatalf("executor call count = %d, want 2 (initial + recovery)", calls)
+	}
+}
+
+func TestDMPipelineDoesNotRetryNonRecoverableError(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	exec := &dmCountingErrorExecutor{message: "401 unauthorized"}
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: exec,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:non-recoverable",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	got := fake.lastSent()
+	if !strings.Contains(got.Text, "Details: provider authentication failed (401).") {
+		t.Fatalf("fallback response = %q, want auth details", got.Text)
+	}
+	if calls := exec.callCount(); calls != 1 {
+		t.Fatalf("executor call count = %d, want 1", calls)
+	}
+}
+
+func TestDMPipelineRetriesRecoverableErrorOnlyOnceBeforeFallback(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	exec := &dmCountingErrorExecutor{message: "502 bad gateway"}
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: exec,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:retry-once",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	got := fake.lastSent()
+	if !strings.Contains(got.Text, "Details: provider service unavailable.") {
+		t.Fatalf("fallback response = %q, want service unavailable details", got.Text)
+	}
+	if calls := exec.callCount(); calls != 2 {
+		t.Fatalf("executor call count = %d, want 2 (initial + one recovery attempt)", calls)
 	}
 }
 

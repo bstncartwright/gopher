@@ -19,6 +19,58 @@ func (noopAgentExecutor) Step(context.Context, sessionrt.AgentInput) (sessionrt.
 	return sessionrt.AgentOutput{}, nil
 }
 
+type blockingAgentExecutor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (e *blockingAgentExecutor) Step(ctx context.Context, _ sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	select {
+	case <-e.started:
+	default:
+		close(e.started)
+	}
+	select {
+	case <-e.release:
+	case <-ctx.Done():
+		return sessionrt.AgentOutput{}, ctx.Err()
+	}
+	return sessionrt.AgentOutput{}, nil
+}
+
+func waitForDelegationKickoff(
+	t *testing.T,
+	ctx context.Context,
+	store gatewaySessionDelegationStore,
+	sessionID sessionrt.SessionID,
+	match func(msg sessionrt.Message) bool,
+) []sessionrt.Event {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events, err := store.List(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("store.List(delegation) error: %v", err)
+		}
+		for _, event := range events {
+			if event.Type != sessionrt.EventMessage {
+				continue
+			}
+			msg, ok := event.Payload.(sessionrt.Message)
+			if !ok {
+				continue
+			}
+			if match(msg) {
+				return events
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for kickoff message in session %s", sessionID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	ctx := context.Background()
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
@@ -63,29 +115,17 @@ func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 		t.Fatalf("delegation routing mismatch: %+v", result)
 	}
 
-	events, err := store.List(ctx, sessionrt.SessionID(result.SessionID))
-	if err != nil {
-		t.Fatalf("store.List(delegation) error: %v", err)
-	}
-	foundKickoff := false
-	for _, event := range events {
-		if event.Type != sessionrt.EventMessage {
-			continue
+	events := waitForDelegationKickoff(t, ctx, store, sessionrt.SessionID(result.SessionID), func(msg sessionrt.Message) bool {
+		if msg.TargetActorID != "worker" || !strings.Contains(msg.Content, "Delegation for worker:") {
+			return false
 		}
-		msg, ok := event.Payload.(sessionrt.Message)
-		if !ok {
-			continue
+		if msg.Role != sessionrt.RoleAgent {
+			t.Fatalf("kickoff role = %q, want agent", msg.Role)
 		}
-		if msg.TargetActorID == "worker" && strings.Contains(msg.Content, "Delegation for worker:") {
-			if msg.Role != sessionrt.RoleAgent {
-				t.Fatalf("kickoff role = %q, want agent", msg.Role)
-			}
-			foundKickoff = true
-			break
-		}
-	}
-	if !foundKickoff {
-		t.Fatalf("expected kickoff message targeted to worker, events=%+v", events)
+		return true
+	})
+	if len(events) == 0 {
+		t.Fatalf("expected kickoff message targeted to worker")
 	}
 
 	delegationsPath := filepath.Join(dataDir, "control", "delegations.jsonl")
@@ -185,27 +225,9 @@ func TestGatewaySessionDelegationSingleAgentAllowsAliasTarget(t *testing.T) {
 	if _, ok := delegatedSession.Participants["milo"]; !ok {
 		t.Fatalf("expected milo participant in single-agent delegated session")
 	}
-	events, err := store.List(ctx, sessionrt.SessionID(result.SessionID))
-	if err != nil {
-		t.Fatalf("store.List(delegation) error: %v", err)
-	}
-	foundKickoff := false
-	for _, event := range events {
-		if event.Type != sessionrt.EventMessage {
-			continue
-		}
-		msg, ok := event.Payload.(sessionrt.Message)
-		if !ok {
-			continue
-		}
-		if msg.TargetActorID == "milo" && strings.Contains(msg.Content, "Delegation for subagent1:") {
-			foundKickoff = true
-			break
-		}
-	}
-	if !foundKickoff {
-		t.Fatalf("expected kickoff targeted to milo with alias label, events=%+v", events)
-	}
+	waitForDelegationKickoff(t, ctx, store, sessionrt.SessionID(result.SessionID), func(msg sessionrt.Message) bool {
+		return msg.TargetActorID == "milo" && strings.Contains(msg.Content, "Delegation for subagent1:")
+	})
 
 	delegationsPath := filepath.Join(dataDir, "control", "delegations.jsonl")
 	blob, err := os.ReadFile(delegationsPath)
@@ -277,6 +299,10 @@ func TestGatewaySessionDelegationListKillAndLog(t *testing.T) {
 		t.Fatalf("listed status = %q, want active", listActive[0].Status)
 	}
 
+	waitForDelegationKickoff(t, ctx, store, sessionrt.SessionID(created.SessionID), func(msg sessionrt.Message) bool {
+		return strings.Contains(msg.Content, "Delegation for worker:")
+	})
+
 	logOut, err := service.GetDelegationLog(ctx, agentcore.DelegationLogRequest{
 		SourceSessionID: string(source.ID),
 		DelegationID:    created.SessionID,
@@ -335,6 +361,58 @@ func TestGatewaySessionDelegationListKillAndLog(t *testing.T) {
 	if listAll[0].Status != "cancelled" {
 		t.Fatalf("all list status = %q, want cancelled", listAll[0].Status)
 	}
+}
+
+func TestGatewaySessionDelegationCreateReturnsBeforeDelegatedTurnCompletes(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	exec := &blockingAgentExecutor{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: exec,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil)
+
+	start := time.Now()
+	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and report back.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("CreateDelegationSession() took %s, want < 200ms", elapsed)
+	}
+
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for delegated kickoff execution")
+	}
+	close(exec.release)
 }
 
 func TestGatewaySessionDelegationListHidesStaleByDefault(t *testing.T) {

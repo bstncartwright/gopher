@@ -307,6 +307,9 @@ func buildToolUsageHints(registry ToolRegistry) string {
 	if toolRegistryHas(registry, "process") {
 		lines = append(lines, "- `process` manages background sessions. Use `action` in {`list`,`poll`,`log`,`write`,`kill`} with the `session_id` from `exec`.")
 	}
+	if toolRegistryHas(registry, "gopher_meta") {
+		lines = append(lines, "- `gopher_meta` reports runtime/build metadata (including running binary version and on-disk binary version) to detect stale processes after updates.")
+	}
 	if toolRegistryHas(registry, "delegate") {
 		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`}; `create` requires `message` and accepts optional `target_agent`.")
 	}

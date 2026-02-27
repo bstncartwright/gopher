@@ -83,6 +83,7 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 		case "group:runtime":
 			add(&execTool{})
 			add(&processTool{})
+			add(&gopherMetaTool{})
 		case "group:collaboration":
 			add(&delegateTool{})
 			add(&heartbeatTool{})
@@ -92,6 +93,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&execTool{})
 		case "process":
 			add(&processTool{})
+		case "gopher_meta":
+			add(&gopherMetaTool{})
 		case "cron":
 			add(&cronTool{})
 		case "delegate":

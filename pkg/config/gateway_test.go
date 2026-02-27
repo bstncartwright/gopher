@@ -32,6 +32,15 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if cfg.Telegram.PollTimeout <= 0 {
 		t.Fatalf("telegram poll timeout must be > 0")
 	}
+	if cfg.Telegram.Mode != "polling" {
+		t.Fatalf("telegram mode = %q, want polling", cfg.Telegram.Mode)
+	}
+	if cfg.Telegram.Webhook.ListenAddr != "127.0.0.1:29330" {
+		t.Fatalf("telegram webhook listen addr = %q", cfg.Telegram.Webhook.ListenAddr)
+	}
+	if cfg.Telegram.Webhook.Path != "/_gopher/telegram/webhook" {
+		t.Fatalf("telegram webhook path = %q", cfg.Telegram.Webhook.Path)
+	}
 	if len(sources) != 1 || sources[0] != "defaults" {
 		t.Fatalf("sources = %#v, want defaults only", sources)
 	}
@@ -99,6 +108,7 @@ node_id = "gw"
 
 [gateway.telegram]
 enabled = true
+mode = "polling"
 bot_token = "file-token"
 poll_interval = "4s"
 poll_timeout = "40s"
@@ -112,6 +122,11 @@ allowed_chat_id = "2002"
 	overridePollTimeout := 50 * time.Second
 	overrideUserID := "user-1"
 	overrideChatID := "chat-1"
+	overrideMode := "webhook"
+	overrideWebhookListen := "127.0.0.1:29440"
+	overrideWebhookPath := "/telegram/hook"
+	overrideWebhookURL := "https://example.ts.net/telegram/hook"
+	overrideWebhookSecret := "secret-1"
 	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
 		WorkingDir: dir,
 		Env: map[string]string{
@@ -125,6 +140,11 @@ allowed_chat_id = "2002"
 			TelegramPollTimeout:   &overridePollTimeout,
 			TelegramAllowedUserID: &overrideUserID,
 			TelegramAllowedChatID: &overrideChatID,
+			TelegramMode:          &overrideMode,
+			TelegramWebhookListen: &overrideWebhookListen,
+			TelegramWebhookPath:   &overrideWebhookPath,
+			TelegramWebhookURL:    &overrideWebhookURL,
+			TelegramWebhookSecret: &overrideWebhookSecret,
 		},
 	})
 	if err != nil {
@@ -145,6 +165,21 @@ allowed_chat_id = "2002"
 	if cfg.Telegram.AllowedUserID != overrideUserID || cfg.Telegram.AllowedChatID != overrideChatID {
 		t.Fatalf("telegram binding mismatch: %+v", cfg.Telegram)
 	}
+	if cfg.Telegram.Mode != overrideMode {
+		t.Fatalf("telegram mode = %q, want %q", cfg.Telegram.Mode, overrideMode)
+	}
+	if cfg.Telegram.Webhook.ListenAddr != overrideWebhookListen {
+		t.Fatalf("telegram webhook listen addr = %q, want %q", cfg.Telegram.Webhook.ListenAddr, overrideWebhookListen)
+	}
+	if cfg.Telegram.Webhook.Path != overrideWebhookPath {
+		t.Fatalf("telegram webhook path = %q, want %q", cfg.Telegram.Webhook.Path, overrideWebhookPath)
+	}
+	if cfg.Telegram.Webhook.URL != overrideWebhookURL {
+		t.Fatalf("telegram webhook url = %q, want %q", cfg.Telegram.Webhook.URL, overrideWebhookURL)
+	}
+	if cfg.Telegram.Webhook.Secret != overrideWebhookSecret {
+		t.Fatalf("telegram webhook secret mismatch")
+	}
 }
 
 func TestLoadGatewayConfigRejectsMissingTelegramSecretsWhenEnabled(t *testing.T) {
@@ -155,6 +190,7 @@ node_id = "gw"
 
 [gateway.telegram]
 enabled = true
+mode = "polling"
 bot_token = ""
 poll_interval = "2s"
 poll_timeout = "30s"
@@ -178,6 +214,7 @@ node_id = "gw"
 
 [gateway.telegram]
 enabled = true
+mode = "polling"
 bot_token = ""
 poll_interval = "2s"
 poll_timeout = "30s"
@@ -204,6 +241,7 @@ node_id = "gw"
 
 [gateway.telegram]
 enabled = true
+mode = "polling"
 bot_token = "token"
 poll_interval = "2s"
 poll_timeout = "0s"
@@ -216,6 +254,172 @@ allowed_chat_id = "2002"
 	})
 	if err == nil {
 		t.Fatalf("expected telegram poll timeout validation error")
+	}
+}
+
+func TestLoadGatewayConfigAppliesTelegramWebhookEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+mode = "polling"
+bot_token = "token"
+poll_interval = "2s"
+poll_timeout = "30s"
+`)
+	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env: map[string]string{
+			"GOPHER_GATEWAY_TELEGRAM_MODE":                "webhook",
+			"GOPHER_GATEWAY_TELEGRAM_WEBHOOK_LISTEN_ADDR": "127.0.0.1:29440",
+			"GOPHER_GATEWAY_TELEGRAM_WEBHOOK_PATH":        "/tg/webhook",
+			"GOPHER_GATEWAY_TELEGRAM_WEBHOOK_URL":         "https://example.ts.net/tg/webhook",
+			"GOPHER_GATEWAY_TELEGRAM_WEBHOOK_SECRET":      "secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadGatewayConfig() error: %v", err)
+	}
+	if cfg.Telegram.Mode != "webhook" {
+		t.Fatalf("telegram mode = %q, want webhook", cfg.Telegram.Mode)
+	}
+	if cfg.Telegram.Webhook.ListenAddr != "127.0.0.1:29440" {
+		t.Fatalf("telegram webhook listen addr = %q", cfg.Telegram.Webhook.ListenAddr)
+	}
+	if cfg.Telegram.Webhook.Path != "/tg/webhook" {
+		t.Fatalf("telegram webhook path = %q", cfg.Telegram.Webhook.Path)
+	}
+	if cfg.Telegram.Webhook.URL != "https://example.ts.net/tg/webhook" {
+		t.Fatalf("telegram webhook url = %q", cfg.Telegram.Webhook.URL)
+	}
+	if cfg.Telegram.Webhook.Secret != "secret" {
+		t.Fatalf("telegram webhook secret mismatch")
+	}
+}
+
+func TestLoadGatewayConfigWebhookModeRequiresWebhookFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+mode = "webhook"
+bot_token = "token"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected telegram webhook validation error")
+	}
+}
+
+func TestLoadGatewayConfigWebhookModeValidation(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+mode = "webhook"
+bot_token = "token"
+allowed_user_id = "1001"
+allowed_chat_id = "2002"
+
+[gateway.telegram.webhook]
+listen_addr = "127.0.0.1:29330"
+path = "/_gopher/telegram/webhook"
+url = "https://example.ts.net/_gopher/telegram/webhook"
+secret = "s3cret"
+`)
+	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("LoadGatewayConfig() error: %v", err)
+	}
+	if cfg.Telegram.Mode != "webhook" {
+		t.Fatalf("telegram mode = %q, want webhook", cfg.Telegram.Mode)
+	}
+}
+
+func TestLoadGatewayConfigRejectsInvalidTelegramMode(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+mode = "streaming"
+bot_token = "token"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected telegram mode validation error")
+	}
+}
+
+func TestLoadGatewayConfigRejectsInvalidTelegramWebhookPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+mode = "webhook"
+bot_token = "token"
+
+[gateway.telegram.webhook]
+listen_addr = "127.0.0.1:29330"
+path = "telegram/webhook"
+url = "https://example.ts.net/telegram/webhook"
+secret = "secret"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected telegram webhook path validation error")
+	}
+}
+
+func TestLoadGatewayConfigRejectsNonLoopbackTelegramWebhookListenAddr(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.telegram]
+enabled = true
+mode = "webhook"
+bot_token = "token"
+
+[gateway.telegram.webhook]
+listen_addr = "0.0.0.0:29330"
+path = "/telegram/webhook"
+url = "https://example.ts.net/telegram/webhook"
+secret = "secret"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected telegram webhook listen addr validation error")
 	}
 }
 

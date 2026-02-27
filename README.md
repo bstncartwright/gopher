@@ -360,11 +360,31 @@ troubleshooting:
 ```toml
 [gateway.telegram]
 enabled = true
+mode = "polling" # default; set to "webhook" for tailscale funnel ingress
 bot_token = "<telegram_bot_token>"
 poll_interval = "2s"
 poll_timeout = "30s"
 allowed_user_id = "<telegram_user_id>"
 allowed_chat_id = "<telegram_chat_id>"
+
+[gateway.telegram.webhook]
+listen_addr = "127.0.0.1:29330"
+path = "/_gopher/telegram/webhook"
+url = "https://<funnel-hostname>/_gopher/telegram/webhook"
+secret = "<telegram_webhook_secret>"
+```
+
+webhook mode notes:
+- keep `listen_addr` on loopback and expose it with tailscale funnel.
+- `url` must be the public `https://` endpoint telegram can reach.
+- gopher auto-manages telegram webhook registration:
+  - `mode = "webhook"` -> calls `setWebhook`
+  - `mode = "polling"` -> calls `deleteWebhook`
+
+example tailscale funnel command:
+
+```bash
+tailscale funnel --bg 127.0.0.1:29330
 ```
 
 3. configure model provider key(s) in `/etc/gopher/gopher.env` and restart:

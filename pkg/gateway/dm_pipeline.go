@@ -2,13 +2,16 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 	"github.com/bstncartwright/gopher/pkg/transport"
 )
@@ -16,6 +19,7 @@ import (
 type DMPipelineOptions struct {
 	Manager            sessionrt.SessionManager
 	Transport          transport.Transport
+	EventStore         sessionrt.EventStore
 	AgentID            sessionrt.ActorID
 	AgentByRecipient   map[string]sessionrt.ActorID
 	RecipientByAgent   map[sessionrt.ActorID]string
@@ -61,6 +65,7 @@ type TraceConversationProvisioner interface {
 type DMPipeline struct {
 	manager       sessionrt.SessionManager
 	transport     transport.Transport
+	eventStore    sessionrt.EventStore
 	agentID       sessionrt.ActorID
 	agentByRecip  map[string]sessionrt.ActorID
 	recipByAgent  map[sessionrt.ActorID]string
@@ -200,6 +205,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 	pipeline := &DMPipeline{
 		manager:            opts.Manager,
 		transport:          opts.Transport,
+		eventStore:         opts.EventStore,
 		agentID:            opts.AgentID,
 		agentByRecip:       agentByRecip,
 		recipByAgent:       recipByAgent,
@@ -323,6 +329,11 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 		return true, nil
 	}
 	switch command.Kind {
+	case "status.show":
+		if err := p.sendStatusCommandReply(ctx, inbound, agentID, recipientID); err != nil {
+			return true, err
+		}
+		return true, nil
 	case "context.clear":
 		if err := p.resetConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
 			return true, err
@@ -430,16 +441,30 @@ type dmCommand struct {
 }
 
 func parseDMCommand(text string) (dmCommand, bool) {
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
+	fields := strings.Fields(strings.TrimSpace(text))
 	if len(fields) == 0 {
 		return dmCommand{}, false
 	}
-	switch fields[0] {
-	case "!context":
+	commandToken := strings.TrimSpace(fields[0])
+	if commandToken == "" {
+		return dmCommand{}, false
+	}
+	if !strings.HasPrefix(commandToken, "!") && !strings.HasPrefix(commandToken, "/") {
+		return dmCommand{}, false
+	}
+	command := normalizeDMCommandToken(commandToken)
+	if command == "" {
+		return dmCommand{}, false
+	}
+
+	switch command {
+	case "status":
+		return dmCommand{Kind: "status.show"}, true
+	case "context":
 		if len(fields) < 2 {
 			return dmCommand{}, false
 		}
-		switch fields[1] {
+		switch strings.ToLower(strings.TrimSpace(fields[1])) {
 		case "clear", "reset":
 			return dmCommand{Kind: "context.clear"}, true
 		case "summarize", "summary":
@@ -447,11 +472,11 @@ func parseDMCommand(text string) (dmCommand, bool) {
 		default:
 			return dmCommand{}, false
 		}
-	case "!trace":
+	case "trace":
 		if len(fields) == 1 {
 			return dmCommand{Kind: "trace.link"}, true
 		}
-		switch fields[1] {
+		switch strings.ToLower(strings.TrimSpace(fields[1])) {
 		case "link":
 			return dmCommand{Kind: "trace.link"}, true
 		case "on":
@@ -465,6 +490,410 @@ func parseDMCommand(text string) (dmCommand, bool) {
 		}
 	default:
 		return dmCommand{}, false
+	}
+}
+
+func normalizeDMCommandToken(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	if strings.HasPrefix(token, "!") || strings.HasPrefix(token, "/") {
+		token = token[1:]
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	if at := strings.Index(token, "@"); at >= 0 {
+		token = token[:at]
+	}
+	return strings.ToLower(strings.TrimSpace(token))
+}
+
+type dmEventSummary struct {
+	Total                  int
+	UserMessages           int
+	AgentMessages          int
+	ToolCalls              int
+	ToolResults            int
+	Errors                 int
+	EstimatedMessageTokens int
+	LastEventAt            time.Time
+}
+
+type dmStatePatchSnapshot struct {
+	UpdatedAt               string
+	AgentID                 string
+	ModelID                 string
+	ModelProvider           string
+	ModelContextWindow      int
+	SessionMessageCount     int
+	CompactionSummaryCount  int
+	SelectedMemoryCount     int
+	ReserveTokens           int
+	EstimatedInputTokens    int
+	OverflowRetries         int
+	RecentUsedTokens        int
+	RecentCapTokens         int
+	RetrievedUsedTokens     int
+	RetrievedCapTokens      int
+	CompactionUsedTokens    int
+	CompactionCapTokens     int
+	WorkingMemoryUsedTokens int
+	WorkingMemoryCapTokens  int
+	BootstrapUsedTokens     int
+	BootstrapCapTokens      int
+	Warnings                []string
+	PruneActions            []string
+	CompactionActions       []string
+}
+
+func (p *DMPipeline) sendStatusCommandReply(ctx context.Context, inbound transport.InboundMessage, agentID sessionrt.ActorID, recipientID string) error {
+	conversationID := strings.TrimSpace(inbound.ConversationID)
+	if conversationID == "" {
+		return nil
+	}
+	if strings.TrimSpace(recipientID) == "" {
+		recipientID = p.recipientForConversation(conversationID)
+	}
+	if route, ok := p.currentRoute(conversationID); ok {
+		if strings.TrimSpace(string(route.AgentID)) != "" {
+			agentID = route.AgentID
+		}
+		if strings.TrimSpace(route.RecipientID) != "" {
+			recipientID = route.RecipientID
+		}
+	}
+
+	traceMode := p.traceModeForConversation(conversationID)
+	traceConversationID, hasTraceConversation := p.traceConversationFor(conversationID)
+
+	lines := []string{
+		"status",
+		fmt.Sprintf("conversation: %s", conversationID),
+	}
+	if strings.TrimSpace(inbound.ConversationName) != "" {
+		lines = append(lines, fmt.Sprintf("conversation_name: %s", strings.TrimSpace(inbound.ConversationName)))
+	}
+	if strings.TrimSpace(string(agentID)) != "" {
+		lines = append(lines, fmt.Sprintf("agent: %s", strings.TrimSpace(string(agentID))))
+	}
+	lines = append(lines, fmt.Sprintf("processing: %s", yesNo(p.IsConversationProcessing(conversationID))))
+	if hasTraceConversation {
+		lines = append(lines, fmt.Sprintf("trace: %s (%s)", traceMode, traceConversationID))
+	} else {
+		lines = append(lines, fmt.Sprintf("trace: %s", traceMode))
+	}
+
+	sessionID, hasSession := p.lookupConversationSession(conversationID)
+	if !hasSession {
+		lines = append(lines, "session: none")
+		lines = append(lines, "context: unavailable (no active session yet)")
+		p.sendCommandReply(conversationID, recipientID, inbound.EventID, strings.Join(lines, "\n"))
+		return nil
+	}
+
+	loadedSession, err := p.manager.GetSession(ctx, sessionID)
+	if err != nil && !errors.Is(err, sessionrt.ErrSessionNotFound) {
+		return fmt.Errorf("load session %s: %w", sessionID, err)
+	}
+	if loadedSession != nil {
+		lines = append(lines, fmt.Sprintf("session: %s (%s)", sessionID, sessionStatusText(loadedSession.Status)))
+	} else {
+		lines = append(lines, fmt.Sprintf("session: %s", sessionID))
+	}
+
+	events := []sessionrt.Event(nil)
+	if p.eventStore != nil {
+		listed, err := p.eventStore.List(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("list session events %s: %w", sessionID, err)
+		}
+		events = listed
+	}
+
+	eventSummary := summarizeSessionEvents(events)
+	if eventSummary.Total > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"events: total=%d user=%d agent=%d tool_calls=%d tool_results=%d errors=%d",
+			eventSummary.Total,
+			eventSummary.UserMessages,
+			eventSummary.AgentMessages,
+			eventSummary.ToolCalls,
+			eventSummary.ToolResults,
+			eventSummary.Errors,
+		))
+		if !eventSummary.LastEventAt.IsZero() {
+			lines = append(lines, fmt.Sprintf("last_event_at: %s", eventSummary.LastEventAt.UTC().Format(time.RFC3339)))
+		}
+	}
+
+	statePatch, hasStatePatch := latestStatePatch(events)
+	if hasStatePatch {
+		modelLine := strings.TrimSpace(statePatch.ModelID)
+		if strings.TrimSpace(statePatch.ModelProvider) != "" {
+			if modelLine == "" {
+				modelLine = statePatch.ModelProvider
+			} else {
+				modelLine = modelLine + " (" + statePatch.ModelProvider + ")"
+			}
+		}
+		if modelLine != "" {
+			lines = append(lines, "model: "+modelLine)
+		}
+		if strings.TrimSpace(statePatch.UpdatedAt) != "" {
+			lines = append(lines, fmt.Sprintf("status_updated_at: %s", strings.TrimSpace(statePatch.UpdatedAt)))
+		}
+		if statePatch.SessionMessageCount > 0 {
+			lines = append(lines, fmt.Sprintf(
+				"context_messages: %d (compaction_summaries=%d)",
+				statePatch.SessionMessageCount,
+				statePatch.CompactionSummaryCount,
+			))
+		}
+
+		contextLineParts := []string{}
+		if statePatch.ModelContextWindow > 0 {
+			utilization := 0.0
+			if statePatch.EstimatedInputTokens > 0 {
+				utilization = (float64(statePatch.EstimatedInputTokens) * 100) / float64(statePatch.ModelContextWindow)
+			}
+			contextLineParts = append(contextLineParts, fmt.Sprintf(
+				"context: %d/%d tokens (%.1f%%)",
+				statePatch.EstimatedInputTokens,
+				statePatch.ModelContextWindow,
+				utilization,
+			))
+		} else if statePatch.EstimatedInputTokens > 0 {
+			contextLineParts = append(contextLineParts, fmt.Sprintf("context: ~%d tokens", statePatch.EstimatedInputTokens))
+		}
+		if statePatch.ReserveTokens > 0 {
+			usable := statePatch.ModelContextWindow - statePatch.ReserveTokens
+			if usable < 0 {
+				usable = 0
+			}
+			contextLineParts = append(contextLineParts, fmt.Sprintf("reserve=%d usable=%d", statePatch.ReserveTokens, usable))
+		}
+		if len(contextLineParts) > 0 {
+			lines = append(lines, strings.Join(contextLineParts, " | "))
+		}
+
+		if statePatch.RecentCapTokens > 0 || statePatch.RecentUsedTokens > 0 {
+			lines = append(lines, fmt.Sprintf("lane_recent: %d/%d", statePatch.RecentUsedTokens, statePatch.RecentCapTokens))
+		}
+		if statePatch.RetrievedCapTokens > 0 || statePatch.RetrievedUsedTokens > 0 {
+			lines = append(lines, fmt.Sprintf("lane_memory: %d/%d", statePatch.RetrievedUsedTokens, statePatch.RetrievedCapTokens))
+		}
+		if statePatch.CompactionCapTokens > 0 || statePatch.CompactionUsedTokens > 0 {
+			lines = append(lines, fmt.Sprintf("lane_compaction: %d/%d", statePatch.CompactionUsedTokens, statePatch.CompactionCapTokens))
+		}
+		if statePatch.OverflowRetries > 0 {
+			lines = append(lines, fmt.Sprintf("overflow_retries: %d", statePatch.OverflowRetries))
+		}
+		if len(statePatch.Warnings) > 0 {
+			lines = append(lines, fmt.Sprintf("warnings: %d (latest: %s)", len(statePatch.Warnings), statePatch.Warnings[len(statePatch.Warnings)-1]))
+		}
+	} else {
+		if eventSummary.EstimatedMessageTokens > 0 {
+			lines = append(lines, fmt.Sprintf("context: ~%d tokens (message text estimate)", eventSummary.EstimatedMessageTokens))
+			lines = append(lines, "context_window: unavailable (no runtime snapshot yet)")
+		} else {
+			lines = append(lines, "context: unavailable (no runtime snapshot yet)")
+		}
+	}
+
+	p.sendCommandReply(conversationID, recipientID, inbound.EventID, strings.Join(lines, "\n"))
+	return nil
+}
+
+func summarizeSessionEvents(events []sessionrt.Event) dmEventSummary {
+	summary := dmEventSummary{
+		Total: len(events),
+	}
+	for _, event := range events {
+		if event.Timestamp.After(summary.LastEventAt) {
+			summary.LastEventAt = event.Timestamp
+		}
+		switch event.Type {
+		case sessionrt.EventMessage:
+			msg, ok := messageFromPayload(event.Payload)
+			if !ok {
+				continue
+			}
+			if msg.Role == sessionrt.RoleUser {
+				summary.UserMessages++
+			}
+			if msg.Role == sessionrt.RoleAgent {
+				summary.AgentMessages++
+			}
+			summary.EstimatedMessageTokens += ctxbundle.EstimateTextTokens(msg.Content)
+		case sessionrt.EventToolCall:
+			summary.ToolCalls++
+		case sessionrt.EventToolResult:
+			summary.ToolResults++
+		case sessionrt.EventError:
+			summary.Errors++
+		}
+	}
+	return summary
+}
+
+func latestStatePatch(events []sessionrt.Event) (dmStatePatchSnapshot, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != sessionrt.EventStatePatch {
+			continue
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok {
+			continue
+		}
+		out := dmStatePatchSnapshot{
+			UpdatedAt:               stringFromAny(payload["updated_at"]),
+			AgentID:                 stringFromAny(payload["agent_id"]),
+			ModelID:                 stringFromAny(payload["model_id"]),
+			ModelProvider:           stringFromAny(payload["model_provider"]),
+			ModelContextWindow:      intFromAny(payload["model_context_window"]),
+			SessionMessageCount:     intFromAny(payload["session_message_count"]),
+			CompactionSummaryCount:  intFromAny(payload["compaction_summary_count"]),
+			SelectedMemoryCount:     intFromAny(payload["selected_memory_count"]),
+			ReserveTokens:           intFromAny(payload["reserve_tokens"]),
+			EstimatedInputTokens:    intFromAny(payload["estimated_input_tokens"]),
+			OverflowRetries:         intFromAny(payload["overflow_retries"]),
+			RecentUsedTokens:        intFromAny(payload["recent_messages_used_tokens"]),
+			RecentCapTokens:         intFromAny(payload["recent_messages_cap_tokens"]),
+			RetrievedUsedTokens:     intFromAny(payload["retrieved_memory_used_tokens"]),
+			RetrievedCapTokens:      intFromAny(payload["retrieved_memory_cap_tokens"]),
+			CompactionUsedTokens:    intFromAny(payload["compaction_used_tokens"]),
+			CompactionCapTokens:     intFromAny(payload["compaction_cap_tokens"]),
+			WorkingMemoryUsedTokens: intFromAny(payload["working_memory_used_tokens"]),
+			WorkingMemoryCapTokens:  intFromAny(payload["working_memory_cap_tokens"]),
+			BootstrapUsedTokens:     intFromAny(payload["bootstrap_used_tokens"]),
+			BootstrapCapTokens:      intFromAny(payload["bootstrap_cap_tokens"]),
+			Warnings:                stringSliceFromAny(payload["warnings"]),
+			PruneActions:            stringSliceFromAny(payload["prune_actions"]),
+			CompactionActions:       stringSliceFromAny(payload["compaction_actions"]),
+		}
+		if out.UpdatedAt == "" && !event.Timestamp.IsZero() {
+			out.UpdatedAt = event.Timestamp.UTC().Format(time.RFC3339Nano)
+		}
+		return out, true
+	}
+	return dmStatePatchSnapshot{}, false
+}
+
+func messageFromPayload(payload any) (sessionrt.Message, bool) {
+	switch typed := payload.(type) {
+	case sessionrt.Message:
+		return typed, true
+	case map[string]any:
+		role, _ := typed["role"].(string)
+		content, _ := typed["content"].(string)
+		return sessionrt.Message{
+			Role:    sessionrt.Role(strings.TrimSpace(role)),
+			Content: content,
+		}, true
+	default:
+		return sessionrt.Message{}, false
+	}
+}
+
+func sessionStatusText(status sessionrt.SessionStatus) string {
+	switch status {
+	case sessionrt.SessionActive:
+		return "active"
+	case sessionrt.SessionPaused:
+		return "paused"
+	case sessionrt.SessionCompleted:
+		return "completed"
+	case sessionrt.SessionFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func stringFromAny(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []byte:
+		return strings.TrimSpace(string(typed))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", typed))
+	}
+}
+
+func intFromAny(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int8:
+		return int(typed)
+	case int16:
+		return int(typed)
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case uint:
+		return int(typed)
+	case uint8:
+		return int(typed)
+	case uint16:
+		return int(typed)
+	case uint32:
+		return int(typed)
+	case uint64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err != nil {
+			return 0
+		}
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func stringSliceFromAny(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			trimmed := strings.TrimSpace(item)
+			if trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			trimmed := stringFromAny(item)
+			if trimmed != "" && trimmed != "<nil>" {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
@@ -1918,6 +2347,10 @@ func (p *DMPipeline) sendTraceConversationReadyNotice(conversationID, traceConve
 }
 
 func (p *DMPipeline) sendTraceCommandReply(conversationID, senderID, triggerEventID, text string) {
+	p.sendCommandReply(conversationID, senderID, triggerEventID, text)
+}
+
+func (p *DMPipeline) sendCommandReply(conversationID, senderID, triggerEventID, text string) {
 	conversationID = strings.TrimSpace(conversationID)
 	senderID = strings.TrimSpace(senderID)
 	triggerEventID = strings.TrimSpace(triggerEventID)
@@ -1931,7 +2364,7 @@ func (p *DMPipeline) sendTraceCommandReply(conversationID, senderID, triggerEven
 		Text:              text,
 		ThreadRootEventID: triggerEventID,
 	}); err != nil {
-		slog.Warn("dm_pipeline: failed to send trace command reply",
+		slog.Warn("dm_pipeline: failed to send command reply",
 			"conversation_id", conversationID,
 			"error", err,
 		)

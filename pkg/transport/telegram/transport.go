@@ -91,6 +91,11 @@ type sendResponse struct {
 	ErrorCode   int    `json:"error_code"`
 }
 
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
 type telegramAPIError struct {
 	Method      string
 	Description string
@@ -283,6 +288,32 @@ func (t *Transport) SendTyping(ctx context.Context, conversationID string, typin
 	}
 	slog.Debug("telegram transport: sending typing indicator", "conversation_id", conversationID, "chat_id", chatID)
 	return t.sendAPI(ctx, "sendChatAction", payload)
+}
+
+func (t *Transport) SetCommands(ctx context.Context, commands []BotCommand) error {
+	if len(commands) == 0 {
+		return nil
+	}
+	normalized := make([]map[string]string, 0, len(commands))
+	for _, command := range commands {
+		name := strings.TrimSpace(command.Command)
+		name = strings.TrimPrefix(name, "/")
+		name = strings.ToLower(strings.TrimSpace(name))
+		description := strings.TrimSpace(command.Description)
+		if name == "" || description == "" {
+			continue
+		}
+		normalized = append(normalized, map[string]string{
+			"command":     name,
+			"description": description,
+		})
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return t.sendAPI(ctx, "setMyCommands", map[string]any{
+		"commands": normalized,
+	})
 }
 
 func (t *Transport) pollAndDispatch(ctx context.Context, offset int64) (int64, error) {

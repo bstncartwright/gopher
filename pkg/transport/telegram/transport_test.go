@@ -244,3 +244,57 @@ func TestSendMessageDoesNotRetryOnNonParseTelegramError(t *testing.T) {
 		t.Fatalf("request count = %d, want 1", requests)
 	}
 }
+
+func TestSetCommandsRegistersTelegramCommands(t *testing.T) {
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/setMyCommands" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+		payloads = append(payloads, payload)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	err = tr.SetCommands(context.Background(), []BotCommand{
+		{Command: "/status", Description: "Show status"},
+		{Command: "trace", Description: "Trace controls"},
+		{Command: "", Description: "ignored"},
+	})
+	if err != nil {
+		t.Fatalf("SetCommands() error: %v", err)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("request count = %d, want 1", len(payloads))
+	}
+	rawCommands, ok := payloads[0]["commands"].([]any)
+	if !ok {
+		t.Fatalf("commands payload type = %T, want []any", payloads[0]["commands"])
+	}
+	if len(rawCommands) != 2 {
+		t.Fatalf("commands count = %d, want 2", len(rawCommands))
+	}
+	first, ok := rawCommands[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first command payload type = %T, want map[string]any", rawCommands[0])
+	}
+	if first["command"] != "status" {
+		t.Fatalf("first command = %v, want status", first["command"])
+	}
+	if first["description"] != "Show status" {
+		t.Fatalf("first description = %v, want Show status", first["description"])
+	}
+}

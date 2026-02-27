@@ -310,8 +310,8 @@ body[data-active-tab="sessions"] .tab-btn {
 }
 
 body[data-active-tab="sessions"] .workspace-grid {
-  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: clamp(320px, 26vw, 400px) minmax(0, 1fr);
+  gap: 10px;
 }
 
 body[data-active-tab="sessions"] .section-header {
@@ -569,6 +569,7 @@ body[data-active-tab="sessions"] .payload {
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
 .session-selected {
@@ -587,7 +588,10 @@ body[data-active-tab="sessions"] .payload {
   font-family: "IBM Plex Mono", Menlo, monospace;
   font-size: 0.79rem;
   line-height: 1.35;
-  word-break: break-all;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-room-id {
@@ -595,7 +599,8 @@ body[data-active-tab="sessions"] .payload {
   margin-top: 4px;
   font-size: 0.7rem;
   color: #91a59d;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .session-meta {
@@ -660,6 +665,10 @@ body[data-active-tab="sessions"] .payload {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.session-status {
+  flex-shrink: 0;
 }
 
 .status-active {
@@ -952,7 +961,8 @@ body[data-active-tab="sessions"] .payload {
   margin: 0;
   font-size: 0.8rem;
   color: #eff8f3;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .timeline-head p {

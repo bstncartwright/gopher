@@ -26,3 +26,10 @@ func TestBuildRegistryGroupCollaborationEnablesHeartbeat(t *testing.T) {
 		t.Fatalf("expected heartbeat tool to be enabled")
 	}
 }
+
+func TestBuildRegistryGroupRuntimeEnablesGopherMeta(t *testing.T) {
+	registry := buildRegistry([]string{"group:runtime"}, defaultPolicies())
+	if _, ok := registry.Get("gopher_meta"); !ok {
+		t.Fatalf("expected gopher_meta tool to be enabled")
+	}
+}

@@ -102,7 +102,7 @@ func TestDelegateToolCreateUsesCurrentSessionID(t *testing.T) {
 	}
 }
 
-func TestDelegateToolCreateDefaultsTargetToCurrentAgent(t *testing.T) {
+func TestDelegateToolCreateLeavesTargetEmptyWhenOmitted(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"delegate"}
 	workspace := createTestWorkspace(t, config, defaultPolicies())
@@ -126,8 +126,8 @@ func TestDelegateToolCreateDefaultsTargetToCurrentAgent(t *testing.T) {
 	if output.Status != ToolStatusOK {
 		t.Fatalf("status = %q, want ok", output.Status)
 	}
-	if fake.lastCreateReq.TargetAgentID != strings.TrimSpace(agent.ID) {
-		t.Fatalf("target agent = %q, want %q", fake.lastCreateReq.TargetAgentID, strings.TrimSpace(agent.ID))
+	if fake.lastCreateReq.TargetAgentID != "" {
+		t.Fatalf("target agent = %q, want empty", fake.lastCreateReq.TargetAgentID)
 	}
 }
 

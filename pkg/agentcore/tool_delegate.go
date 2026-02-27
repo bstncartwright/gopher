@@ -63,9 +63,6 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 	case "create":
 		targetAgentID, _ := optionalStringArg(input.Args, "target_agent")
 		targetAgentID = strings.TrimSpace(targetAgentID)
-		if targetAgentID == "" {
-			targetAgentID = strings.TrimSpace(input.Agent.ID)
-		}
 		message, err := requiredStringArg(input.Args, "message")
 		if err != nil {
 			slog.Error("delegate_tool: message arg required")

@@ -151,11 +151,16 @@ func printGatewayUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --prune-interval <dur>         override prune interval")
 	fmt.Fprintln(out, "  --capability <kind:name>       repeatable capability override")
 	fmt.Fprintln(out, "  --telegram-enabled <bool>      override telegram transport enablement")
+	fmt.Fprintln(out, "  --telegram-mode <mode>         override telegram mode (polling|webhook)")
 	fmt.Fprintln(out, "  --telegram-bot-token <token>   override telegram bot token")
 	fmt.Fprintln(out, "  --telegram-poll-interval <dur> override telegram poll loop interval")
 	fmt.Fprintln(out, "  --telegram-poll-timeout <dur>  override telegram getUpdates timeout")
 	fmt.Fprintln(out, "  --telegram-allowed-user-id <id> override authorized telegram user id")
 	fmt.Fprintln(out, "  --telegram-allowed-chat-id <id> override authorized telegram chat id")
+	fmt.Fprintln(out, "  --telegram-webhook-listen-addr <addr> override telegram webhook listen address")
+	fmt.Fprintln(out, "  --telegram-webhook-path <path> override telegram webhook path")
+	fmt.Fprintln(out, "  --telegram-webhook-url <url>   override telegram webhook public url")
+	fmt.Fprintln(out, "  --telegram-webhook-secret <secret> override telegram webhook secret")
 	fmt.Fprintln(out, "  --panel-listen-addr <addr>     override observability panel listen address")
 	fmt.Fprintln(out, "  --panel-capture-thinking <bool> override panel thinking capture")
 	fmt.Fprintln(out, "  --cron-enabled <bool>          override cron subsystem enablement")
@@ -187,11 +192,16 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	prune := flags.Duration("prune-interval", 0, "prune interval override")
 	flags.Var(&rawCaps, "capability", "repeatable capability kind:name")
 	flags.Var(&telegramEnabled, "telegram-enabled", "telegram enabled override")
+	telegramMode := flags.String("telegram-mode", "", "telegram mode override")
 	telegramBotToken := flags.String("telegram-bot-token", "", "telegram bot token override")
 	telegramPollInterval := flags.Duration("telegram-poll-interval", 0, "telegram poll interval override")
 	telegramPollTimeout := flags.Duration("telegram-poll-timeout", 0, "telegram poll timeout override")
 	telegramAllowedUserID := flags.String("telegram-allowed-user-id", "", "telegram allowed user id override")
 	telegramAllowedChatID := flags.String("telegram-allowed-chat-id", "", "telegram allowed chat id override")
+	telegramWebhookListenAddr := flags.String("telegram-webhook-listen-addr", "", "telegram webhook listen addr override")
+	telegramWebhookPath := flags.String("telegram-webhook-path", "", "telegram webhook path override")
+	telegramWebhookURL := flags.String("telegram-webhook-url", "", "telegram webhook url override")
+	telegramWebhookSecret := flags.String("telegram-webhook-secret", "", "telegram webhook secret override")
 	panelListenAddr := flags.String("panel-listen-addr", "", "panel listen addr override")
 	flags.Var(&panelCaptureThinking, "panel-capture-thinking", "panel capture thinking override")
 	flags.Var(&cronEnabled, "cron-enabled", "cron enabled override")
@@ -263,6 +273,26 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 	if strings.TrimSpace(*telegramAllowedChatID) != "" {
 		value := strings.TrimSpace(*telegramAllowedChatID)
 		inputs.Overrides.TelegramAllowedChatID = &value
+	}
+	if strings.TrimSpace(*telegramMode) != "" {
+		value := strings.TrimSpace(*telegramMode)
+		inputs.Overrides.TelegramMode = &value
+	}
+	if strings.TrimSpace(*telegramWebhookListenAddr) != "" {
+		value := strings.TrimSpace(*telegramWebhookListenAddr)
+		inputs.Overrides.TelegramWebhookListen = &value
+	}
+	if strings.TrimSpace(*telegramWebhookPath) != "" {
+		value := strings.TrimSpace(*telegramWebhookPath)
+		inputs.Overrides.TelegramWebhookPath = &value
+	}
+	if strings.TrimSpace(*telegramWebhookURL) != "" {
+		value := strings.TrimSpace(*telegramWebhookURL)
+		inputs.Overrides.TelegramWebhookURL = &value
+	}
+	if strings.TrimSpace(*telegramWebhookSecret) != "" {
+		value := strings.TrimSpace(*telegramWebhookSecret)
+		inputs.Overrides.TelegramWebhookSecret = &value
 	}
 	if strings.TrimSpace(*panelListenAddr) != "" {
 		value := strings.TrimSpace(*panelListenAddr)

@@ -20,17 +20,30 @@ import (
 )
 
 type telegramDMBridge struct {
-	transport *telegramtransport.Transport
+	transport telegramBridgeTransport
+	mode      string
 	manager   sessionrt.SessionManager
 	pipeline  *gateway.DMPipeline
 	cron      *gateway.CronRunner
 	heartbeat *gateway.HeartbeatRunner
+	webhook   telegramWebhookRuntime
 	bindings  gateway.ConversationBindingStore
 	store     interface {
 		sessionrt.EventStore
 		sessionrt.SessionRegistryStore
 	}
 	cancel context.CancelFunc
+}
+
+type telegramBridgeTransport interface {
+	transport.Transport
+	SetWebhook(context.Context, string, string) error
+	DeleteWebhook(context.Context, bool) error
+	HandleWebhookUpdate(context.Context, []byte) error
+}
+
+var buildTelegramWebhookRuntime = func(opts telegramWebhookServerOptions) (telegramWebhookRuntime, error) {
+	return newTelegramWebhookServer(opts)
 }
 
 func startTelegramDMBridgeWithRuntime(
@@ -46,10 +59,14 @@ func startTelegramDMBridgeWithRuntime(
 	slog.Info(
 		"telegram_gateway: configuration",
 		"telegram_enabled", true,
+		"mode", cfg.Telegram.Mode,
 		"poll_interval", cfg.Telegram.PollInterval,
 		"poll_timeout", cfg.Telegram.PollTimeout,
 		"allowed_user_id_set", cfg.Telegram.AllowedUserID != "",
 		"allowed_chat_id_set", cfg.Telegram.AllowedChatID != "",
+		"webhook_listen_addr", cfg.Telegram.Webhook.ListenAddr,
+		"webhook_path", cfg.Telegram.Webhook.Path,
+		"webhook_url_set", strings.TrimSpace(cfg.Telegram.Webhook.URL) != "",
 	)
 	if agentRuntime == nil {
 		agentRuntime, err = loadGatewayAgentRuntime(workspace)
@@ -184,6 +201,7 @@ func startTelegramDMBridgeWithRuntime(
 
 	bridge := &telegramDMBridge{
 		transport: telegramBridge,
+		mode:      normalizeTelegramMode(cfg.Telegram.Mode),
 		manager:   manager,
 		pipeline:  pipeline,
 		cron:      cronRunner,
@@ -193,8 +211,10 @@ func startTelegramDMBridgeWithRuntime(
 	}
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge.cancel = cancel
-	slog.Info("telegram_gateway: dm bridge supervisor started", "workspace", workspace)
-	go bridge.runSupervisor(bridgeCtx, logger)
+	if err := bridge.startIngress(bridgeCtx, cfg.Telegram, logger); err != nil {
+		cancel()
+		return nil, err
+	}
 	return bridge, nil
 }
 
@@ -314,6 +334,61 @@ type telegramPairingTransport interface {
 	SendMessage(context.Context, transport.OutboundMessage) error
 }
 
+func normalizeTelegramMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return "polling"
+	}
+	return mode
+}
+
+func (b *telegramDMBridge) startIngress(ctx context.Context, cfg config.TelegramConfig, logger *log.Logger) error {
+	if b == nil || b.transport == nil {
+		return fmt.Errorf("telegram transport is required")
+	}
+	mode := normalizeTelegramMode(cfg.Mode)
+	switch mode {
+	case "polling":
+		if err := b.transport.DeleteWebhook(ctx, false); err != nil {
+			return fmt.Errorf("delete telegram webhook before polling: %w", err)
+		}
+		slog.Info("telegram_gateway: polling ingress enabled")
+		go b.runSupervisor(ctx, logger)
+		return nil
+	case "webhook":
+		server, err := buildTelegramWebhookRuntime(telegramWebhookServerOptions{
+			ListenAddr: cfg.Webhook.ListenAddr,
+			Path:       cfg.Webhook.Path,
+			Secret:     cfg.Webhook.Secret,
+			HandleUpdate: func(handlerCtx context.Context, payload []byte) error {
+				return b.transport.HandleWebhookUpdate(handlerCtx, payload)
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create telegram webhook server: %w", err)
+		}
+		b.webhook = server
+		go func() {
+			if runErr := server.RunWithRetry(ctx); runErr != nil && ctx.Err() == nil && logger != nil {
+				logger.Printf("telegram webhook server stopped err=%v", runErr)
+			}
+		}()
+		if err := b.transport.SetWebhook(ctx, cfg.Webhook.URL, cfg.Webhook.Secret); err != nil {
+			_ = server.Stop()
+			return fmt.Errorf("set telegram webhook: %w", err)
+		}
+		slog.Info(
+			"telegram_gateway: webhook ingress enabled",
+			"listen_addr", cfg.Webhook.ListenAddr,
+			"path", cfg.Webhook.Path,
+			"url", cfg.Webhook.URL,
+		)
+		return nil
+	default:
+		return fmt.Errorf("unsupported telegram mode %q", mode)
+	}
+}
+
 func parseTelegramConversationID(conversationID string) string {
 	conversationID = strings.TrimSpace(conversationID)
 	prefix := "telegram:"
@@ -394,6 +469,9 @@ func (b *telegramDMBridge) Stop() {
 	}
 	if b.heartbeat != nil {
 		b.heartbeat.Stop()
+	}
+	if b.webhook != nil {
+		_ = b.webhook.Stop()
 	}
 	if b.transport != nil {
 		_ = b.transport.Stop()

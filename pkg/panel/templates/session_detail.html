@@ -3,7 +3,7 @@
 {{else if not .Events}}
 <div class="empty-state" data-session-id="{{.SessionID}}" data-last-seq="{{.LastSeq}}">No events for this session yet.</div>
 {{else}}
-<section class="timeline" data-session-id="{{.SessionID}}" data-last-seq="{{.LastSeq}}">
+<section class="timeline" data-session-id="{{.SessionID}}" data-last-seq="{{.LastSeq}}" data-event-total="{{len .Events}}">
   <header class="timeline-head">
     <h3>{{.Title}}</h3>
     {{if and .ConversationID (ne .ConversationID .Title)}}
@@ -12,8 +12,15 @@
     <p>Last sequence: {{.LastSeq}} · Events: {{len .Events}}</p>
   </header>
 
+  <div class="timeline-events" data-timeline-events>
   {{range .Events}}
-  <article class="event-row{{if .RoleClass}} {{.RoleClass}}{{end}}" data-event-row data-event-type="{{.Type}}" data-event-seq="{{.Seq}}">
+  <article
+    class="event-row{{if .RoleClass}} {{.RoleClass}}{{end}}"
+    data-event-row
+    data-event-type="{{.Type}}"
+    data-event-seq="{{.Seq}}"
+    data-event-from="{{if .From}}{{.From}}{{else}}system{{end}}"
+  >
     <div class="event-topline">
       <span class="seq">#{{.Seq}}</span>
       <span class="badge {{.BadgeClass}}">{{.TypeLabel}}</span>
@@ -21,22 +28,20 @@
       <span class="event-pending"><span class="event-spinner" aria-hidden="true"></span>waiting for result</span>
       {{end}}
       <span class="event-from">{{if .From}}{{.From}}{{else}}system{{end}}</span>
-      <span class="event-time">{{.Timestamp}}</span>
+      <time class="event-time" datetime="{{.Timestamp}}" data-relative-time data-absolute-time="{{.Timestamp}}">{{.Timestamp}}</time>
     </div>
 
-    <div class="event-digest" data-event-digest>Summarizing work details...</div>
+    <div class="event-digest" data-event-digest>Preparing summary...</div>
 
     <div class="event-raw">
-      {{if .Collapsed}}
-      <details class="payload payload-collapsed">
-        <summary>View payload</summary>
+      <div class="event-keyfacts" data-event-keyfacts>Extracting key fields...</div>
+      <details class="payload payload-collapsed" data-payload-details>
+        <summary data-payload-summary>View payload JSON</summary>
         <pre>{{.Payload}}</pre>
       </details>
-      {{else}}
-      <pre class="payload">{{.Payload}}</pre>
-      {{end}}
     </div>
   </article>
   {{end}}
+  </div>
 </section>
 {{end}}

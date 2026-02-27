@@ -3,11 +3,13 @@ package agentcore
 import "context"
 
 type HeartbeatState struct {
-	Enabled      bool   `json:"enabled"`
-	Every        string `json:"every,omitempty"`
-	Prompt       string `json:"prompt,omitempty"`
-	AckMaxChars  int    `json:"ack_max_chars,omitempty"`
-	UserTimezone string `json:"user_timezone,omitempty"`
+	Enabled      bool                        `json:"enabled"`
+	Every        string                      `json:"every,omitempty"`
+	Prompt       string                      `json:"prompt,omitempty"`
+	AckMaxChars  int                         `json:"ack_max_chars,omitempty"`
+	Session      string                      `json:"session,omitempty"`
+	ActiveHours  *HeartbeatActiveHoursConfig `json:"active_hours,omitempty"`
+	UserTimezone string                      `json:"user_timezone,omitempty"`
 }
 
 type HeartbeatSetRequest struct {
@@ -15,6 +17,8 @@ type HeartbeatSetRequest struct {
 	Every        string
 	Prompt       *string
 	AckMaxChars  *int
+	Session      *string
+	ActiveHours  *HeartbeatActiveHoursConfig
 	UserTimezone *string
 }
 

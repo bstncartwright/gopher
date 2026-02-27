@@ -343,6 +343,61 @@ func TestLoadAgentHeartbeatConfigParsesEveryPromptAndAckLimit(t *testing.T) {
 	}
 }
 
+func TestLoadAgentHeartbeatConfigParsesSessionAndActiveHours(t *testing.T) {
+	config := defaultConfig()
+	config.Heartbeat = HeartbeatConfig{
+		Every:   "10m",
+		Session: "sess-123",
+		ActiveHours: &HeartbeatActiveHoursConfig{
+			Start:    "09:00",
+			End:      "18:30",
+			Timezone: "America/New_York",
+		},
+	}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if agent.Heartbeat.SessionID != "sess-123" {
+		t.Fatalf("heartbeat session = %q, want sess-123", agent.Heartbeat.SessionID)
+	}
+	if !agent.Heartbeat.ActiveHours.Enabled {
+		t.Fatalf("expected active hours enabled")
+	}
+	if agent.Heartbeat.ActiveHours.StartMinute != 9*60 {
+		t.Fatalf("active hours start minute = %d, want 540", agent.Heartbeat.ActiveHours.StartMinute)
+	}
+	if agent.Heartbeat.ActiveHours.EndMinute != 18*60+30 {
+		t.Fatalf("active hours end minute = %d, want 1110", agent.Heartbeat.ActiveHours.EndMinute)
+	}
+	if agent.Heartbeat.ActiveHours.Timezone != "America/New_York" {
+		t.Fatalf("active hours timezone = %q, want America/New_York", agent.Heartbeat.ActiveHours.Timezone)
+	}
+	if agent.Heartbeat.ActiveHours.Location == nil {
+		t.Fatalf("expected active hours location to be loaded")
+	}
+}
+
+func TestLoadAgentHeartbeatActiveHoursAllowsEndAt2400(t *testing.T) {
+	config := defaultConfig()
+	config.Heartbeat = HeartbeatConfig{
+		Every: "10m",
+		ActiveHours: &HeartbeatActiveHoursConfig{
+			Start: "18:00",
+			End:   "24:00",
+		},
+	}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if agent.Heartbeat.ActiveHours.EndMinute != 24*60 {
+		t.Fatalf("active hours end minute = %d, want 1440", agent.Heartbeat.ActiveHours.EndMinute)
+	}
+}
+
 func TestLoadAgentHeartbeatEveryBareNumberTreatsMinutes(t *testing.T) {
 	config := defaultConfig()
 	config.Heartbeat = HeartbeatConfig{Every: "15"}
@@ -366,6 +421,64 @@ func TestLoadAgentHeartbeatInvalidEveryReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "config.heartbeat.every") {
 		t.Fatalf("expected heartbeat path in error, got: %v", err)
+	}
+}
+
+func TestLoadAgentHeartbeatInvalidActiveHoursReturnsError(t *testing.T) {
+	config := defaultConfig()
+	config.Heartbeat = HeartbeatConfig{
+		Every: "10m",
+		ActiveHours: &HeartbeatActiveHoursConfig{
+			Start: "9:00",
+			End:   "18:00",
+		},
+	}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected heartbeat active_hours validation error")
+	}
+	if !strings.Contains(err.Error(), "config.heartbeat.active_hours") {
+		t.Fatalf("expected active_hours path in error, got: %v", err)
+	}
+}
+
+func TestLoadAgentHeartbeatInvalidActiveHoursStart2400ReturnsError(t *testing.T) {
+	config := defaultConfig()
+	config.Heartbeat = HeartbeatConfig{
+		Every: "10m",
+		ActiveHours: &HeartbeatActiveHoursConfig{
+			Start: "24:00",
+			End:   "18:00",
+		},
+	}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected heartbeat active_hours validation error for start=24:00")
+	}
+	if !strings.Contains(err.Error(), "config.heartbeat.active_hours") {
+		t.Fatalf("expected active_hours path in error, got: %v", err)
+	}
+}
+
+func TestLoadAgentHeartbeatInvalidActiveHoursTimezoneReturnsError(t *testing.T) {
+	config := defaultConfig()
+	config.Heartbeat = HeartbeatConfig{
+		Every: "10m",
+		ActiveHours: &HeartbeatActiveHoursConfig{
+			Start:    "09:00",
+			End:      "18:00",
+			Timezone: "Mars/Olympus",
+		},
+	}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected heartbeat active_hours timezone validation error")
+	}
+	if !strings.Contains(err.Error(), "config.heartbeat.active_hours") {
+		t.Fatalf("expected active_hours path in error, got: %v", err)
 	}
 }
 

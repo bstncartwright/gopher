@@ -71,6 +71,9 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	if err != nil {
 		return agentcore.DelegationSession{}, err
 	}
+	if resolvedTargetAgentID == sourceAgentID {
+		return agentcore.DelegationSession{}, fmt.Errorf("source and target agents must be different")
+	}
 	sourceSession, err := s.manager.GetSession(ctx, sourceSessionID)
 	if err != nil {
 		return agentcore.DelegationSession{}, fmt.Errorf("load source session: %w", err)
@@ -157,21 +160,20 @@ func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(sourceAgen
 	if sourceAgentID == "" {
 		return "", "", fmt.Errorf("source agent id is required")
 	}
-	if requestedTargetAgentID == "" {
-		return sourceAgentID, strings.TrimSpace(string(sourceAgentID)), nil
-	}
-	if _, exists := s.agents[requestedTargetAgentID]; exists {
-		return requestedTargetAgentID, strings.TrimSpace(string(requestedTargetAgentID)), nil
-	}
-	if len(s.agents) == 1 {
-		// Single-agent runtime: treat requested labels like `subagent1` as aliases that route to the source actor.
-		return sourceAgentID, strings.TrimSpace(string(requestedTargetAgentID)), nil
-	}
 	known := make([]string, 0, len(s.agents))
 	for id := range s.agents {
 		known = append(known, strings.TrimSpace(string(id)))
 	}
 	sort.Strings(known)
+	if requestedTargetAgentID == "" {
+		if len(known) == 0 {
+			return "", "", fmt.Errorf("target agent id is required")
+		}
+		return "", "", fmt.Errorf("target agent id is required (known agents: %s)", strings.Join(known, ", "))
+	}
+	if _, exists := s.agents[requestedTargetAgentID]; exists {
+		return requestedTargetAgentID, strings.TrimSpace(string(requestedTargetAgentID)), nil
+	}
 	if len(known) == 0 {
 		return "", "", fmt.Errorf("unknown target agent %q", requestedTargetAgentID)
 	}

@@ -10,9 +10,12 @@
     class="session-card"
     data-session-card
     data-session-id="{{.SessionID}}"
+    data-session-title="{{.Title}}"
+    data-session-room="{{.ConversationID}}"
     data-last-seq="{{.LastSeq}}"
     data-session-status="{{.Status}}"
     data-session-working="{{if .Working}}true{{else}}false{{end}}"
+    data-updated-at="{{.UpdatedAt}}"
   >
     <span class="session-head">
       <span class="session-title">{{.Title}}</span>
@@ -31,7 +34,7 @@
       </span>
       <span class="session-data-point">
         <span class="session-data-label">Updated</span>
-        <span class="session-time">{{.UpdatedAt}}</span>
+        <time class="session-time" datetime="{{.UpdatedAt}}" data-relative-time data-absolute-time="{{.UpdatedAt}}">{{.UpdatedAt}}</time>
       </span>
     </span>
   </button>

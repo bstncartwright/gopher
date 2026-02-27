@@ -319,6 +319,9 @@ func buildToolUsageHints(registry ToolRegistry) string {
 	if toolRegistryHas(registry, "heartbeat") {
 		lines = append(lines, "- `heartbeat` manages this agent's heartbeat schedule (`get`, `set`, `disable`) without manual config file edits.")
 	}
+	if toolRegistryHas(registry, "message") {
+		lines = append(lines, "- `message` sends a user-visible message to the current conversation; after sending user-visible content, return `NO_REPLY` as the final assistant reply to avoid duplicates.")
+	}
 	if len(lines) == 0 {
 		return ""
 	}

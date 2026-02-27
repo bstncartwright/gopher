@@ -55,6 +55,9 @@ func TestContextBuilderOrderingTruncationAndDeterminism(t *testing.T) {
 	if strings.Contains(ctxA.SystemPrompt, "## Heartbeats") {
 		t.Fatalf("did not expect heartbeat section when heartbeat is disabled")
 	}
+	if contextHasTool(ctxA, "message") {
+		t.Fatalf("did not expect message tool in provider context when message service is unavailable")
+	}
 
 	if len(ctxA.Messages) != 4 {
 		t.Fatalf("expected 4 messages (full token-budgeted history + 1 new), got %d", len(ctxA.Messages))
@@ -115,4 +118,44 @@ func TestContextBuilderPromptModes(t *testing.T) {
 	if strings.TrimSpace(noneCtx.SystemPrompt) != "You are a personal assistant running inside gopher." {
 		t.Fatalf("unexpected none-mode system prompt: %s", noneCtx.SystemPrompt)
 	}
+}
+
+func TestContextBuilderIncludesMessageToolWhenServiceAvailable(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:collaboration"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	agent.MessageService = &testMessageToolService{}
+	session := &Session{ID: "s-message"}
+
+	ctx, err := agent.buildProviderContext(context.Background(), session, "hello")
+	if err != nil {
+		t.Fatalf("buildProviderContext() error: %v", err)
+	}
+	if !contextHasTool(ctx, "message") {
+		t.Fatalf("expected message tool in provider context when message service is available")
+	}
+}
+
+func contextHasTool(ctx ai.Context, name string) bool {
+	for _, tool := range ctx.Tools {
+		if strings.TrimSpace(tool.Name) == name {
+			return true
+		}
+	}
+	return false
+}
+
+type testMessageToolService struct{}
+
+func (s *testMessageToolService) SendMessage(_ context.Context, req MessageSendRequest) (MessageSendResult, error) {
+	return MessageSendResult{
+		Sent:            true,
+		ConversationID:  "test-conversation",
+		Text:            strings.TrimSpace(req.Text),
+		AttachmentCount: len(req.Attachments),
+	}, nil
 }

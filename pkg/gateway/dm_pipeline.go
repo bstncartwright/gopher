@@ -92,6 +92,8 @@ type DMPipeline struct {
 	typingCancel       map[string]context.CancelFunc
 	attachmentMu       sync.Mutex
 	pendingFiles       map[string][]transport.OutboundAttachment
+	messageDedupeMu    sync.Mutex
+	pendingMessageText map[string][]string
 	routeMu            sync.RWMutex
 	routes             map[string]conversationRoute
 	traceRouteMu       sync.RWMutex
@@ -159,6 +161,7 @@ const (
 	dmTypingTimeout          = 3 * time.Second
 	dmTypingKeepaliveDefault = 5 * time.Second
 	heartbeatOKToken         = "HEARTBEAT_OK"
+	noReplyToken             = "NO_REPLY"
 	heartbeatAckDefaultChars = 300
 	heartbeatDedupeWindow    = 24 * time.Hour
 	heartbeatRestoreGrace    = 2 * time.Second
@@ -244,6 +247,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		processing:         map[string]int{},
 		typingCancel:       map[string]context.CancelFunc{},
 		pendingFiles:       map[string][]transport.OutboundAttachment{},
+		pendingMessageText: map[string][]string{},
 		routes:             map[string]conversationRoute{},
 		traceByDM:          map[string]string{},
 		dmByTrace:          map[string]string{},
@@ -1205,6 +1209,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			}
 			if event.Type == sessionrt.EventToolResult {
 				p.captureAttachmentsFromEvent(conversationID, event)
+				p.captureMessageEchoFromEvent(conversationID, event)
 			}
 
 			if event.Type != sessionrt.EventMessage {
@@ -1237,6 +1242,9 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			if heartbeatResult.Normalized != "" && heartbeatResult.Normalized != content {
 				msg.Content = heartbeatResult.Normalized
 				content = heartbeatResult.Normalized
+			}
+			if p.consumeSuppressedReply(conversationID, content, len(attachments)) {
+				continue
 			}
 			if content == "" && len(attachments) == 0 {
 				continue
@@ -1287,6 +1295,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 	if shouldEnable {
 		p.resetErrorRecoveryState(conversationID)
 		p.clearPendingAttachments(conversationID)
+		p.clearPendingMessageDedupe(conversationID)
 		p.sendTyping(conversationID, true)
 		p.startTypingKeepalive(conversationID)
 	}
@@ -1557,6 +1566,112 @@ func (p *DMPipeline) clearPendingAttachments(conversationID string) {
 	p.attachmentMu.Lock()
 	delete(p.pendingFiles, conversationID)
 	p.attachmentMu.Unlock()
+}
+
+func (p *DMPipeline) captureMessageEchoFromEvent(conversationID string, event sessionrt.Event) {
+	if p == nil {
+		return
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	text, ok := messageToolResultText(event.Payload)
+	if !ok {
+		return
+	}
+	p.enqueuePendingMessageText(conversationID, text)
+}
+
+func messageToolResultText(payload any) (string, bool) {
+	eventPayload, ok := payload.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if strings.TrimSpace(stringFromAny(eventPayload["name"])) != "message" {
+		return "", false
+	}
+	status := strings.TrimSpace(stringFromAny(eventPayload["status"]))
+	if status != "" && status != "ok" {
+		return "", false
+	}
+	result, ok := eventPayload["result"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	text := strings.TrimSpace(stringFromAny(result["text"]))
+	if text == "" {
+		return "", false
+	}
+	return text, true
+}
+
+func (p *DMPipeline) consumeSuppressedReply(conversationID, text string, attachmentCount int) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	text = strings.TrimSpace(text)
+	if conversationID == "" || text == "" {
+		return false
+	}
+	if text == noReplyToken {
+		p.clearPendingMessageDedupe(conversationID)
+		return true
+	}
+	if attachmentCount > 0 {
+		return false
+	}
+	return p.consumePendingMessageText(conversationID, text)
+}
+
+func (p *DMPipeline) enqueuePendingMessageText(conversationID, text string) {
+	conversationID = strings.TrimSpace(conversationID)
+	text = strings.TrimSpace(text)
+	if conversationID == "" || text == "" {
+		return
+	}
+	p.messageDedupeMu.Lock()
+	p.pendingMessageText[conversationID] = append(p.pendingMessageText[conversationID], text)
+	p.messageDedupeMu.Unlock()
+}
+
+func (p *DMPipeline) consumePendingMessageText(conversationID, text string) bool {
+	conversationID = strings.TrimSpace(conversationID)
+	text = strings.TrimSpace(text)
+	if conversationID == "" || text == "" {
+		return false
+	}
+	p.messageDedupeMu.Lock()
+	defer p.messageDedupeMu.Unlock()
+	pending := p.pendingMessageText[conversationID]
+	if len(pending) == 0 {
+		return false
+	}
+	matchIndex := -1
+	for idx, candidate := range pending {
+		if strings.TrimSpace(candidate) == text {
+			matchIndex = idx
+			break
+		}
+	}
+	if matchIndex < 0 {
+		return false
+	}
+	pending = append(pending[:matchIndex], pending[matchIndex+1:]...)
+	if len(pending) == 0 {
+		delete(p.pendingMessageText, conversationID)
+	} else {
+		p.pendingMessageText[conversationID] = pending
+	}
+	return true
+}
+
+func (p *DMPipeline) clearPendingMessageDedupe(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.messageDedupeMu.Lock()
+	delete(p.pendingMessageText, conversationID)
+	p.messageDedupeMu.Unlock()
 }
 
 func (p *DMPipeline) startTypingKeepalive(conversationID string) {
@@ -1841,6 +1956,10 @@ func (p *DMPipeline) recipientForConversation(conversationID string) string {
 		return strings.TrimSpace(p.recipByAgent[route.AgentID])
 	}
 	return ""
+}
+
+func (p *DMPipeline) SenderForConversation(conversationID string) string {
+	return p.recipientForConversation(conversationID)
 }
 
 func (p *DMPipeline) senderForConversationEvent(conversationID string, eventFrom sessionrt.ActorID) string {

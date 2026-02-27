@@ -37,7 +37,7 @@ run a gopher server on exe.dev and chat with it via telegram.
 
 - `gopher gateway run` – starts the gateway node, connects to nats, publishes capabilities, accepts control messages
 - `gopher gateway config init` – writes starter gopher.toml
-- full agentcore library – run turns, tools (read, write, edit, apply_patch, shell, process, cron), memory, context assembly, loop detection
+- full agentcore library – run turns, tools (read, write, edit, apply_patch, shell, process, cron, message), memory, context assembly, loop detection
 - session runtime – event persistence, replay, jsonl logging
 - ai providers – openai completions/responses, anthropic messages, ollama, openai-codex, kimi-coding, zai
 - memory system – sqlite store, retriever, embedder, ingestion (extractor, publisher), scoped storage
@@ -408,6 +408,10 @@ dm control commands:
 - `!context summarize` / `!context summary`: request a short in-session summary.
 - `!trace` / `!trace link`: ensure trace is on and return the trace conversation id.
 - `!trace on|off|status`: toggle/query trace publishing for the dm.
+
+`message` tool behavior in gateway DMs:
+- sends a user-visible message immediately to the active chat (supports text + file attachments).
+- if the model has nothing else to add after a user-visible `message` send, final reply should be exactly `NO_REPLY` to prevent duplicate output.
 
 ## releases
 

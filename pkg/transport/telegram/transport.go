@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -245,31 +247,39 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 		return err
 	}
 	text := strings.TrimSpace(message.Text)
-	if text == "" && len(message.Attachments) > 0 {
-		text = formatAttachmentNotice(message.Attachments)
-	}
-	if text == "" {
-		slog.Debug("telegram transport: send message skipped due empty text", "conversation_id", message.ConversationID, "attachments", len(message.Attachments))
+	if text == "" && len(message.Attachments) == 0 {
+		slog.Debug("telegram transport: send message skipped due empty payload", "conversation_id", message.ConversationID)
 		return nil
 	}
-	renderedText, parseMode := renderTelegramMessageText(text)
-	payload := buildSendMessagePayload(chatID, renderedText, parseMode)
-	slog.Info("telegram transport: sending message", "conversation_id", message.ConversationID, "chat_id", chatID, "attachment_count", len(message.Attachments))
-	if err := t.sendAPI(ctx, "sendMessage", payload); err != nil {
-		if parseMode == "" || !isTelegramEntityParseError(err) {
+
+	if text != "" {
+		renderedText, parseMode := renderTelegramMessageText(text)
+		payload := buildSendMessagePayload(chatID, renderedText, parseMode)
+		slog.Info("telegram transport: sending message", "conversation_id", message.ConversationID, "chat_id", chatID, "attachment_count", len(message.Attachments))
+		if err := t.sendAPI(ctx, "sendMessage", payload); err != nil {
+			if parseMode == "" || !isTelegramEntityParseError(err) {
+				return err
+			}
+			fallbackText := strings.TrimSpace(stripCommonMarkdownFormatting(text))
+			if fallbackText == "" {
+				fallbackText = text
+			}
+			slog.Warn(
+				"telegram transport: parse-mode render rejected by telegram, retrying plain text",
+				"conversation_id", message.ConversationID,
+				"chat_id", chatID,
+				"error", err,
+			)
+			if err := t.sendAPI(ctx, "sendMessage", buildSendMessagePayload(chatID, fallbackText, "")); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, attachment := range message.Attachments {
+		if err := t.sendAttachment(ctx, message.ConversationID, chatID, attachment); err != nil {
 			return err
 		}
-		fallbackText := strings.TrimSpace(stripCommonMarkdownFormatting(text))
-		if fallbackText == "" {
-			fallbackText = text
-		}
-		slog.Warn(
-			"telegram transport: parse-mode render rejected by telegram, retrying plain text",
-			"conversation_id", message.ConversationID,
-			"chat_id", chatID,
-			"error", err,
-		)
-		return t.sendAPI(ctx, "sendMessage", buildSendMessagePayload(chatID, fallbackText, ""))
 	}
 	return nil
 }
@@ -491,6 +501,98 @@ func (t *Transport) sendAPI(ctx context.Context, method string, payload map[stri
 	return nil
 }
 
+func (t *Transport) sendMultipartAPI(ctx context.Context, method string, body *bytes.Buffer, contentType string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	method = strings.TrimSpace(method)
+	if method == "" {
+		return fmt.Errorf("telegram method is required")
+	}
+	endpoint := fmt.Sprintf("%s/bot%s/%s", t.apiBaseURL, url.PathEscape(t.botToken), method)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body.Bytes()))
+	if err != nil {
+		return fmt.Errorf("build telegram %s request: %w", method, err)
+	}
+	request.Header.Set("Content-Type", contentType)
+	response, err := t.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send telegram %s request: %w", method, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("telegram %s status: %s", method, response.Status)
+	}
+	var parsed sendResponse
+	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
+		return fmt.Errorf("decode telegram %s response: %w", method, err)
+	}
+	if !parsed.OK {
+		return &telegramAPIError{
+			Method:      method,
+			Description: strings.TrimSpace(parsed.Description),
+			ErrorCode:   parsed.ErrorCode,
+		}
+	}
+	return nil
+}
+
+func (t *Transport) sendAttachment(ctx context.Context, conversationID, chatID string, attachment transport.OutboundAttachment) error {
+	pathValue := strings.TrimSpace(attachment.Path)
+	if pathValue == "" {
+		return fmt.Errorf("attachment path is required")
+	}
+	file, err := os.Open(pathValue)
+	if err != nil {
+		return fmt.Errorf("open attachment %s: %w", pathValue, err)
+	}
+	defer file.Close()
+
+	method := selectTelegramAttachmentMethod(attachment)
+	field := telegramAttachmentField(method)
+	if field == "" {
+		field = "document"
+		method = "sendDocument"
+	}
+	filename := strings.TrimSpace(attachment.Name)
+	if filename == "" {
+		filename = filepath.Base(pathValue)
+	}
+	if filename == "" {
+		filename = "attachment"
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", strings.TrimSpace(chatID)); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("build telegram %s payload: %w", method, err)
+	}
+	part, err := writer.CreateFormFile(field, filename)
+	if err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("build telegram %s attachment payload: %w", method, err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("copy telegram %s attachment payload: %w", method, err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("finalize telegram %s payload: %w", method, err)
+	}
+
+	slog.Info(
+		"telegram transport: sending attachment",
+		"conversation_id", conversationID,
+		"chat_id", chatID,
+		"path", pathValue,
+		"filename", filename,
+		"method", method,
+		"mime_type", strings.TrimSpace(attachment.MIMEType),
+	)
+	return t.sendMultipartAPI(ctx, method, &body, writer.FormDataContentType())
+}
+
 func (t *Transport) getHandler() transport.InboundHandler {
 	t.handlerMu.RLock()
 	defer t.handlerMu.RUnlock()
@@ -609,6 +711,62 @@ func formatAttachmentNotice(attachments []transport.OutboundAttachment) string {
 		return ""
 	}
 	return "Generated files: " + strings.Join(names, ", ")
+}
+
+func selectTelegramAttachmentMethod(attachment transport.OutboundAttachment) string {
+	mimeType := strings.ToLower(strings.TrimSpace(attachment.MIMEType))
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(attachment.Path)))
+
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		if mimeType == "image/gif" {
+			return "sendAnimation"
+		}
+		return "sendPhoto"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "sendVideo"
+	case strings.HasPrefix(mimeType, "audio/"):
+		if mimeType == "audio/ogg" || mimeType == "audio/opus" {
+			return "sendVoice"
+		}
+		return "sendAudio"
+	case mimeType == "application/ogg":
+		return "sendVoice"
+	}
+
+	switch ext {
+	case ".gif":
+		return "sendAnimation"
+	case ".jpg", ".jpeg", ".png", ".webp", ".bmp":
+		return "sendPhoto"
+	case ".mp4", ".mov", ".mkv", ".webm":
+		return "sendVideo"
+	case ".ogg", ".opus":
+		return "sendVoice"
+	case ".mp3", ".m4a", ".wav", ".flac", ".aac":
+		return "sendAudio"
+	default:
+		return "sendDocument"
+	}
+}
+
+func telegramAttachmentField(method string) string {
+	switch strings.TrimSpace(method) {
+	case "sendPhoto":
+		return "photo"
+	case "sendVideo":
+		return "video"
+	case "sendAudio":
+		return "audio"
+	case "sendVoice":
+		return "voice"
+	case "sendAnimation":
+		return "animation"
+	case "sendDocument":
+		return "document"
+	default:
+		return ""
+	}
 }
 
 func buildSendMessagePayload(chatID, text, parseMode string) map[string]any {

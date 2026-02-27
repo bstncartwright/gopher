@@ -311,7 +311,7 @@ func buildToolUsageHints(registry ToolRegistry) string {
 		lines = append(lines, "- `gopher_meta` reports runtime/build metadata (including running binary version and on-disk binary version) to detect stale processes after updates.")
 	}
 	if toolRegistryHas(registry, "delegate") {
-		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`}; `create` requires `message` and accepts optional `target_agent`.")
+		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`}; `create` requires `message` and accepts optional `target_agent` (omitting target auto-creates a subagent).")
 	}
 	if toolRegistryHas(registry, "cron") {
 		lines = append(lines, "- `cron` manages scheduled reminders/checks; omit `session_id` only when the current session should be used.")
@@ -342,7 +342,7 @@ func buildCollaborationSection(input systemPromptInput) string {
 	if delegateEnabled && len(known) > 1 {
 		lines = append(lines, "When delegation helps, use `delegate` with `action:\"create\"` and a task-specific `message`; provide `target_agent` when you want a specific worker.")
 	} else if delegateEnabled {
-		lines = append(lines, "Delegation is unavailable in a single-agent runtime. Do not call `delegate` unless another agent is configured.")
+		lines = append(lines, "Delegation can auto-create ephemeral subagents in a single-agent runtime. Use `delegate` `action:\"create\"` with a task-specific `message`; optionally set `target_agent` to pick or name a worker.")
 	} else if len(known) > 1 {
 		lines = append(lines, "Delegation requires the `delegate` tool; if missing from Tooling, ask the user to enable collaboration tools.")
 	}

@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
 // ActorExecutorRouter dispatches session runtime steps to actor-specific executors.
 type ActorExecutorRouter struct {
+	mu           sync.RWMutex
 	defaultActor sessionrt.ActorID
 	executors    map[sessionrt.ActorID]sessionrt.AgentExecutor
 	aliases      map[sessionrt.ActorID]sessionrt.ActorID
@@ -53,16 +55,12 @@ func NewActorExecutorRouter(defaultActor sessionrt.ActorID, executors map[sessio
 
 	router := &ActorExecutorRouter{
 		defaultActor: resolvedDefault,
-		executors:    normalized,
-		aliases:      map[sessionrt.ActorID]sessionrt.ActorID{},
+		executors:    make(map[sessionrt.ActorID]sessionrt.AgentExecutor, len(normalized)),
+		aliases:      make(map[sessionrt.ActorID]sessionrt.ActorID, len(normalized)*2),
 	}
-	for actorID := range normalized {
-		router.aliases[actorID] = actorID
-		alt := alternateActorID(actorID)
-		if alt != "" {
-			if _, exists := router.aliases[alt]; !exists {
-				router.aliases[alt] = actorID
-			}
+	for actorID, executor := range normalized {
+		if err := router.registerActorLocked(actorID, executor); err != nil {
+			return nil, err
 		}
 	}
 	return router, nil
@@ -104,12 +102,75 @@ func (r *ActorExecutorRouter) StepStream(ctx context.Context, input sessionrt.Ag
 }
 
 func (r *ActorExecutorRouter) KnownActors() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.knownActorsLocked()
+}
+
+func (r *ActorExecutorRouter) RegisterActor(actorID sessionrt.ActorID, executor sessionrt.AgentExecutor) error {
+	id := normalizeActorID(actorID)
+	if id == "" {
+		return fmt.Errorf("actor id is required")
+	}
+	if executor == nil {
+		return fmt.Errorf("executor for actor %q is required", id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.registerActorLocked(id, executor)
+}
+
+func (r *ActorExecutorRouter) UnregisterActor(actorID sessionrt.ActorID) bool {
+	id := normalizeActorID(actorID)
+	if id == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.executors[id]; !exists {
+		return false
+	}
+	delete(r.executors, id)
+	for alias, canonical := range r.aliases {
+		if canonical == id {
+			delete(r.aliases, alias)
+		}
+	}
+	if r.defaultActor == id {
+		r.defaultActor = ""
+		actors := r.knownActorsLocked()
+		if len(actors) > 0 {
+			r.defaultActor = sessionrt.ActorID(actors[0])
+		}
+	}
+	return true
+}
+
+func (r *ActorExecutorRouter) knownActorsLocked() []string {
 	keys := make([]string, 0, len(r.executors))
 	for actorID := range r.executors {
 		keys = append(keys, string(actorID))
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func (r *ActorExecutorRouter) registerActorLocked(actorID sessionrt.ActorID, executor sessionrt.AgentExecutor) error {
+	if _, exists := r.executors[actorID]; exists {
+		return fmt.Errorf("executor for actor %q already registered", actorID)
+	}
+	r.executors[actorID] = executor
+	r.aliases[actorID] = actorID
+	alt := alternateActorID(actorID)
+	if alt != "" {
+		if _, exists := r.aliases[alt]; !exists {
+			r.aliases[alt] = actorID
+		}
+	}
+	if r.defaultActor == "" {
+		r.defaultActor = actorID
+	}
+	return nil
 }
 
 func normalizeActorID(actorID sessionrt.ActorID) sessionrt.ActorID {
@@ -133,6 +194,9 @@ func alternateActorID(actorID sessionrt.ActorID) sessionrt.ActorID {
 }
 
 func (r *ActorExecutorRouter) resolveExecutor(actorID sessionrt.ActorID) (sessionrt.AgentExecutor, sessionrt.ActorID, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	normalizedActorID := normalizeActorID(actorID)
 	if normalizedActorID == "" {
 		normalizedActorID = r.defaultActor
@@ -148,7 +212,7 @@ func (r *ActorExecutorRouter) resolveExecutor(actorID sessionrt.ActorID) (sessio
 
 	executor, ok := r.executors[resolvedActor]
 	if !ok {
-		return nil, "", fmt.Errorf("unknown actor %q (known: %s)", normalizedActorID, strings.Join(r.KnownActors(), ", "))
+		return nil, "", fmt.Errorf("unknown actor %q (known: %s)", normalizedActorID, strings.Join(r.knownActorsLocked(), ", "))
 	}
 	return executor, resolvedActor, nil
 }

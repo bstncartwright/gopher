@@ -22,6 +22,10 @@ type DelegationSession struct {
 	KickoffMessage  string `json:"kickoff_message"`
 	Status          string `json:"status,omitempty"`
 	Announcement    string `json:"announcement,omitempty"`
+	Ephemeral       bool   `json:"ephemeral,omitempty"`
+	WorkspaceMode   string `json:"workspace_mode,omitempty"`
+	MergeMode       string `json:"merge_mode,omitempty"`
+	DiffArtifact    string `json:"diff_artifact_path,omitempty"`
 }
 
 type DelegationListRequest struct {
@@ -40,6 +44,8 @@ type DelegationListItem struct {
 	CreatedAt       string `json:"created_at,omitempty"`
 	UpdatedAt       string `json:"updated_at,omitempty"`
 	LastSeq         uint64 `json:"last_seq,omitempty"`
+	Ephemeral       bool   `json:"ephemeral,omitempty"`
+	DiffArtifact    string `json:"diff_artifact_path,omitempty"`
 }
 
 type DelegationKillRequest struct {

@@ -15,6 +15,7 @@ const defaultAgentWorkspaceID = "main"
 
 type agentRuntime struct {
 	Executor       sessionrt.AgentExecutor
+	Router         *agentcore.ActorExecutorRouter
 	DefaultActorID sessionrt.ActorID
 	Agents         map[sessionrt.ActorID]*agentcore.Agent
 }
@@ -83,6 +84,7 @@ func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*a
 	}
 	return &agentRuntime{
 		Executor:       router,
+		Router:         router,
 		DefaultActorID: defaultActorID,
 		Agents:         agents,
 	}, nil

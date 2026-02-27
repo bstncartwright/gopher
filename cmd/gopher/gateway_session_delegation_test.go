@@ -71,6 +71,56 @@ func waitForDelegationKickoff(
 	}
 }
 
+func loadDelegationTestAgent(t *testing.T, workspaceRoot, agentID string) *agentcore.Agent {
+	t.Helper()
+	workspace := filepath.Join(workspaceRoot, "agents", agentID)
+	createGatewayTestAgentWorkspace(t, workspace, agentID)
+	if err := os.WriteFile(filepath.Join(workspace, "TASK.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	agent, err := agentcore.LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent(%s): %v", workspace, err)
+	}
+	return agent
+}
+
+func newDynamicDelegationFixture(t *testing.T) (context.Context, *gatewaySessionDelegationToolService, gatewaySessionDelegationStore, *agentcore.ActorExecutorRouter, *agentcore.Agent, *sessionrt.Manager, *sessionrt.Session) {
+	t.Helper()
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	sourceAgent := loadDelegationTestAgent(t, workspaceRoot, "milo")
+
+	router, err := agentcore.NewActorExecutorRouter("milo", map[sessionrt.ActorID]sessionrt.AgentExecutor{
+		"milo": agentcore.NewSessionRuntimeAdapter(sourceAgent),
+	})
+	if err != nil {
+		t.Fatalf("NewActorExecutorRouter() error: %v", err)
+	}
+
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: router,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	sourceSession, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{{ID: "milo", Type: sessionrt.ActorAgent}},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	dataDir := t.TempDir()
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo": sourceAgent,
+	}, dataDir, nil, router)
+	sourceAgent.Delegation = service
+	return ctx, service, store, router, sourceAgent, manager, sourceSession
+}
+
 func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	ctx := context.Background()
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
@@ -96,7 +146,7 @@ func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, dataDir, nil)
+	}, dataDir, nil, nil)
 
 	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
@@ -149,41 +199,66 @@ func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	}
 }
 
-func TestGatewaySessionDelegationRejectsUnknownTargetAgent(t *testing.T) {
-	ctx := context.Background()
-	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
-	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
-		Store:    store,
-		Executor: noopAgentExecutor{},
+func TestGatewaySessionDelegationSingleAgentAutoCreatesExplicitAliasTarget(t *testing.T) {
+	ctx, service, store, _, _, _, sourceSession := newDynamicDelegationFixture(t)
+
+	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "subagent1",
+		Message:         "Investigate and report back.",
 	})
 	if err != nil {
-		t.Fatalf("NewManager() error: %v", err)
+		t.Fatalf("CreateDelegationSession() error: %v", err)
 	}
-	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
-		Participants: []sessionrt.Participant{
-			{ID: "milo", Type: sessionrt.ActorAgent},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateSession(source) error: %v", err)
+	if result.TargetAgentID != "subagent1" {
+		t.Fatalf("target = %q, want subagent1", result.TargetAgentID)
+	}
+	if !result.Ephemeral {
+		t.Fatalf("expected ephemeral=true")
+	}
+	if result.WorkspaceMode != "isolated_temp" || result.MergeMode != "diff_for_approval" {
+		t.Fatalf("unexpected modes: workspace=%q merge=%q", result.WorkspaceMode, result.MergeMode)
 	}
 
-	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
-		"milo":  {},
-		"riley": {},
-	}, t.TempDir(), nil)
-	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
-		SourceSessionID: string(source.ID),
-		SourceAgentID:   "milo",
-		TargetAgentID:   "worker",
-		Message:         "please help",
+	if _, exists := service.lookupAgent("subagent1"); !exists {
+		t.Fatalf("expected subagent1 to be registered")
+	}
+
+	waitForDelegationKickoff(t, ctx, store, sessionrt.SessionID(result.SessionID), func(msg sessionrt.Message) bool {
+		return msg.TargetActorID == "subagent1" && strings.Contains(msg.Content, "Delegation for subagent1:")
 	})
-	if err == nil {
-		t.Fatalf("expected unknown target agent error")
+}
+
+func TestGatewaySessionDelegationCreateWithoutTargetAllocatesSequentialSubagents(t *testing.T) {
+	ctx, service, _, _, _, _, sourceSession := newDynamicDelegationFixture(t)
+
+	first, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		Message:         "Task one.",
+	})
+	if err != nil {
+		t.Fatalf("first CreateDelegationSession() error: %v", err)
+	}
+	if first.TargetAgentID != "subagent1" {
+		t.Fatalf("first target = %q, want subagent1", first.TargetAgentID)
+	}
+
+	second, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		Message:         "Task two.",
+	})
+	if err != nil {
+		t.Fatalf("second CreateDelegationSession() error: %v", err)
+	}
+	if second.TargetAgentID != "subagent2" {
+		t.Fatalf("second target = %q, want subagent2", second.TargetAgentID)
 	}
 }
 
-func TestGatewaySessionDelegationSingleAgentRejectsAliasTarget(t *testing.T) {
+func TestGatewaySessionDelegationRejectsSelfTargetAgent(t *testing.T) {
 	ctx := context.Background()
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
@@ -199,48 +274,10 @@ func TestGatewaySessionDelegationSingleAgentRejectsAliasTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession(source) error: %v", err)
 	}
+
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo": {},
-	}, t.TempDir(), nil)
-	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
-		SourceSessionID: string(source.ID),
-		SourceAgentID:   "milo",
-		TargetAgentID:   "subagent1",
-		Message:         "Investigate and report back.",
-	})
-	if err != nil {
-		if !strings.Contains(err.Error(), "unknown target agent") {
-			t.Fatalf("expected unknown target agent error, got: %v", err)
-		}
-	} else {
-		t.Fatalf("expected alias target to be rejected in single-agent runtime")
-	}
-}
-
-func TestGatewaySessionDelegationRejectsSelfTargetAgent(t *testing.T) {
-	ctx := context.Background()
-	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
-	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
-		Store:    store,
-		Executor: noopAgentExecutor{},
-	})
-	if err != nil {
-		t.Fatalf("NewManager() error: %v", err)
-	}
-	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
-		Participants: []sessionrt.Participant{
-			{ID: "milo", Type: sessionrt.ActorAgent},
-			{ID: "worker", Type: sessionrt.ActorAgent},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateSession(source) error: %v", err)
-	}
-
-	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
-		"milo":   {},
-		"worker": {},
-	}, t.TempDir(), nil)
+	}, t.TempDir(), nil, nil)
 	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
 		SourceAgentID:   "milo",
@@ -255,106 +292,54 @@ func TestGatewaySessionDelegationRejectsSelfTargetAgent(t *testing.T) {
 	}
 }
 
-func TestGatewaySessionDelegationListKillAndLog(t *testing.T) {
-	ctx := context.Background()
-	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
-	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
-		Store:    store,
-		Executor: noopAgentExecutor{},
-	})
-	if err != nil {
-		t.Fatalf("NewManager() error: %v", err)
-	}
-	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
-		Participants: []sessionrt.Participant{
-			{ID: "milo", Type: sessionrt.ActorAgent},
-			{ID: "worker", Type: sessionrt.ActorAgent},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateSession(source) error: %v", err)
-	}
+func TestGatewaySessionDelegationKillGeneratesDiffArtifactForEphemeralWorker(t *testing.T) {
+	ctx, service, _, _, sourceAgent, _, sourceSession := newDynamicDelegationFixture(t)
 
-	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
-		"milo":   {},
-		"worker": {},
-	}, t.TempDir(), nil)
+	sourceFile := filepath.Join(sourceAgent.Workspace, "TASK.md")
+	orig, err := os.ReadFile(sourceFile)
+	if err != nil {
+		t.Fatalf("read source file: %v", err)
+	}
 
 	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
-		SourceSessionID: string(source.ID),
+		SourceSessionID: string(sourceSession.ID),
 		SourceAgentID:   "milo",
-		TargetAgentID:   "worker",
-		Message:         "Investigate and reply with next steps.",
+		Message:         "Edit task notes.",
 	})
 	if err != nil {
 		t.Fatalf("CreateDelegationSession() error: %v", err)
 	}
 
-	listActive, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{SourceSessionID: string(source.ID)})
-	if err != nil {
-		t.Fatalf("ListDelegationSessions(active) error: %v", err)
+	worker, exists := service.lookupAgent(sessionrt.ActorID(created.TargetAgentID))
+	if !exists {
+		t.Fatalf("expected worker agent %q", created.TargetAgentID)
 	}
-	if len(listActive) != 1 {
-		t.Fatalf("active list count = %d, want 1", len(listActive))
-	}
-	if listActive[0].SessionID != created.SessionID {
-		t.Fatalf("listed session_id = %q, want %q", listActive[0].SessionID, created.SessionID)
-	}
-	if listActive[0].Status != "active" {
-		t.Fatalf("listed status = %q, want active", listActive[0].Status)
+	workerFile := filepath.Join(worker.Workspace, "TASK.md")
+	if err := os.WriteFile(workerFile, []byte("delegated change\n"), 0o644); err != nil {
+		t.Fatalf("write worker file: %v", err)
 	}
 
-	waitForDelegationKickoff(t, ctx, store, sessionrt.SessionID(created.SessionID), func(msg sessionrt.Message) bool {
-		return strings.Contains(msg.Content, "Delegation for worker:")
-	})
-
-	logOut, err := service.GetDelegationLog(ctx, agentcore.DelegationLogRequest{
-		SourceSessionID: string(source.ID),
-		DelegationID:    created.SessionID,
-		Offset:          0,
-		Limit:           20,
-	})
+	after, err := os.ReadFile(sourceFile)
 	if err != nil {
-		t.Fatalf("GetDelegationLog() error: %v", err)
+		t.Fatalf("read source file after worker edit: %v", err)
 	}
-	if logOut.Count == 0 {
-		t.Fatalf("expected delegation log entries")
-	}
-	foundKickoff := false
-	for _, entry := range logOut.Entries {
-		if strings.Contains(entry.Content, "Delegation for worker:") {
-			foundKickoff = true
-			break
-		}
-	}
-	if !foundKickoff {
-		t.Fatalf("expected kickoff content in delegation log, entries=%+v", logOut.Entries)
+	if string(after) != string(orig) {
+		t.Fatalf("expected source workspace unchanged before merge")
 	}
 
 	killOut, err := service.KillDelegationSession(ctx, agentcore.DelegationKillRequest{
-		SourceSessionID: string(source.ID),
+		SourceSessionID: string(sourceSession.ID),
 		DelegationID:    created.SessionID,
 	})
 	if err != nil {
 		t.Fatalf("KillDelegationSession() error: %v", err)
 	}
 	if !killOut.Killed {
-		t.Fatalf("expected killed=true, got false")
-	}
-	if killOut.Status != "cancelled" {
-		t.Fatalf("kill status = %q, want cancelled", killOut.Status)
-	}
-
-	listActiveAfterKill, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{SourceSessionID: string(source.ID)})
-	if err != nil {
-		t.Fatalf("ListDelegationSessions(after kill active) error: %v", err)
-	}
-	if len(listActiveAfterKill) != 0 {
-		t.Fatalf("active list count after kill = %d, want 0", len(listActiveAfterKill))
+		t.Fatalf("expected killed=true")
 	}
 
 	listAll, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{
-		SourceSessionID: string(source.ID),
+		SourceSessionID: string(sourceSession.ID),
 		IncludeInactive: true,
 	})
 	if err != nil {
@@ -363,8 +348,66 @@ func TestGatewaySessionDelegationListKillAndLog(t *testing.T) {
 	if len(listAll) != 1 {
 		t.Fatalf("all list count = %d, want 1", len(listAll))
 	}
-	if listAll[0].Status != "cancelled" {
-		t.Fatalf("all list status = %q, want cancelled", listAll[0].Status)
+	if strings.TrimSpace(listAll[0].DiffArtifact) == "" {
+		t.Fatalf("expected diff artifact path in list output")
+	}
+	blob, err := os.ReadFile(listAll[0].DiffArtifact)
+	if err != nil {
+		t.Fatalf("read diff artifact: %v", err)
+	}
+	if !strings.Contains(string(blob), "delegated change") {
+		t.Fatalf("diff artifact missing expected content")
+	}
+}
+
+func TestGatewaySessionDelegationTTLExpiresEphemeralWorker(t *testing.T) {
+	ctx, service, _, router, _, _, sourceSession := newDynamicDelegationFixture(t)
+	service.ttl = 10 * time.Millisecond
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		Message:         "Run quick check.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+
+	state := service.ephemeral[created.SessionID]
+	state.LastActivity = time.Now().UTC().Add(-1 * time.Hour)
+	service.ephemeral[created.SessionID] = state
+
+	_, err = service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{
+		SourceSessionID: string(sourceSession.ID),
+		IncludeInactive: true,
+	})
+	if err != nil {
+		t.Fatalf("ListDelegationSessions() error: %v", err)
+	}
+
+	if _, exists := service.lookupAgent(sessionrt.ActorID(created.TargetAgentID)); exists {
+		t.Fatalf("expected ephemeral worker to be removed after TTL")
+	}
+	if _, err := os.Stat(state.WorkerWorkspace); !os.IsNotExist(err) {
+		t.Fatalf("expected worker workspace removed, stat err=%v", err)
+	}
+	_, err = router.Step(context.Background(), sessionrt.AgentInput{ActorID: sessionrt.ActorID(created.TargetAgentID)})
+	if err == nil {
+		t.Fatalf("expected router to reject expired worker actor")
+	}
+
+	listAll, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{
+		SourceSessionID: string(sourceSession.ID),
+		IncludeInactive: true,
+	})
+	if err != nil {
+		t.Fatalf("ListDelegationSessions(include inactive) error: %v", err)
+	}
+	if len(listAll) != 1 {
+		t.Fatalf("all list count = %d, want 1", len(listAll))
+	}
+	if listAll[0].Status != "expired" {
+		t.Fatalf("status = %q, want expired", listAll[0].Status)
 	}
 }
 
@@ -396,7 +439,7 @@ func TestGatewaySessionDelegationCreateReturnsBeforeDelegatedTurnCompletes(t *te
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, t.TempDir(), nil)
+	}, t.TempDir(), nil, nil)
 
 	start := time.Now()
 	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
@@ -418,73 +461,4 @@ func TestGatewaySessionDelegationCreateReturnsBeforeDelegatedTurnCompletes(t *te
 		t.Fatalf("timed out waiting for delegated kickoff execution")
 	}
 	close(exec.release)
-}
-
-func TestGatewaySessionDelegationListHidesStaleByDefault(t *testing.T) {
-	ctx := context.Background()
-	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
-	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
-		Store:    store,
-		Executor: noopAgentExecutor{},
-	})
-	if err != nil {
-		t.Fatalf("NewManager() error: %v", err)
-	}
-	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
-		Participants: []sessionrt.Participant{
-			{ID: "milo", Type: sessionrt.ActorAgent},
-			{ID: "worker", Type: sessionrt.ActorAgent},
-		},
-	})
-	if err != nil {
-		t.Fatalf("CreateSession(source) error: %v", err)
-	}
-
-	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
-		"milo":   {},
-		"worker": {},
-	}, t.TempDir(), nil)
-
-	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
-		SourceSessionID: string(source.ID),
-		SourceAgentID:   "milo",
-		TargetAgentID:   "worker",
-		Message:         "Investigate and reply with next steps.",
-	})
-	if err != nil {
-		t.Fatalf("CreateDelegationSession() error: %v", err)
-	}
-
-	old := time.Now().UTC().Add(-48 * time.Hour)
-	if err := store.UpsertSession(ctx, sessionrt.SessionRecord{
-		SessionID: sessionrt.SessionID(created.SessionID),
-		Status:    sessionrt.SessionActive,
-		CreatedAt: old.Add(-24 * time.Hour),
-		UpdatedAt: old,
-		LastSeq:   1,
-	}); err != nil {
-		t.Fatalf("UpsertSession(stale delegation) error: %v", err)
-	}
-
-	listActive, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{SourceSessionID: string(source.ID)})
-	if err != nil {
-		t.Fatalf("ListDelegationSessions(active) error: %v", err)
-	}
-	if len(listActive) != 0 {
-		t.Fatalf("active list count = %d, want 0 for stale delegation", len(listActive))
-	}
-
-	listAll, err := service.ListDelegationSessions(ctx, agentcore.DelegationListRequest{
-		SourceSessionID: string(source.ID),
-		IncludeInactive: true,
-	})
-	if err != nil {
-		t.Fatalf("ListDelegationSessions(include inactive) error: %v", err)
-	}
-	if len(listAll) != 1 {
-		t.Fatalf("all list count = %d, want 1", len(listAll))
-	}
-	if listAll[0].Status != "stale" {
-		t.Fatalf("stale delegation status = %q, want stale", listAll[0].Status)
-	}
 }

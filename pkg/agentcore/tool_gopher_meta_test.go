@@ -26,6 +26,33 @@ func TestBinaryVersionFromBuildInfoParsesLDFlags(t *testing.T) {
 	}
 }
 
+func TestBinaryVersionFromBuildInfoParsesQuotedLDFlags(t *testing.T) {
+	info := &rdebug.BuildInfo{
+		Main: rdebug.Module{
+			Path:    "github.com/bstncartwright/gopher",
+			Version: "v0.0.0-20260227100000-deadbeefcafe",
+		},
+		Settings: []rdebug.BuildSetting{
+			{Key: "-ldflags", Value: `-s -w -X \"main.binaryVersion=v1.2.3\"`},
+		},
+	}
+	if got := binaryVersionFromBuildInfo(info); got != "v1.2.3" {
+		t.Fatalf("binaryVersionFromBuildInfo() = %q, want v1.2.3", got)
+	}
+}
+
+func TestBinaryVersionFromBuildInfoSkipsPseudoModuleVersion(t *testing.T) {
+	info := &rdebug.BuildInfo{
+		Main: rdebug.Module{
+			Path:    "github.com/bstncartwright/gopher",
+			Version: "v0.0.0-20260227100000-deadbeefcafe",
+		},
+	}
+	if got := binaryVersionFromBuildInfo(info); got != "" {
+		t.Fatalf("binaryVersionFromBuildInfo() = %q, want empty", got)
+	}
+}
+
 func TestGopherMetaToolRunDetectsStaleRuntimeVersion(t *testing.T) {
 	dir := t.TempDir()
 	currentExecutable := filepath.Join(dir, "current-gopher")
@@ -121,6 +148,9 @@ func TestGopherMetaToolRunDetectsStaleRuntimeVersion(t *testing.T) {
 	running := mustMap(t, result, "running")
 	if got := running["binary_version"]; got != "v1.2.3" {
 		t.Fatalf("running.binary_version = %v, want v1.2.3", got)
+	}
+	if got := running["build_version"]; got != "(devel)" {
+		t.Fatalf("running.build_version = %v, want (devel)", got)
 	}
 
 	current := mustMap(t, result, "on_disk_current_executable")

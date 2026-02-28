@@ -26,7 +26,9 @@ var (
 	gopherMetaReadFileBuildInfo    = gobuildinfo.ReadFile
 	gopherMetaStat                 = os.Stat
 	gopherMetaReadFile             = os.ReadFile
-	gopherMetaBinaryVersionPattern = regexp.MustCompile(`(?:^|\s)-X(?:=|\s+)main\.binaryVersion=([^\s"']+)`)
+	gopherMetaBinaryVersionPattern = regexp.MustCompile(`(?:^|\s)-X(?:=|\s+)(?:["']?)main\.binaryVersion=([^\s"']+)(?:["']?)`)
+	gopherMetaReleaseVersion       = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+	gopherMetaPseudoVersion        = regexp.MustCompile(`^v\d+\.\d+\.\d+-\d{14}-[0-9a-f]{12}$`)
 )
 
 type gopherMetaTool struct{}
@@ -200,6 +202,9 @@ func applyBuildInfoMetadata(target map[string]any, info *rdebug.BuildInfo) {
 	if version := binaryVersionFromBuildInfo(info); version != "" {
 		target["binary_version"] = version
 	}
+	if value := strings.TrimSpace(info.Main.Version); value != "" {
+		target["build_version"] = value
+	}
 
 	settings := buildInfoSettings(info)
 	if value := strings.TrimSpace(settings["vcs.revision"]); value != "" {
@@ -219,10 +224,13 @@ func binaryVersionFromBuildInfo(info *rdebug.BuildInfo) string {
 	}
 	settings := buildInfoSettings(info)
 	ldflags := strings.TrimSpace(settings["-ldflags"])
+	ldflags = strings.ReplaceAll(ldflags, `\"`, `"`)
 	if ldflags != "" {
 		matches := gopherMetaBinaryVersionPattern.FindStringSubmatch(ldflags)
 		if len(matches) == 2 {
-			value := strings.TrimSpace(matches[1])
+			value := strings.TrimSpace(strings.Trim(matches[1], `"'`))
+			value = strings.TrimPrefix(value, `\"`)
+			value = strings.TrimSuffix(value, `\"`)
 			if value != "" {
 				return value
 			}
@@ -230,7 +238,7 @@ func binaryVersionFromBuildInfo(info *rdebug.BuildInfo) string {
 	}
 
 	moduleVersion := strings.TrimSpace(info.Main.Version)
-	if strings.HasPrefix(moduleVersion, "v") {
+	if gopherMetaReleaseVersion.MatchString(moduleVersion) && !gopherMetaPseudoVersion.MatchString(moduleVersion) {
 		return moduleVersion
 	}
 	return ""

@@ -393,6 +393,128 @@
         return clip(String(value), 220);
       }
 
+      function appendUniqueValue(values, candidate) {
+        var text = String(candidate || "").trim();
+        if (!text) {
+          return;
+        }
+        for (var i = 0; i < values.length; i++) {
+          if (values[i] === text) {
+            return;
+          }
+        }
+        values.push(text);
+      }
+
+      function extractPatchPaths(rawPatch) {
+        if (typeof rawPatch !== "string" || !rawPatch) {
+          return [];
+        }
+        var paths = [];
+        var lines = rawPatch.split(/\r?\n/);
+        for (var i = 0; i < lines.length; i++) {
+          var match = lines[i].match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
+          if (match && match[1]) {
+            appendUniqueValue(paths, match[1]);
+          }
+        }
+        return paths;
+      }
+
+      function summarizeToolPaths(toolInput) {
+        var paths = [];
+        if (!toolInput || typeof toolInput !== "object") {
+          return paths;
+        }
+
+        appendUniqueValue(paths, pickString(toolInput, ["path", "file", "file_path", "filepath", "target_path", "target"]));
+
+        var listValues = [pick(toolInput, ["files"]), pick(toolInput, ["paths"])];
+        for (var i = 0; i < listValues.length; i++) {
+          var list = listValues[i];
+          if (!Array.isArray(list)) {
+            continue;
+          }
+          for (var j = 0; j < list.length; j++) {
+            var entry = list[j];
+            if (typeof entry === "string") {
+              appendUniqueValue(paths, entry);
+            } else if (entry && typeof entry === "object") {
+              appendUniqueValue(paths, pickString(entry, ["path", "file", "name"]));
+            }
+          }
+        }
+
+        var patchInput = pickString(toolInput, ["input", "patch"]);
+        if (patchInput) {
+          var patchPaths = extractPatchPaths(patchInput);
+          for (var k = 0; k < patchPaths.length; k++) {
+            appendUniqueValue(paths, patchPaths[k]);
+          }
+        }
+        return paths;
+      }
+
+      function summarizeToolParams(toolName, toolInput) {
+        if (!toolInput || typeof toolInput !== "object") {
+          return "";
+        }
+
+        var normalizedTool = normalize(toolName);
+        if (normalizedTool === "web_search" || normalizedTool === "search_mcp" || normalizedTool === "search") {
+          var query = pickString(toolInput, ["query", "search_query", "q", "text"]);
+          if (!query) {
+            var queryList = pick(toolInput, ["queries", "search_queries", "search_query"]);
+            if (Array.isArray(queryList) && queryList.length) {
+              var first = queryList[0];
+              if (typeof first === "string") {
+                query = first;
+              } else if (first && typeof first === "object") {
+                query = pickString(first, ["q", "query", "search_query"]);
+              }
+              if (query && queryList.length > 1) {
+                query += " (+" + (queryList.length - 1) + " more)";
+              }
+            }
+          }
+          if (query) {
+            return "query \"" + clip(query, 140) + "\"";
+          }
+
+          var url = pickString(toolInput, ["url"]);
+          if (url) {
+            return "url " + clip(url, 140);
+          }
+          var urls = pick(toolInput, ["urls"]);
+          if (Array.isArray(urls) && urls.length) {
+            var firstURL = String(urls[0] || "").trim();
+            if (firstURL) {
+              if (urls.length > 1) {
+                return "url " + clip(firstURL, 100) + " (+" + (urls.length - 1) + " more)";
+              }
+              return "url " + clip(firstURL, 140);
+            }
+          }
+        }
+
+        var paths = summarizeToolPaths(toolInput);
+        if (paths.length) {
+          if (paths.length === 1) {
+            return "file " + clip(paths[0], 180);
+          }
+          return "files " + clip(paths[0], 120) + " (+" + (paths.length - 1) + " more)";
+        }
+
+        if (normalizedTool === "exec" || normalizedTool === "process") {
+          var command = pickString(toolInput, ["cmd", "command"]);
+          if (command) {
+            return "command \"" + clip(command, 140) + "\"";
+          }
+        }
+
+        return "";
+      }
+
       function summarizeEvent(type, payload, fallbackText) {
         var eventType = normalize(type);
         var parsed = payload;
@@ -413,10 +535,14 @@
           var toolName = pickString(parsed, ["tool_name", "name", "tool", "id"]) || "tool";
           var toolInput = pick(parsed, ["arguments", "args", "input", "params", "payload"]);
           var toolResult = pick(parsed, ["tool_result"]);
+          var toolParamSummary = summarizeToolParams(toolName, toolInput);
           if (toolResult !== null && typeof toolResult === "object") {
             var mergedStatus = pickString(toolResult, ["status", "state"]);
             var mergedValue = pick(toolResult, ["result", "output", "value", "content", "error"]);
             var mergedSummary = "Ran " + toolName;
+            if (toolParamSummary) {
+              mergedSummary += " with " + toolParamSummary;
+            }
             if (mergedStatus) {
               mergedSummary += " (" + mergedStatus + ")";
             }
@@ -428,12 +554,18 @@
 
           var waiting = !!pick(parsed, ["waiting", "pending", "in_progress"]);
           if (waiting) {
+            if (toolParamSummary) {
+              return "Running " + toolName + " with " + toolParamSummary + "...";
+            }
             if (toolInput === null) {
               return "Running " + toolName + "...";
             }
             return "Running " + toolName + " with " + clip(summarizeValue(toolInput), 180) + "...";
           }
 
+          if (toolParamSummary) {
+            return "Calling " + toolName + " with " + toolParamSummary + ".";
+          }
           if (toolInput === null) {
             return "Calling " + toolName + ".";
           }

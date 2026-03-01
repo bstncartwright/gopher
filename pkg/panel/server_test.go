@@ -258,6 +258,8 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 		{SessionID: "sess-1", Seq: 3, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read"}, Timestamp: now.Add(2 * time.Second)},
 		{SessionID: "sess-1", Seq: 4, Type: sessionrt.EventAgentDelta, From: "agent:a", Payload: map[string]any{"delta": "thinking"}, Timestamp: now.Add(3 * time.Second)},
 		{SessionID: "sess-1", Seq: 5, Type: sessionrt.EventStatePatch, From: "agent:a", Payload: map[string]any{
+			"model_id":                     "gpt-5-codex",
+			"model_provider":               "openai",
 			"model_context_window":         128000,
 			"reserve_tokens":               20000,
 			"reserve_floor_tokens":         20000,
@@ -341,6 +343,9 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 	if !strings.Contains(detailRec.Body.String(), "Context Health") {
 		t.Fatalf("expected context health block in detail fragment, got: %s", detailRec.Body.String())
+	}
+	if !strings.Contains(detailRec.Body.String(), "Model gpt-5-codex (openai)") {
+		t.Fatalf("expected model in context health block, got: %s", detailRec.Body.String())
 	}
 	if !strings.Contains(detailRec.Body.String(), "Stage retry_2") {
 		t.Fatalf("expected overflow stage in context health block, got: %s", detailRec.Body.String())

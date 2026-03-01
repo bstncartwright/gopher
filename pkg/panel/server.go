@@ -200,6 +200,9 @@ type sessionDetailData struct {
 }
 
 type contextHealthData struct {
+	ModelID                  string
+	ModelProvider            string
+	ModelDisplay             string
 	ModelContextWindow       int
 	ReserveTokens            int
 	ReserveFloorTokens       int
@@ -1049,7 +1052,12 @@ func extractContextHealth(events []sessionrt.Event) *contextHealthData {
 		if len(payload) == 0 {
 			continue
 		}
+		modelID := stringPayloadValue(payload, "model_id")
+		modelProvider := stringPayloadValue(payload, "model_provider")
 		return &contextHealthData{
+			ModelID:                  modelID,
+			ModelProvider:            modelProvider,
+			ModelDisplay:             formatModelDisplay(modelID, modelProvider),
 			ModelContextWindow:       intPayloadValue(payload, "model_context_window"),
 			ReserveTokens:            intPayloadValue(payload, "reserve_tokens"),
 			ReserveFloorTokens:       intPayloadValue(payload, "reserve_floor_tokens"),
@@ -1101,6 +1109,18 @@ func stringPayloadValue(payload map[string]any, key string) string {
 		return strings.TrimSpace(text)
 	}
 	return ""
+}
+
+func formatModelDisplay(modelID, modelProvider string) string {
+	modelID = strings.TrimSpace(modelID)
+	modelProvider = strings.TrimSpace(modelProvider)
+	if modelID == "" {
+		return modelProvider
+	}
+	if modelProvider == "" {
+		return modelID
+	}
+	return modelID + " (" + modelProvider + ")"
 }
 
 func formatCapabilities(capabilities []scheduler.Capability) string {

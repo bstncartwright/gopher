@@ -478,12 +478,25 @@
         }
 
         if (eventType === "state_patch") {
+          var modelID = pickString(parsed, ["model_id"]);
+          var modelProvider = pickString(parsed, ["model_provider"]);
           var reserve = pickString(parsed, ["reserve_tokens"]);
           var estimated = pickString(parsed, ["estimated_input_tokens"]);
           var retries = pickString(parsed, ["overflow_retries"]);
           var stage = pickString(parsed, ["overflow_stage"]);
           var truncations = pickString(parsed, ["tool_result_truncation_count"]);
           var pieces = [];
+          if (modelID || modelProvider) {
+            var modelLine = modelID;
+            if (modelProvider) {
+              if (!modelLine) {
+                modelLine = modelProvider;
+              } else {
+                modelLine = modelLine + " (" + modelProvider + ")";
+              }
+            }
+            pieces.push("model=" + modelLine);
+          }
           if (reserve) {
             pieces.push("reserve=" + reserve);
           }
@@ -679,6 +692,33 @@
           parts.push("Action: " + controlAction);
           if (controlReason) {
             parts.push("Reason: " + clip(controlReason, 90));
+          }
+        } else if (normalizedType === "state_patch") {
+          var patchModelID = pickString(payload, ["model_id"]);
+          var patchModelProvider = pickString(payload, ["model_provider"]);
+          var patchModel = patchModelID;
+          if (patchModelProvider) {
+            if (!patchModel) {
+              patchModel = patchModelProvider;
+            } else {
+              patchModel = patchModel + " (" + patchModelProvider + ")";
+            }
+          }
+          var patchReserve = pickString(payload, ["reserve_tokens"]);
+          var patchEstimated = pickString(payload, ["estimated_input_tokens"]);
+          var patchRetries = pickString(payload, ["overflow_retries"]);
+          var patchStage = pickString(payload, ["overflow_stage"]);
+          if (patchModel) {
+            parts.push("Model: " + clip(patchModel, 120));
+          }
+          if (patchReserve || patchEstimated) {
+            parts.push("Tokens: est " + (patchEstimated || "0") + " / reserve " + (patchReserve || "0"));
+          }
+          if (patchRetries) {
+            parts.push("Retries: " + patchRetries);
+          }
+          if (patchStage) {
+            parts.push("Stage: " + clip(patchStage, 80));
           }
         } else {
           var keys = payload && typeof payload === "object" ? Object.keys(payload) : [];

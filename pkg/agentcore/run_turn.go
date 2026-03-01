@@ -92,6 +92,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 	runner := NewToolRunner(a)
 	overflowRetryUsed := 0
 	overflowFlushAttempted := false
+	reasoningLevel := a.Config.ReasoningLevelValue()
 	for round := 0; ; round++ {
 		roundStart := time.Now()
 		slog.Debug("run_turn: starting round",
@@ -122,6 +123,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				APIKey:         ai.GetEnvAPIKey(string(a.model.Provider)),
 				SessionID:      s.ID,
 			},
+			Reasoning: reasoningLevel,
 		})
 		if stream == nil {
 			err := fmt.Errorf("provider returned nil stream")

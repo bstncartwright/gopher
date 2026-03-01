@@ -182,8 +182,11 @@ func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
 	if got, _ := config["agent_id"].(string); got != "writer" {
 		t.Fatalf("config agent_id=%q, want writer", got)
 	}
-	if got, _ := config["model_policy"].(string); got != "zai:glm-5" {
-		t.Fatalf("config model_policy=%q, want zai:glm-5", got)
+	if got, _ := config["model_policy"].(string); got != "openai:gpt-5.3-codex" {
+		t.Fatalf("config model_policy=%q, want openai:gpt-5.3-codex", got)
+	}
+	if got, _ := config["reasoning_level"].(string); got != "medium" {
+		t.Fatalf("config reasoning_level=%q, want medium", got)
 	}
 
 	sharedUserBlob, err := os.ReadFile(filepath.Join(workspaceRoot, "USER.md"))

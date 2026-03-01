@@ -13,6 +13,7 @@ type mockProvider struct {
 	rounds   []mockRound
 	calls    int
 	contexts []ai.Context
+	options  []ai.SimpleStreamOptions
 }
 
 type countingSessionFlusher struct {
@@ -67,10 +68,15 @@ type mockRound struct {
 	events    []ai.AssistantMessageEvent
 }
 
-func (m *mockProvider) Stream(_ ai.Model, conversation ai.Context, _ *ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
+func (m *mockProvider) Stream(_ ai.Model, conversation ai.Context, options *ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
 	idx := m.calls
 	m.calls++
 	m.contexts = append(m.contexts, conversation)
+	if options != nil {
+		m.options = append(m.options, *options)
+	} else {
+		m.options = append(m.options, ai.SimpleStreamOptions{})
+	}
 
 	stream := ai.CreateAssistantMessageEventStream()
 	if idx >= len(m.rounds) {
@@ -93,6 +99,36 @@ func (m *mockProvider) Stream(_ ai.Model, conversation ai.Context, _ *ai.SimpleS
 		stream.Push(ai.AssistantMessageEvent{Type: ai.EventDone, Reason: msg.StopReason, Message: &msg})
 	}()
 	return stream
+}
+
+func TestRunTurnUsesConfiguredReasoningLevel(t *testing.T) {
+	config := defaultConfig()
+	config.ReasoningLevel = "medium"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonStop
+	assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+
+	provider := &mockProvider{
+		rounds: []mockRound{{assistant: assistant}},
+	}
+	agent.Provider = provider
+
+	if _, err := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "test"}); err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+
+	if len(provider.options) == 0 {
+		t.Fatalf("expected at least one provider call option")
+	}
+	if got := provider.options[0].Reasoning; got != ai.ThinkingMedium {
+		t.Fatalf("provider reasoning=%q, want %q", got, ai.ThinkingMedium)
+	}
 }
 
 func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {

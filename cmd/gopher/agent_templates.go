@@ -243,7 +243,8 @@ func defaultConfigTemplate(agentID string) string {
   "agent_id": %q,
   "name": %q,
   "role": "assistant",
-  "model_policy": "zai:glm-5",
+  "model_policy": "openai:gpt-5.3-codex",
+  "reasoning_level": "medium",
   "enabled_tools": ["group:fs", "group:runtime", "group:collaboration"],
   "max_context_messages": 40,
   "context_management": {

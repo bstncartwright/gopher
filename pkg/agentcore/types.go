@@ -17,6 +17,7 @@ type AgentConfig struct {
 	Name                    string                  `json:"name"`
 	Role                    string                  `json:"role"`
 	ModelPolicy             string                  `json:"model_policy"`
+	ReasoningLevel          string                  `json:"reasoning_level,omitempty"`
 	Execution               ExecutionConfig         `json:"execution"`
 	EnabledTools            []string                `json:"enabled_tools"`
 	DisableDefaultSearchMCP bool                    `json:"disable_default_search_mcp"`
@@ -182,6 +183,31 @@ func (c ContextManagementConfig) HistoricalToolResultCharsValue() int {
 		historicalChars = defaultHistoricalToolResultChars
 	}
 	return historicalChars
+}
+
+func (c AgentConfig) ReasoningLevelValue() ai.ThinkingLevel {
+	return normalizeReasoningLevel(c.ReasoningLevel)
+}
+
+func normalizeReasoningLevel(raw string) ai.ThinkingLevel {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return ""
+	case string(ai.ThinkingMinimal), "min":
+		return ai.ThinkingMinimal
+	case string(ai.ThinkingLow):
+		return ai.ThinkingLow
+	case string(ai.ThinkingMedium), "med":
+		return ai.ThinkingMedium
+	case string(ai.ThinkingHigh):
+		return ai.ThinkingHigh
+	case string(ai.ThinkingXHigh), "x-high", "x_high", "x high":
+		return ai.ThinkingXHigh
+	case "off", "none", "disabled", "false", "0":
+		return ""
+	default:
+		return ""
+	}
 }
 
 type ExecutionConfig struct {

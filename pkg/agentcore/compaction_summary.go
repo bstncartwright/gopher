@@ -102,6 +102,7 @@ Do not include chain-of-thought.`)
 			APIKey:         ai.GetEnvAPIKey(string(a.model.Provider)),
 			SessionID:      compactionSummarySessionID(s),
 		},
+		Reasoning: a.Config.ReasoningLevelValue(),
 	})
 	if stream == nil {
 		return "", fmt.Errorf("provider returned nil stream")

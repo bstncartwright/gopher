@@ -1,6 +1,7 @@
 package agentcore
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -58,5 +59,34 @@ func TestBuildCollaborationSectionMultiAgentMentionsAsyncDelegationCompletion(t 
 	}
 	if !strings.Contains(section, "delegation.completed") || !strings.Contains(section, "delegation.failed") {
 		t.Fatalf("expected async completion guidance, got: %s", section)
+	}
+}
+
+func TestBuildAgentSystemPromptIncludesConcreteDateAndTime(t *testing.T) {
+	prompt, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:    "/tmp/workspace",
+		PromptMode:   PromptModeMinimal,
+		UserTimezone: "UTC",
+	})
+	if err != nil {
+		t.Fatalf("buildAgentSystemPrompt() error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "## Current Date & Time") {
+		t.Fatalf("expected current date section, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Time zone: UTC") {
+		t.Fatalf("expected UTC timezone line, got: %s", prompt)
+	}
+
+	datePattern := regexp.MustCompile(`Current date: \d{4}-\d{2}-\d{2}`)
+	if !datePattern.MatchString(prompt) {
+		t.Fatalf("expected formatted current date line, got: %s", prompt)
+	}
+	if strings.Contains(prompt, "Current time:") {
+		t.Fatalf("did not expect current time line, got: %s", prompt)
+	}
+	if strings.Contains(prompt, "Current timestamp:") {
+		t.Fatalf("did not expect current timestamp line, got: %s", prompt)
 	}
 }

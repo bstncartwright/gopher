@@ -25,6 +25,7 @@ func (t *delegateTool) Schema() ToolSchema {
 					"enum": []any{"create", "list", "kill", "log"},
 				},
 				"target_agent":     map[string]any{"type": "string"},
+				"model_policy":     map[string]any{"type": "string"},
 				"message":          map[string]any{"type": "string"},
 				"title":            map[string]any{"type": "string"},
 				"delegation_id":    map[string]any{"type": "string"},
@@ -63,6 +64,7 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 	case "create":
 		targetAgentID, _ := optionalStringArg(input.Args, "target_agent")
 		targetAgentID = strings.TrimSpace(targetAgentID)
+		modelPolicy, _ := optionalStringArg(input.Args, "model_policy")
 		message, err := requiredStringArg(input.Args, "message")
 		if err != nil {
 			slog.Error("delegate_tool: message arg required")
@@ -73,6 +75,7 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 		slog.Debug("delegate_tool: creating delegation",
 			"source_agent_id", input.Agent.ID,
 			"target_agent_id", targetAgentID,
+			"model_policy", strings.TrimSpace(modelPolicy),
 			"source_session_id", sessionID,
 			"title", title,
 			"message_length", len(message),
@@ -82,6 +85,7 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 			SourceSessionID: sessionID,
 			SourceAgentID:   strings.TrimSpace(input.Agent.ID),
 			TargetAgentID:   strings.TrimSpace(targetAgentID),
+			ModelPolicy:     strings.TrimSpace(modelPolicy),
 			Message:         strings.TrimSpace(message),
 			Title:           strings.TrimSpace(title),
 		})

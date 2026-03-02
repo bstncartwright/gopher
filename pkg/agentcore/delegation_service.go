@@ -6,6 +6,7 @@ type DelegationCreateRequest struct {
 	SourceSessionID string
 	SourceAgentID   string
 	TargetAgentID   string
+	ModelPolicy     string
 	Message         string
 	Title           string
 }

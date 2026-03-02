@@ -83,6 +83,7 @@ func TestDelegateToolCreateUsesCurrentSessionID(t *testing.T) {
 	output, err := runner.Run(context.Background(), session, toolCall("delegate", map[string]any{
 		"action":       "create",
 		"target_agent": "writer",
+		"model_policy": "openai:gpt-4o-mini",
 		"message":      "Please help with this task.",
 	}))
 	if err != nil {
@@ -99,6 +100,9 @@ func TestDelegateToolCreateUsesCurrentSessionID(t *testing.T) {
 	}
 	if fake.lastCreateReq.TargetAgentID != "writer" {
 		t.Fatalf("target agent = %q, want writer", fake.lastCreateReq.TargetAgentID)
+	}
+	if fake.lastCreateReq.ModelPolicy != "openai:gpt-4o-mini" {
+		t.Fatalf("model policy = %q, want openai:gpt-4o-mini", fake.lastCreateReq.ModelPolicy)
 	}
 }
 
@@ -128,6 +132,9 @@ func TestDelegateToolCreateLeavesTargetEmptyWhenOmitted(t *testing.T) {
 	}
 	if fake.lastCreateReq.TargetAgentID != "" {
 		t.Fatalf("target agent = %q, want empty", fake.lastCreateReq.TargetAgentID)
+	}
+	if fake.lastCreateReq.ModelPolicy != "" {
+		t.Fatalf("model policy = %q, want empty", fake.lastCreateReq.ModelPolicy)
 	}
 }
 

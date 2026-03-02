@@ -292,6 +292,44 @@ func TestGatewaySessionDelegationCreateWithoutTargetAllocatesSequentialSubagents
 	}
 }
 
+func TestGatewaySessionDelegationEphemeralWorkerModelPolicyDefaultsAndOverride(t *testing.T) {
+	ctx, service, _, _, sourceAgent, _, sourceSession := newDynamicDelegationFixture(t)
+	sourceAgent.Config.ModelPolicy = "openai:gpt-4o-mini"
+
+	defaulted, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		Message:         "Task one.",
+	})
+	if err != nil {
+		t.Fatalf("defaulted CreateDelegationSession() error: %v", err)
+	}
+	defaultedWorker, exists := service.lookupAgent(sessionrt.ActorID(defaulted.TargetAgentID))
+	if !exists {
+		t.Fatalf("expected worker agent %q", defaulted.TargetAgentID)
+	}
+	if got := strings.TrimSpace(defaultedWorker.Config.ModelPolicy); got != defaultAgentModelPolicy {
+		t.Fatalf("defaulted model_policy = %q, want %q", got, defaultAgentModelPolicy)
+	}
+
+	overridden, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		ModelPolicy:     "openai:gpt-4o-mini",
+		Message:         "Task two.",
+	})
+	if err != nil {
+		t.Fatalf("overridden CreateDelegationSession() error: %v", err)
+	}
+	overriddenWorker, exists := service.lookupAgent(sessionrt.ActorID(overridden.TargetAgentID))
+	if !exists {
+		t.Fatalf("expected worker agent %q", overridden.TargetAgentID)
+	}
+	if got := strings.TrimSpace(overriddenWorker.Config.ModelPolicy); got != "openai:gpt-4o-mini" {
+		t.Fatalf("overridden model_policy = %q, want openai:gpt-4o-mini", got)
+	}
+}
+
 func TestGatewaySessionDelegationRejectsSelfTargetAgent(t *testing.T) {
 	ctx := context.Background()
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})

@@ -253,6 +253,7 @@
         sessionID: resolveInitialSessionID(),
         lastSeq: 0,
         detailRenderedSeq: 0,
+        shouldAutoScrollDetail: true,
         animateIncomingRows: false,
         source: null,
         sourceSessionID: "",
@@ -889,6 +890,7 @@
           return;
         }
         options = options || {};
+        captureDetailAutoScroll(!!options.forceScroll);
         state.animateIncomingRows = !!options.animateIncoming;
         htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(state.sessionID), {
           target: "#session-detail",
@@ -993,7 +995,32 @@
         }
         requestAnimationFrame(function () {
           container.scrollTop = container.scrollHeight;
+          state.shouldAutoScrollDetail = true;
         });
+      }
+
+      function isDetailNearBottom(container) {
+        if (!container) {
+          return true;
+        }
+        var remaining = container.scrollHeight - container.clientHeight - container.scrollTop;
+        return remaining <= 32;
+      }
+
+      function captureDetailAutoScroll(force) {
+        var container = document.getElementById("session-detail");
+        if (!container) {
+          state.shouldAutoScrollDetail = true;
+          return;
+        }
+        state.shouldAutoScrollDetail = !!force || isDetailNearBottom(container);
+      }
+
+      function maybeScrollDetailToBottom() {
+        if (!state.shouldAutoScrollDetail) {
+          return;
+        }
+        scrollDetailToBottom();
       }
 
 
@@ -1078,10 +1105,11 @@
         if (detailSessionID === sessionID) {
           state.animateIncomingRows = false;
           openSource();
-          scrollDetailToBottom();
+          maybeScrollDetailToBottom();
           return;
         }
 
+        captureDetailAutoScroll(true);
         state.animateIncomingRows = false;
         htmx.ajax("GET", "/_gopher/panel/fragments/session/" + encodeURIComponent(sessionID), {
           target: "#session-detail",
@@ -1645,7 +1673,7 @@
           }
           hydrateTimeline();
           animateIncomingTimelineRows(previousRenderedSeq);
-          scrollDetailToBottom();
+          maybeScrollDetailToBottom();
         }
         if (event.detail.target.id === "sessions-list") {
           highlightSelected();
@@ -1678,6 +1706,14 @@
           applySessionFilters();
           ensureSelectedSession();
         });
+      }
+
+      var sessionDetail = document.getElementById("session-detail");
+      if (sessionDetail) {
+        state.shouldAutoScrollDetail = isDetailNearBottom(sessionDetail);
+        sessionDetail.addEventListener("scroll", function () {
+          state.shouldAutoScrollDetail = isDetailNearBottom(sessionDetail);
+        }, { passive: true });
       }
 
       document.addEventListener("keydown", function (event) {

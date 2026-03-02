@@ -3,6 +3,7 @@ package agentcore
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
 type LoopDetectionConfig struct {
@@ -37,6 +38,7 @@ type toolCallRecord struct {
 type LoopDetector struct {
 	config  LoopDetectionConfig
 	history []toolCallRecord
+	mu      sync.Mutex
 }
 
 func NewLoopDetector(config LoopDetectionConfig) *LoopDetector {
@@ -64,6 +66,8 @@ func (ld *LoopDetector) Check(name string, args map[string]any) LoopDetectResult
 	if !ld.config.Enabled {
 		return LoopDetectResult{Level: LoopLevelNone}
 	}
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
 
 	results := []LoopDetectResult{
 		ld.genericRepeat(name, args),
@@ -84,6 +88,8 @@ func (ld *LoopDetector) Record(name string, args map[string]any, output any) {
 	if !ld.config.Enabled {
 		return
 	}
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
 
 	argsStr := marshalForComparison(args)
 	outputStr := marshalForComparison(output)

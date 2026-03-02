@@ -102,7 +102,7 @@ func streamOpenAIResponses(model Model, conversation Context, options *OpenAIRes
 				}
 				stream.Push(AssistantMessageEvent{Type: EventDone, Reason: output.StopReason, Message: &output})
 				return
-			} else if transport == TransportWebSocket || wsStarted {
+			} else if transport == TransportWebSocket || (wsStarted && !isNormalWebSocketClosureError(err)) {
 				output.StopReason = stopReasonForError(ctx, err)
 				output.ErrorMessage = err.Error()
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})

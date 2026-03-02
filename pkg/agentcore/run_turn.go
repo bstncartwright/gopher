@@ -267,13 +267,6 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			turnErr = err
 			return TurnResult{Events: emitter.Events()}, err
 		}
-		if len(streamErrors) > 0 && strings.TrimSpace(assistant.ErrorMessage) == "" {
-			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": streamErrors[0]}); emitErr != nil {
-				turnErr = emitErr
-				return TurnResult{Events: emitter.Events()}, emitErr
-			}
-		}
-
 		slog.Debug("run_turn: stream result received",
 			"agent_id", a.ID,
 			"session_id", s.ID,
@@ -285,12 +278,44 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			"usage_total", assistant.Usage.TotalTokens,
 			"usage_cost", assistant.Usage.Cost,
 		)
+		slog.Debug("run_turn: stream round summary",
+			"agent_id", a.ID,
+			"session_id", s.ID,
+			"round", round,
+			"stream_errors", len(streamErrors),
+			"assistant_error_message_length", len(strings.TrimSpace(assistant.ErrorMessage)),
+			"assistant_stop_reason", assistant.StopReason,
+		)
 
 		if len(toolCalls) == 0 {
 			for _, block := range assistant.Content {
 				if block.Type == ai.ContentTypeToolCall {
 					toolCalls = append(toolCalls, block.Clone())
 				}
+			}
+		}
+
+		if len(streamErrors) > 0 && strings.TrimSpace(assistant.ErrorMessage) == "" {
+			streamErr := streamErrors[0]
+			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": streamErr}); emitErr != nil {
+				turnErr = emitErr
+				return TurnResult{Events: emitter.Events()}, emitErr
+			}
+			finalTextCandidate := strings.TrimSpace(extractText(assistant.Content))
+			if finalTextCandidate == "" && len(toolCalls) == 0 {
+				err := fmt.Errorf("provider stream failed before completion: %s", streamErr)
+				slog.Warn("run_turn: stream error with empty assistant output",
+					"agent_id", a.ID,
+					"session_id", s.ID,
+					"round", round,
+					"stream_error", streamErr,
+				)
+				if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": err.Error()}); emitErr != nil {
+					turnErr = emitErr
+					return TurnResult{Events: emitter.Events()}, emitErr
+				}
+				turnErr = err
+				return TurnResult{Events: emitter.Events()}, err
 			}
 		}
 

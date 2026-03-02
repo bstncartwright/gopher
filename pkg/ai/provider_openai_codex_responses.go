@@ -152,7 +152,7 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 				}
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 				return
-			} else if transport == TransportWebSocket || wsStarted {
+			} else if transport == TransportWebSocket || (wsStarted && !isNormalWebSocketClosureError(err)) {
 				output.StopReason = stopReasonForError(ctx, err)
 				output.ErrorMessage = err.Error()
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})

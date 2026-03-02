@@ -42,6 +42,9 @@ func TestBuildRegistryGroupCollaborationEnablesHeartbeat(t *testing.T) {
 	if _, ok := registry.Get("message"); !ok {
 		t.Fatalf("expected message tool to be enabled")
 	}
+	if _, ok := registry.Get("reaction"); !ok {
+		t.Fatalf("expected reaction tool to be enabled")
+	}
 }
 
 func TestBuildRegistryGroupRuntimeEnablesGopherMeta(t *testing.T) {

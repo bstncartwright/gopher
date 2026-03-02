@@ -300,6 +300,33 @@ func (t *Transport) SendTyping(ctx context.Context, conversationID string, typin
 	return t.sendAPI(ctx, "sendChatAction", payload)
 }
 
+func (t *Transport) SendReaction(ctx context.Context, reaction transport.OutboundReaction) error {
+	chatID, err := parseConversationChatID(reaction.ConversationID)
+	if err != nil {
+		return err
+	}
+	messageID, err := parseTelegramMessageID(reaction.TargetEventID)
+	if err != nil {
+		return err
+	}
+	emoji := strings.TrimSpace(reaction.Emoji)
+	if emoji == "" {
+		return fmt.Errorf("emoji is required")
+	}
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"reaction": []map[string]any{
+			{
+				"type":  "emoji",
+				"emoji": emoji,
+			},
+		},
+	}
+	slog.Debug("telegram transport: sending reaction", "conversation_id", reaction.ConversationID, "chat_id", chatID, "target_event_id", reaction.TargetEventID)
+	return t.sendAPI(ctx, "setMessageReaction", payload)
+}
+
 func (t *Transport) SetCommands(ctx context.Context, commands []BotCommand) error {
 	if len(commands) == 0 {
 		return nil
@@ -454,7 +481,7 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 		ConversationName: conversationName,
 		SenderID:         "telegram-user:" + userID,
 		RecipientID:      "telegram-bot",
-		EventID:          strconv.FormatInt(event.UpdateID, 10),
+		EventID:          strconv.FormatInt(event.Message.MessageID, 10),
 		Text:             messageText,
 	})
 }
@@ -693,6 +720,18 @@ func parseConversationChatID(conversationID string) (string, error) {
 		return "", fmt.Errorf("telegram chat id is required")
 	}
 	return chatID, nil
+}
+
+func parseTelegramMessageID(eventID string) (int64, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return 0, fmt.Errorf("target event id is required")
+	}
+	value, err := strconv.ParseInt(eventID, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("invalid target event id %q", eventID)
+	}
+	return value, nil
 }
 
 func formatAttachmentNotice(attachments []transport.OutboundAttachment) string {

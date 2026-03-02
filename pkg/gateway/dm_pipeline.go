@@ -1882,6 +1882,21 @@ func (p *DMPipeline) ConversationForSession(sessionID sessionrt.SessionID) (stri
 	return strings.TrimSpace(binding.ConversationID), true
 }
 
+func (p *DMPipeline) LastInboundEventForSession(sessionID sessionrt.SessionID) (string, bool) {
+	if p == nil || p.bindings == nil {
+		return "", false
+	}
+	binding, ok := p.bindings.GetBySession(sessionID)
+	if !ok {
+		return "", false
+	}
+	eventID := strings.TrimSpace(binding.LastInboundEvent)
+	if eventID == "" {
+		return "", false
+	}
+	return eventID, true
+}
+
 func (p *DMPipeline) routeForInbound(recipientID string) (sessionrt.ActorID, string) {
 	recipientNorm := normalizeRecipientID(recipientID)
 	if recipientNorm != "" {

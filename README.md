@@ -413,6 +413,9 @@ dm control commands:
 - sends a user-visible message immediately to the active chat (supports text + file attachments).
 - if the model has nothing else to add after a user-visible `message` send, final reply should be exactly `NO_REPLY` to prevent duplicate output.
 
+`reaction` tool behavior in gateway DMs:
+- reacts to the most recent inbound user message in the active chat using `emoji`.
+
 ## releases
 
 gopher now includes a github actions release workflow at `.github/workflows/release.yml`.

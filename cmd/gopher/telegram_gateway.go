@@ -190,6 +190,7 @@ func startTelegramDMBridgeWithRuntime(
 	messageTool := newGatewayMessageToolService(pipeline, telegramBridge)
 	for _, agent := range agentRuntime.Agents {
 		agent.MessageService = messageTool
+		agent.ReactionService = messageTool
 	}
 
 	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router)

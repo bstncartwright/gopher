@@ -363,6 +363,7 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 		return
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_search")
+	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_fetch")
 }
 
 func applyDefaultContextManagement(cfg *AgentConfig) {

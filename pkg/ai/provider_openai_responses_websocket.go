@@ -132,3 +132,11 @@ func writeOpenAIResponsesWebSocketJSON(ctx context.Context, conn *websocket.Conn
 	}
 	return conn.Write(ctx, websocket.MessageText, blob)
 }
+
+func isNormalWebSocketClosureError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "statusnormalclosure") || strings.Contains(msg, "close frame")
+}

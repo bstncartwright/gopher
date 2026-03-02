@@ -137,9 +137,11 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 
 	timezone := resolvePromptTimezone(input.UserTimezone)
 	if timezone != "" {
+		now := time.Now().In(resolvePromptLocation(timezone))
 		sections = append(sections,
 			"## Current Date & Time",
 			"Time zone: "+timezone,
+			"Current date: "+now.Format("2006-01-02"),
 			"",
 		)
 	}
@@ -269,6 +271,13 @@ func resolvePromptTimezone(configured string) string {
 		return "UTC"
 	}
 	return local
+}
+
+func resolvePromptLocation(timezone string) *time.Location {
+	if loaded, err := time.LoadLocation(strings.TrimSpace(timezone)); err == nil {
+		return loaded
+	}
+	return time.UTC
 }
 
 func detectDocsPath(workspace string) string {

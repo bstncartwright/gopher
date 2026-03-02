@@ -529,6 +529,9 @@ func TestLoadAgentImplicitlyEnablesDefaultTools(t *testing.T) {
 	if _, ok := agent.Tools.Get("web_search"); !ok {
 		t.Fatalf("expected implicit web_search tool to be enabled")
 	}
+	if _, ok := agent.Tools.Get("web_fetch"); !ok {
+		t.Fatalf("expected implicit web_fetch tool to be enabled")
+	}
 	if _, ok := agent.Tools.Get("delegate"); !ok {
 		t.Fatalf("expected implicit delegate tool to be enabled")
 	}
@@ -540,6 +543,9 @@ func TestLoadAgentImplicitlyEnablesDefaultTools(t *testing.T) {
 	}
 	if !containsTool(agent.Config.EnabledTools, "web_search") {
 		t.Fatalf("expected web_search in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+	if !containsTool(agent.Config.EnabledTools, "web_fetch") {
+		t.Fatalf("expected web_fetch in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
 	}
 	if !containsTool(agent.Config.EnabledTools, "group:collaboration") {
 		t.Fatalf("expected group:collaboration in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
@@ -558,6 +564,9 @@ func TestLoadAgentDisableDefaultSearchMCPSkipsImplicitTool(t *testing.T) {
 	}
 	if _, ok := agent.Tools.Get("web_search"); ok {
 		t.Fatalf("did not expect implicit web_search tool when disable_default_search_mcp=true")
+	}
+	if _, ok := agent.Tools.Get("web_fetch"); ok {
+		t.Fatalf("did not expect implicit web_fetch tool when disable_default_search_mcp=true")
 	}
 	if _, ok := agent.Tools.Get("delegate"); !ok {
 		t.Fatalf("expected implicit delegate tool to remain enabled")
@@ -595,7 +604,7 @@ func TestLoadAgentOmittedEnabledToolsBackfillsBaselineRuntimeTools(t *testing.T)
 
 func TestLoadAgentExplicitWebSearchStillWorksWhenDefaultDisabled(t *testing.T) {
 	config := defaultConfig()
-	config.EnabledTools = []string{"group:fs", "web_search"}
+	config.EnabledTools = []string{"group:fs", "web_search", "web_fetch"}
 	config.DisableDefaultSearchMCP = true
 	workspace := createTestWorkspace(t, config, defaultPolicies())
 
@@ -605,6 +614,9 @@ func TestLoadAgentExplicitWebSearchStillWorksWhenDefaultDisabled(t *testing.T) {
 	}
 	if _, ok := agent.Tools.Get("web_search"); !ok {
 		t.Fatalf("expected explicit web_search tool to remain enabled")
+	}
+	if _, ok := agent.Tools.Get("web_fetch"); !ok {
+		t.Fatalf("expected explicit web_fetch tool to remain enabled")
 	}
 }
 

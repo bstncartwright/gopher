@@ -265,9 +265,9 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		}
 		return out, nil
 
-	case "web_search":
+	case "web_search", "web_fetch":
 		if !r.agent.Policies.Network.Enabled {
-			return nil, &PolicyError{Message: "web_search denied: policies.network.enabled=false"}
+			return nil, &PolicyError{Message: fmt.Sprintf("%s denied: policies.network.enabled=false", name)}
 		}
 		requiredDomains := []string{"mcp.exa.ai", "mcp.tavily.com"}
 		blockedDomains := make([]string, 0, len(requiredDomains))
@@ -277,7 +277,7 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 			}
 		}
 		if len(blockedDomains) > 0 {
-			return nil, &PolicyError{Message: fmt.Sprintf("web_search denied: %q blocked by policies.network.block_domains", strings.Join(blockedDomains, ","))}
+			return nil, &PolicyError{Message: fmt.Sprintf("%s denied: %q blocked by policies.network.block_domains", name, strings.Join(blockedDomains, ","))}
 		}
 		return out, nil
 

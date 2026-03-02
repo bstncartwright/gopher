@@ -94,6 +94,7 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&messageTool{})
 		case "group:web":
 			add(newWebSearchMCPTool())
+			add(newWebFetchMCPTool())
 		case "shell", "shell.exec", "exec":
 			add(&execTool{})
 		case "process":
@@ -110,6 +111,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&messageTool{})
 		case "web_search", "search_mcp", "search":
 			add(newWebSearchMCPTool())
+		case "web_fetch", "fetch_mcp", "fetch":
+			add(newWebFetchMCPTool())
 		case "git", "git.status", "git.diff":
 			// intentionally ignored in v0
 		}

@@ -2,10 +2,13 @@ package agentcore
 
 import "testing"
 
-func TestBuildRegistryGroupWebEnablesWebSearch(t *testing.T) {
+func TestBuildRegistryGroupWebEnablesWebTools(t *testing.T) {
 	registry := buildRegistry([]string{"group:web"}, defaultPolicies())
 	if _, ok := registry.Get("web_search"); !ok {
 		t.Fatalf("expected web_search tool to be enabled")
+	}
+	if _, ok := registry.Get("web_fetch"); !ok {
+		t.Fatalf("expected web_fetch tool to be enabled")
 	}
 }
 
@@ -17,6 +20,17 @@ func TestBuildRegistryWebSearchAliasesAreDeduped(t *testing.T) {
 	}
 	if schemas[0].Name != "web_search" {
 		t.Fatalf("schema[0].Name = %q, want web_search", schemas[0].Name)
+	}
+}
+
+func TestBuildRegistryWebFetchAliasesAreDeduped(t *testing.T) {
+	registry := buildRegistry([]string{"fetch", "fetch_mcp", "web_fetch"}, defaultPolicies())
+	schemas := registry.Schemas()
+	if len(schemas) != 1 {
+		t.Fatalf("schemas len = %d, want 1", len(schemas))
+	}
+	if schemas[0].Name != "web_fetch" {
+		t.Fatalf("schema[0].Name = %q, want web_fetch", schemas[0].Name)
 	}
 }
 

@@ -461,7 +461,7 @@
         }
 
         var normalizedTool = normalize(toolName);
-        if (normalizedTool === "web_search" || normalizedTool === "search_mcp" || normalizedTool === "search") {
+        if (normalizedTool === "web_search" || normalizedTool === "search_mcp" || normalizedTool === "search" || normalizedTool === "web_fetch" || normalizedTool === "fetch_mcp" || normalizedTool === "fetch") {
           var query = pickString(toolInput, ["query", "search_query", "q", "text"]);
           if (!query) {
             var queryList = pick(toolInput, ["queries", "search_queries", "search_query"]);

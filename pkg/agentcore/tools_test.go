@@ -24,7 +24,7 @@ func TestBuildRegistryWebSearchAliasesAreDeduped(t *testing.T) {
 }
 
 func TestBuildRegistryWebFetchAliasesAreDeduped(t *testing.T) {
-	registry := buildRegistry([]string{"fetch", "fetch_mcp", "web_fetch"}, defaultPolicies())
+	registry := buildRegistry([]string{"fetch", "fetch_mcp", "fetch_content", "web_fetch"}, defaultPolicies())
 	schemas := registry.Schemas()
 	if len(schemas) != 1 {
 		t.Fatalf("schemas len = %d, want 1", len(schemas))

@@ -287,6 +287,7 @@ type Agent struct {
 	Delegation            DelegationToolService
 	HeartbeatService      HeartbeatToolService
 	MessageService        MessageToolService
+	ReactionService       ReactionToolService
 	Heartbeat             AgentHeartbeat
 	KnownAgents           []string
 	CaptureThinkingDeltas bool

@@ -129,6 +129,7 @@ func TestContextBuilderIncludesMessageToolWhenServiceAvailable(t *testing.T) {
 		t.Fatalf("LoadAgent() error: %v", err)
 	}
 	agent.MessageService = &testMessageToolService{}
+	agent.ReactionService = &testReactionToolService{}
 	session := &Session{ID: "s-message"}
 
 	ctx, err := agent.buildProviderContext(context.Background(), session, "hello")
@@ -137,6 +138,9 @@ func TestContextBuilderIncludesMessageToolWhenServiceAvailable(t *testing.T) {
 	}
 	if !contextHasTool(ctx, "message") {
 		t.Fatalf("expected message tool in provider context when message service is available")
+	}
+	if !contextHasTool(ctx, "reaction") {
+		t.Fatalf("expected reaction tool in provider context when reaction service is available")
 	}
 }
 
@@ -157,5 +161,16 @@ func (s *testMessageToolService) SendMessage(_ context.Context, req MessageSendR
 		ConversationID:  "test-conversation",
 		Text:            strings.TrimSpace(req.Text),
 		AttachmentCount: len(req.Attachments),
+	}, nil
+}
+
+type testReactionToolService struct{}
+
+func (s *testReactionToolService) SendReaction(_ context.Context, req ReactionSendRequest) (ReactionSendResult, error) {
+	return ReactionSendResult{
+		Sent:           true,
+		ConversationID: "test-conversation",
+		TargetEventID:  "1",
+		Emoji:          strings.TrimSpace(req.Emoji),
 	}, nil
 }

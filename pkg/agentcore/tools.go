@@ -92,6 +92,7 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&delegateTool{})
 			add(&heartbeatTool{})
 			add(&messageTool{})
+			add(&reactionTool{})
 		case "group:web":
 			add(newWebSearchMCPTool())
 		case "shell", "shell.exec", "exec":
@@ -108,6 +109,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&heartbeatTool{})
 		case "message":
 			add(&messageTool{})
+		case "reaction":
+			add(&reactionTool{})
 		case "web_search", "search_mcp", "search":
 			add(newWebSearchMCPTool())
 		case "git", "git.status", "git.diff":

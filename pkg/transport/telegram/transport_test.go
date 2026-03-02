@@ -114,9 +114,10 @@ func TestDispatchEventMapsInboundFields(t *testing.T) {
 	event := telegramEvent{
 		UpdateID: 33,
 		Message: &telegramMessage{
-			From: &telegramUser{ID: 501, Username: "boss"},
-			Chat: &telegramChat{ID: 777},
-			Text: "what's going on?",
+			MessageID: 733,
+			From:      &telegramUser{ID: 501, Username: "boss"},
+			Chat:      &telegramChat{ID: 777},
+			Text:      "what's going on?",
 		},
 	}
 	if err := tr.dispatchEvent(context.Background(), event); err != nil {
@@ -128,8 +129,8 @@ func TestDispatchEventMapsInboundFields(t *testing.T) {
 	if got.SenderID != "telegram-user:501" {
 		t.Fatalf("sender id = %q, want telegram-user:501", got.SenderID)
 	}
-	if got.EventID != "33" {
-		t.Fatalf("event id = %q, want 33", got.EventID)
+	if got.EventID != "733" {
+		t.Fatalf("event id = %q, want 733", got.EventID)
 	}
 	if got.Text != "what's going on?" {
 		t.Fatalf("text = %q", got.Text)
@@ -214,6 +215,53 @@ func TestSendMessageRetriesWithoutParseModeWhenTelegramRejectsEntities(t *testin
 	fallbackText, _ := requests[1]["text"].(string)
 	if strings.Contains(fallbackText, "**") {
 		t.Fatalf("fallback text still includes markdown delimiters: %q", fallbackText)
+	}
+}
+
+func TestSendReactionCallsTelegramAPI(t *testing.T) {
+	var requestPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/setMessageReaction" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestPayload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendReaction(context.Background(), transport.OutboundReaction{
+		ConversationID: "telegram:777",
+		TargetEventID:  "42",
+		Emoji:          "👍",
+	}); err != nil {
+		t.Fatalf("SendReaction() error: %v", err)
+	}
+	if gotChatID, _ := requestPayload["chat_id"].(string); gotChatID != "777" {
+		t.Fatalf("chat_id = %q, want 777", gotChatID)
+	}
+	if gotMessageID, _ := requestPayload["message_id"].(float64); gotMessageID != 42 {
+		t.Fatalf("message_id = %v, want 42", requestPayload["message_id"])
+	}
+	reactions, ok := requestPayload["reaction"].([]any)
+	if !ok || len(reactions) != 1 {
+		t.Fatalf("reaction payload malformed: %#v", requestPayload["reaction"])
+	}
+	first, ok := reactions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("reaction entry malformed: %#v", reactions[0])
+	}
+	if gotEmoji, _ := first["emoji"].(string); gotEmoji != "👍" {
+		t.Fatalf("emoji = %q, want 👍", gotEmoji)
 	}
 }
 
@@ -564,6 +612,7 @@ func TestHandleWebhookUpdateDispatchesEvent(t *testing.T) {
 	payload := []byte(`{
 		"update_id": 99,
 		"message": {
+			"message_id": 199,
 			"from": {"id": 501},
 			"chat": {"id": 777, "title": "Ops"},
 			"text": "hi from webhook"
@@ -572,8 +621,8 @@ func TestHandleWebhookUpdateDispatchesEvent(t *testing.T) {
 	if err := tr.HandleWebhookUpdate(context.Background(), payload); err != nil {
 		t.Fatalf("HandleWebhookUpdate() error: %v", err)
 	}
-	if got.EventID != "99" {
-		t.Fatalf("event id = %q, want 99", got.EventID)
+	if got.EventID != "199" {
+		t.Fatalf("event id = %q, want 199", got.EventID)
 	}
 	if got.ConversationID != "telegram:777" {
 		t.Fatalf("conversation id = %q, want telegram:777", got.ConversationID)

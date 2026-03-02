@@ -30,6 +30,13 @@ type OutboundAttachment struct {
 	MIMEType string
 }
 
+type OutboundReaction struct {
+	ConversationID string
+	SenderID       string
+	TargetEventID  string
+	Emoji          string
+}
+
 type InboundHandler func(ctx context.Context, message InboundMessage) error
 
 type Transport interface {
@@ -38,4 +45,8 @@ type Transport interface {
 	SetInboundHandler(handler InboundHandler)
 	SendMessage(ctx context.Context, message OutboundMessage) error
 	SendTyping(ctx context.Context, conversationID string, typing bool) error
+}
+
+type ReactionSender interface {
+	SendReaction(ctx context.Context, reaction OutboundReaction) error
 }

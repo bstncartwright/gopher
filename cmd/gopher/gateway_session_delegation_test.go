@@ -71,6 +71,40 @@ func waitForDelegationKickoff(
 	}
 }
 
+func waitForSessionControlAction(
+	t *testing.T,
+	ctx context.Context,
+	store gatewaySessionDelegationStore,
+	sessionID sessionrt.SessionID,
+	action string,
+) sessionrt.Event {
+	t.Helper()
+	action = strings.TrimSpace(action)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events, err := store.List(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("store.List(session controls) error: %v", err)
+		}
+		for _, event := range events {
+			if event.Type != sessionrt.EventControl {
+				continue
+			}
+			payload, ok := controlPayloadFromAny(event.Payload)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(payload.Action) == action {
+				return event
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for control action %q in session %s", action, sessionID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func loadDelegationTestAgent(t *testing.T, workspaceRoot, agentID string) *agentcore.Agent {
 	t.Helper()
 	workspace := filepath.Join(workspaceRoot, "agents", agentID)
@@ -461,4 +495,72 @@ func TestGatewaySessionDelegationCreateReturnsBeforeDelegatedTurnCompletes(t *te
 		t.Fatalf("timed out waiting for delegated kickoff execution")
 	}
 	close(exec.release)
+}
+
+func TestGatewaySessionDelegationCompletedAnnouncesToSourceSession(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil, nil)
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and report back.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+
+	if err := manager.SendEvent(ctx, sessionrt.Event{
+		SessionID: sessionrt.SessionID(created.SessionID),
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventControl,
+		Payload: sessionrt.ControlPayload{
+			Action: sessionrt.ControlActionSessionCompleted,
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent(session.completed) error: %v", err)
+	}
+
+	controlEvent := waitForSessionControlAction(t, ctx, store, source.ID, "delegation.completed")
+	ctrl, ok := controlPayloadFromAny(controlEvent.Payload)
+	if !ok {
+		t.Fatalf("expected control payload for delegation.completed")
+	}
+	delegationID, _ := ctrl.Metadata["delegation_id"].(string)
+	if strings.TrimSpace(delegationID) != created.SessionID {
+		t.Fatalf("delegation_id metadata = %q, want %q", delegationID, created.SessionID)
+	}
+	status, _ := ctrl.Metadata["status"].(string)
+	if strings.TrimSpace(status) != "completed" {
+		t.Fatalf("status metadata = %q, want completed", status)
+	}
+
+	waitForDelegationKickoff(t, ctx, store, source.ID, func(msg sessionrt.Message) bool {
+		return msg.TargetActorID == "milo" &&
+			strings.Contains(msg.Content, "finished session") &&
+			strings.Contains(msg.Content, created.SessionID)
+	})
 }

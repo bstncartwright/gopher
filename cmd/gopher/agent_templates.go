@@ -2,6 +2,8 @@ package main
 
 import "fmt"
 
+const defaultAgentModelPolicy = "openai:gpt-5.3-codex"
+
 func defaultAgentsTemplate(agentID string) string {
 	return fmt.Sprintf(`# AGENTS.md - gopher assistant (default)
 
@@ -243,7 +245,7 @@ func defaultConfigTemplate(agentID string) string {
   "agent_id": %q,
   "name": %q,
   "role": "assistant",
-  "model_policy": "openai:gpt-5.3-codex",
+  "model_policy": %q,
   "reasoning_level": "medium",
   "enabled_tools": ["group:fs", "group:runtime", "group:collaboration"],
   "max_context_messages": 40,
@@ -264,7 +266,7 @@ func defaultConfigTemplate(agentID string) string {
     "historical_tool_result_chars": 240
   }
 }
-`, agentID, agentID)
+`, agentID, agentID, defaultAgentModelPolicy)
 }
 
 func defaultPoliciesTemplate() string {

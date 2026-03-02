@@ -96,6 +96,7 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	sourceSessionID := sessionrt.SessionID(strings.TrimSpace(req.SourceSessionID))
 	sourceAgentID := sessionrt.ActorID(strings.TrimSpace(req.SourceAgentID))
 	requestedTargetAgentID := sessionrt.ActorID(strings.TrimSpace(req.TargetAgentID))
+	requestedModelPolicy := strings.TrimSpace(req.ModelPolicy)
 	message := strings.TrimSpace(req.Message)
 	if sourceSessionID == "" {
 		return agentcore.DelegationSession{}, fmt.Errorf("source session id is required")
@@ -120,7 +121,7 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		return agentcore.DelegationSession{}, fmt.Errorf("source session %q not found", sourceSessionID)
 	}
 
-	resolvedTargetAgentID, displayTargetAgentID, createdEphemeral, err := s.resolveDelegationTarget(ctx, sourceAgentID, requestedTargetAgentID, sourceAgent)
+	resolvedTargetAgentID, displayTargetAgentID, createdEphemeral, err := s.resolveDelegationTarget(ctx, sourceAgentID, requestedTargetAgentID, sourceAgent, requestedModelPolicy)
 	if err != nil {
 		return agentcore.DelegationSession{}, err
 	}
@@ -188,6 +189,7 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		"workspace_mode":           "isolated_temp",
 		"merge_mode":               "diff_for_approval",
 		"diff_artifact_path":       diffArtifactPath,
+		"model_policy":             requestedModelPolicy,
 	}
 	s.appendDelegationRecord(record)
 	s.startDelegationLifecycleMonitor(
@@ -397,7 +399,7 @@ func (s *gatewaySessionDelegationToolService) handleDelegationTerminalState(
 	s.teardownEphemeralForDelegation(delegationID)
 }
 
-func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(ctx context.Context, sourceAgentID, requestedTargetAgentID sessionrt.ActorID, sourceAgent *agentcore.Agent) (sessionrt.ActorID, string, *ephemeralDelegationState, error) {
+func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(ctx context.Context, sourceAgentID, requestedTargetAgentID sessionrt.ActorID, sourceAgent *agentcore.Agent, requestedModelPolicy string) (sessionrt.ActorID, string, *ephemeralDelegationState, error) {
 	if s == nil {
 		return "", "", nil, fmt.Errorf("delegation service is unavailable")
 	}
@@ -429,7 +431,7 @@ func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(ctx contex
 	}
 	defer s.releaseAlias(targetAlias)
 
-	ephemeral, err := s.spawnEphemeralWorker(ctx, sourceAgentID, targetAlias, sourceAgent)
+	ephemeral, err := s.spawnEphemeralWorker(ctx, sourceAgentID, targetAlias, sourceAgent, requestedModelPolicy)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -906,7 +908,7 @@ func (s *gatewaySessionDelegationToolService) finalizeDiffForDelegation(ctx cont
 	return path, nil
 }
 
-func (s *gatewaySessionDelegationToolService) spawnEphemeralWorker(_ context.Context, sourceAgentID, targetAlias sessionrt.ActorID, sourceAgent *agentcore.Agent) (*ephemeralDelegationState, error) {
+func (s *gatewaySessionDelegationToolService) spawnEphemeralWorker(_ context.Context, sourceAgentID, targetAlias sessionrt.ActorID, sourceAgent *agentcore.Agent, requestedModelPolicy string) (*ephemeralDelegationState, error) {
 	if s.router == nil {
 		return nil, fmt.Errorf("delegation runtime router is unavailable for dynamic subagents")
 	}
@@ -928,6 +930,10 @@ func (s *gatewaySessionDelegationToolService) spawnEphemeralWorker(_ context.Con
 
 	cfg := sourceAgent.Config
 	cfg.AgentID = strings.TrimSpace(string(targetAlias))
+	cfg.ModelPolicy = defaultAgentModelPolicy
+	if strings.TrimSpace(requestedModelPolicy) != "" {
+		cfg.ModelPolicy = strings.TrimSpace(requestedModelPolicy)
+	}
 	if strings.TrimSpace(cfg.Name) == "" || strings.TrimSpace(cfg.Name) == strings.TrimSpace(sourceAgent.Name) {
 		cfg.Name = strings.TrimSpace(string(targetAlias))
 	}

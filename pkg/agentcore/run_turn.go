@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -359,10 +360,37 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				turnErr = err
 				return TurnResult{Events: emitter.Events()}, err
 			}
+		}
 
-			toolStart := time.Now()
-			output, runErr := runner.Run(ctx, s, toolCall)
-			toolDuration := time.Since(toolStart)
+		type toolExecution struct {
+			call     ai.ContentBlock
+			output   ToolOutput
+			runErr   error
+			duration time.Duration
+		}
+		executions := make([]toolExecution, len(toolCalls))
+		var wg sync.WaitGroup
+		for idx, toolCall := range toolCalls {
+			wg.Add(1)
+			go func(i int, call ai.ContentBlock) {
+				defer wg.Done()
+				toolStart := time.Now()
+				output, runErr := runner.Run(ctx, s, call)
+				executions[i] = toolExecution{
+					call:     call,
+					output:   output,
+					runErr:   runErr,
+					duration: time.Since(toolStart),
+				}
+			}(idx, toolCall)
+		}
+		wg.Wait()
+
+		for _, execResult := range executions {
+			toolCall := execResult.call
+			output := execResult.output
+			runErr := execResult.runErr
+			toolDuration := execResult.duration
 			slog.Info("run_turn: tool execution complete",
 				"agent_id", a.ID,
 				"session_id", s.ID,

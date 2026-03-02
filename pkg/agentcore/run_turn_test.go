@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
 )
@@ -66,6 +67,43 @@ func (p *summaryFallbackProvider) Stream(_ ai.Model, conversation ai.Context, _ 
 type mockRound struct {
 	assistant ai.AssistantMessage
 	events    []ai.AssistantMessageEvent
+}
+
+type blockingTool struct {
+	started chan string
+	release <-chan struct{}
+}
+
+func (t *blockingTool) Name() string { return "blocking" }
+
+func (t *blockingTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        "blocking",
+		Description: "blocks until released",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func (t *blockingTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error) {
+	id, _ := input.Args["id"].(string)
+	select {
+	case t.started <- id:
+	case <-ctx.Done():
+		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": ctx.Err().Error()}}, ctx.Err()
+	}
+	select {
+	case <-t.release:
+	case <-ctx.Done():
+		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": ctx.Err().Error()}}, ctx.Err()
+	}
+	return ToolOutput{Status: ToolStatusOK, Result: map[string]any{"id": id}}, nil
 }
 
 func (m *mockProvider) Stream(_ ai.Model, conversation ai.Context, options *ai.SimpleStreamOptions) *ai.AssistantMessageEventStream {
@@ -211,6 +249,66 @@ func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {
 
 	if len(session.Messages) == 0 {
 		t.Fatalf("expected session history to be updated")
+	}
+}
+
+func TestRunTurnExecutesMultipleToolCallsInParallel(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	release := make(chan struct{})
+	started := make(chan string, 2)
+	agent.Tools = NewToolRegistry([]Tool{&blockingTool{started: started, release: release}})
+
+	roundOneAssistant := ai.NewAssistantMessage(agent.model)
+	roundOneAssistant.StopReason = ai.StopReasonToolUse
+	roundOneAssistant.Content = []ai.ContentBlock{
+		{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "blocking", Arguments: map[string]any{"id": "one"}},
+		{Type: ai.ContentTypeToolCall, ID: "call_2", Name: "blocking", Arguments: map[string]any{"id": "two"}},
+	}
+	roundTwoAssistant := ai.NewAssistantMessage(agent.model)
+	roundTwoAssistant.StopReason = ai.StopReasonStop
+	roundTwoAssistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+
+	agent.Provider = &mockProvider{rounds: []mockRound{
+		{assistant: roundOneAssistant},
+		{assistant: roundTwoAssistant},
+	}}
+
+	done := make(chan error, 1)
+	var turnResult TurnResult
+	go func() {
+		var runErr error
+		turnResult, runErr = agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "test parallel"})
+		done <- runErr
+	}()
+
+	seen := map[string]bool{}
+	timeout := time.After(300 * time.Millisecond)
+	for len(seen) < 2 {
+		select {
+		case id := <-started:
+			seen[id] = true
+		case <-timeout:
+			t.Fatalf("expected both tool calls to start before release; started=%v", seen)
+		}
+	}
+	close(release)
+
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatalf("RunTurn() error: %v", runErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("RunTurn() did not complete after releasing tools")
+	}
+
+	if turnResult.FinalText != "done" {
+		t.Fatalf("final text = %q, want done", turnResult.FinalText)
 	}
 }
 

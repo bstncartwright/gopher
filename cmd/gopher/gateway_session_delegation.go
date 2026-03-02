@@ -56,6 +56,7 @@ type gatewaySessionDelegationToolService struct {
 const (
 	delegationAsyncSendTimeout = 10 * time.Minute
 	delegationEphemeralTTL     = 30 * time.Minute
+	delegationWatchTimeout     = 24 * time.Hour
 )
 
 var validDelegationAliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -189,6 +190,13 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		"diff_artifact_path":       diffArtifactPath,
 	}
 	s.appendDelegationRecord(record)
+	s.startDelegationLifecycleMonitor(
+		createdSession.ID,
+		sourceSessionID,
+		sourceAgentID,
+		sessionrt.ActorID(strings.TrimSpace(displayTargetAgentID)),
+		strings.TrimSpace(req.Title),
+	)
 	s.sendDelegationControlEventAsync(sourceSessionID, "delegation.created", map[string]any{
 		"delegation_id":         string(createdSession.ID),
 		"target_agent":          displayTargetAgentID,
@@ -225,6 +233,168 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		MergeMode:       "diff_for_approval",
 		DiffArtifact:    diffArtifactPath,
 	}, nil
+}
+
+func (s *gatewaySessionDelegationToolService) startDelegationLifecycleMonitor(
+	delegationSessionID sessionrt.SessionID,
+	sourceSessionID sessionrt.SessionID,
+	sourceAgentID sessionrt.ActorID,
+	targetAgentID sessionrt.ActorID,
+	title string,
+) {
+	if s == nil || s.manager == nil {
+		return
+	}
+	delegationSessionID = sessionrt.SessionID(strings.TrimSpace(string(delegationSessionID)))
+	sourceSessionID = sessionrt.SessionID(strings.TrimSpace(string(sourceSessionID)))
+	sourceAgentID = sessionrt.ActorID(strings.TrimSpace(string(sourceAgentID)))
+	targetAgentID = sessionrt.ActorID(strings.TrimSpace(string(targetAgentID)))
+	if delegationSessionID == "" || sourceSessionID == "" {
+		return
+	}
+
+	watchCtx, cancel := context.WithTimeout(context.Background(), delegationWatchTimeout)
+	stream, err := s.manager.Subscribe(watchCtx, delegationSessionID)
+	if err != nil {
+		cancel()
+		if s.logger != nil {
+			s.logger.Printf("delegation monitor subscribe failed delegation=%s err=%v", delegationSessionID, err)
+		}
+		return
+	}
+
+	go func() {
+		defer cancel()
+		for event := range stream {
+			status, reason, ok := delegationTerminalStatusFromEvent(event)
+			if !ok {
+				continue
+			}
+			s.handleDelegationTerminalState(
+				delegationSessionID,
+				sourceSessionID,
+				sourceAgentID,
+				targetAgentID,
+				title,
+				status,
+				reason,
+				event.Timestamp,
+			)
+			return
+		}
+	}()
+}
+
+func (s *gatewaySessionDelegationToolService) handleDelegationTerminalState(
+	delegationSessionID sessionrt.SessionID,
+	sourceSessionID sessionrt.SessionID,
+	sourceAgentID sessionrt.ActorID,
+	targetAgentID sessionrt.ActorID,
+	title string,
+	status string,
+	reason string,
+	at time.Time,
+) {
+	if s == nil {
+		return
+	}
+	status = strings.TrimSpace(strings.ToLower(status))
+	if status != "completed" && status != "failed" {
+		return
+	}
+
+	delegationID := strings.TrimSpace(string(delegationSessionID))
+	if delegationID == "" {
+		return
+	}
+	nowTime := at.UTC()
+	if nowTime.IsZero() {
+		nowTime = time.Now().UTC()
+	}
+	now := nowTime.Format(time.RFC3339Nano)
+
+	record := s.readDelegationRecords()[delegationID]
+	current := delegationStatus(record)
+	if current != "" && current != "active" {
+		if current == status {
+			s.teardownEphemeralForDelegation(delegationID)
+		}
+		return
+	}
+
+	diffArtifactPath, diffErr := s.finalizeDiffForDelegation(context.Background(), delegationID, record)
+	sourceAgent := stringFromMap(record, "source_agent_id")
+	if sourceAgent == "" {
+		sourceAgent = strings.TrimSpace(string(sourceAgentID))
+	}
+	targetAgent := stringFromMap(record, "target_agent_id")
+	if targetAgent == "" {
+		targetAgent = strings.TrimSpace(string(targetAgentID))
+	}
+	recordTitle := strings.TrimSpace(stringFromMap(record, "title"))
+	if recordTitle == "" {
+		recordTitle = strings.TrimSpace(title)
+	}
+	createdAt := stringFromMap(record, "created_at")
+	if createdAt == "" {
+		createdAt = now
+	}
+	rec := map[string]any{
+		"ts":                       now,
+		"event":                    status,
+		"delegation_id":            delegationID,
+		"source_session_id":        strings.TrimSpace(string(sourceSessionID)),
+		"source_agent_id":          sourceAgent,
+		"target_agent_id":          targetAgent,
+		"resolved_target_agent_id": strings.TrimSpace(stringFromMap(record, "resolved_target_agent_id")),
+		"title":                    recordTitle,
+		"status":                   status,
+		"created_at":               createdAt,
+		"updated_at":               now,
+		"ephemeral":                boolFromMap(record, "ephemeral"),
+		"workspace_mode":           stringFromMap(record, "workspace_mode"),
+		"merge_mode":               stringFromMap(record, "merge_mode"),
+		"diff_artifact_path":       diffArtifactPath,
+	}
+	if strings.TrimSpace(reason) != "" {
+		rec["reason"] = strings.TrimSpace(reason)
+	}
+	if diffErr != nil {
+		rec["diff_error"] = diffErr.Error()
+		if s.logger != nil {
+			s.logger.Printf("delegation terminal diff finalization failed delegation=%s err=%v", delegationID, diffErr)
+		}
+	}
+	s.appendDelegationRecord(rec)
+
+	action := "delegation." + status
+	announcement := buildDelegationTerminalAnnouncement(targetAgent, delegationID, status)
+	metadata := map[string]any{
+		"delegation_id":      delegationID,
+		"status":             status,
+		"target_agent":       targetAgent,
+		"announcement":       announcement,
+		"diff_artifact_path": diffArtifactPath,
+	}
+	if strings.TrimSpace(reason) != "" {
+		metadata["reason"] = strings.TrimSpace(reason)
+	}
+	s.sendDelegationControlEventAsync(sourceSessionID, action, metadata)
+	sourceAgentID = sessionrt.ActorID(strings.TrimSpace(string(sourceAgentID)))
+	if sourceAgentID != "" {
+		s.sendSessionEventAsync(sessionrt.Event{
+			SessionID: sourceSessionID,
+			From:      sessionrt.SystemActorID,
+			Type:      sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:          sessionrt.RoleAgent,
+				Content:       buildDelegationTerminalMessage(targetAgent, delegationID, status, reason, diffArtifactPath),
+				TargetActorID: sourceAgentID,
+			},
+		}, "delegation terminal announcement")
+	}
+	s.touchDelegationActivity(delegationID, nowTime)
+	s.teardownEphemeralForDelegation(delegationID)
 }
 
 func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(ctx context.Context, sourceAgentID, requestedTargetAgentID sessionrt.ActorID, sourceAgent *agentcore.Agent) (sessionrt.ActorID, string, *ephemeralDelegationState, error) {
@@ -907,6 +1077,25 @@ func (s *gatewaySessionDelegationToolService) touchDelegationActivity(delegation
 	s.ephemeral[delegationID] = state
 }
 
+func (s *gatewaySessionDelegationToolService) teardownEphemeralForDelegation(delegationID string) {
+	if s == nil {
+		return
+	}
+	delegationID = strings.TrimSpace(delegationID)
+	if delegationID == "" {
+		return
+	}
+	s.mu.Lock()
+	state, exists := s.ephemeral[delegationID]
+	if exists {
+		delete(s.ephemeral, delegationID)
+	}
+	s.mu.Unlock()
+	if exists {
+		s.teardownEphemeralWorker(state)
+	}
+}
+
 func validateDelegationAlias(alias string) error {
 	alias = strings.TrimSpace(alias)
 	if alias == "" {
@@ -1081,6 +1270,119 @@ func buildDelegationAnnouncement(targetAgentID, delegationSessionID string) stri
 		return "Subagent session spawned."
 	}
 	return fmt.Sprintf("Spawned subagent %s in session %s.", targetAgentID, delegationSessionID)
+}
+
+func buildDelegationTerminalAnnouncement(targetAgentID, delegationSessionID, status string) string {
+	targetAgentID = strings.TrimSpace(targetAgentID)
+	delegationSessionID = strings.TrimSpace(delegationSessionID)
+	status = strings.TrimSpace(strings.ToLower(status))
+	if targetAgentID == "" || delegationSessionID == "" {
+		return "Subagent session finished."
+	}
+	switch status {
+	case "completed":
+		return fmt.Sprintf("Subagent %s finished session %s.", targetAgentID, delegationSessionID)
+	case "failed":
+		return fmt.Sprintf("Subagent %s failed in session %s.", targetAgentID, delegationSessionID)
+	default:
+		return fmt.Sprintf("Subagent %s ended session %s.", targetAgentID, delegationSessionID)
+	}
+}
+
+func buildDelegationTerminalMessage(targetAgentID, delegationSessionID, status, reason, diffArtifactPath string) string {
+	message := buildDelegationTerminalAnnouncement(targetAgentID, delegationSessionID, status)
+	reason = strings.TrimSpace(reason)
+	if reason != "" {
+		message += "\nReason: " + reason
+	}
+	diffArtifactPath = strings.TrimSpace(diffArtifactPath)
+	if diffArtifactPath != "" {
+		message += "\nDiff artifact: " + diffArtifactPath
+	}
+	return message
+}
+
+func delegationTerminalStatusFromEvent(event sessionrt.Event) (status string, reason string, ok bool) {
+	switch event.Type {
+	case sessionrt.EventControl:
+		ctrl, valid := controlPayloadFromAny(event.Payload)
+		if !valid {
+			return "", "", false
+		}
+		switch strings.TrimSpace(ctrl.Action) {
+		case sessionrt.ControlActionSessionCompleted:
+			return "completed", strings.TrimSpace(ctrl.Reason), true
+		case sessionrt.ControlActionSessionFailed:
+			return "failed", strings.TrimSpace(ctrl.Reason), true
+		default:
+			return "", "", false
+		}
+	case sessionrt.EventError:
+		errMessage := errorMessageFromAny(event.Payload)
+		return "failed", strings.TrimSpace(errMessage), true
+	default:
+		return "", "", false
+	}
+}
+
+func controlPayloadFromAny(payload any) (sessionrt.ControlPayload, bool) {
+	switch typed := payload.(type) {
+	case sessionrt.ControlPayload:
+		return typed, true
+	case *sessionrt.ControlPayload:
+		if typed == nil {
+			return sessionrt.ControlPayload{}, false
+		}
+		return *typed, true
+	case map[string]any:
+		action, _ := typed["action"].(string)
+		reason, _ := typed["reason"].(string)
+		if strings.TrimSpace(action) == "" {
+			return sessionrt.ControlPayload{}, false
+		}
+		return sessionrt.ControlPayload{
+			Action: strings.TrimSpace(action),
+			Reason: strings.TrimSpace(reason),
+		}, true
+	default:
+		blob, err := json.Marshal(payload)
+		if err != nil {
+			return sessionrt.ControlPayload{}, false
+		}
+		decoded := sessionrt.ControlPayload{}
+		if err := json.Unmarshal(blob, &decoded); err != nil {
+			return sessionrt.ControlPayload{}, false
+		}
+		if strings.TrimSpace(decoded.Action) == "" {
+			return sessionrt.ControlPayload{}, false
+		}
+		return decoded, true
+	}
+}
+
+func errorMessageFromAny(payload any) string {
+	switch typed := payload.(type) {
+	case sessionrt.ErrorPayload:
+		return strings.TrimSpace(typed.Message)
+	case *sessionrt.ErrorPayload:
+		if typed == nil {
+			return ""
+		}
+		return strings.TrimSpace(typed.Message)
+	case map[string]any:
+		msg, _ := typed["message"].(string)
+		return strings.TrimSpace(msg)
+	default:
+		blob, err := json.Marshal(payload)
+		if err != nil {
+			return ""
+		}
+		decoded := sessionrt.ErrorPayload{}
+		if err := json.Unmarshal(blob, &decoded); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(decoded.Message)
+	}
 }
 
 func delegationStatus(record map[string]any) string {

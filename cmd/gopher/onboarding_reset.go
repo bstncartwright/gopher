@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,11 +11,15 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/huh"
+
 	"github.com/bstncartwright/gopher/pkg/config"
 )
 
 const (
-	telegramBotTokenEnvKey = "GOPHER_TELEGRAM_BOT_TOKEN"
+	telegramBotTokenEnvKey           = "GOPHER_TELEGRAM_BOT_TOKEN"
+	defaultTelegramWebhookListenAddr = "127.0.0.1:29330"
+	defaultTelegramWebhookPath       = "/_gopher/telegram/webhook"
 )
 
 func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writer) (err error) {
@@ -35,6 +39,11 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 	authProvider := flags.String("auth-provider", "", "provider to configure when auth is missing")
 	authAPIKey := flags.String("auth-api-key", "", "api key/token for --auth-provider")
 	telegramBotToken := flags.String("telegram-bot-token", "", "telegram bot token")
+	telegramMode := flags.String("telegram-mode", "", "telegram mode (polling|websocket|webhook)")
+	telegramWebhookURL := flags.String("telegram-webhook-url", "", "telegram webhook public https url")
+	telegramWebhookSecret := flags.String("telegram-webhook-secret", "", "telegram webhook secret")
+	telegramWebhookListenAddr := flags.String("telegram-webhook-listen-addr", "", "telegram webhook listen addr (default 127.0.0.1:29330)")
+	telegramWebhookPath := flags.String("telegram-webhook-path", "", "telegram webhook path (default /_gopher/telegram/webhook)")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -79,81 +88,332 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 		return err
 	}
 
-	if !hasAnyProviderAuth(envValues) {
-		providerValue := strings.TrimSpace(*authProvider)
-		apiKeyValue := strings.TrimSpace(*authAPIKey)
-
-		if providerValue == "" && !*nonInteractive {
-			providerValue, err = promptLine(in, stdout, "no provider auth found. provider to configure (for example: zai, openai, anthropic, openai-codex): ")
-			if err != nil {
-				return err
-			}
-		}
-
-		if providerValue != "" {
-			spec, ok := findProviderSpec(providerValue)
-			if !ok {
-				return fmt.Errorf("unknown auth provider %q", providerValue)
-			}
-			if apiKeyValue == "" && !*nonInteractive {
-				apiKeyValue, err = promptLine(in, stdout, fmt.Sprintf("enter %s api key/token: ", spec.Provider))
-				if err != nil {
-					return err
-				}
-			}
-			if strings.TrimSpace(apiKeyValue) == "" {
-				if *nonInteractive {
-					return fmt.Errorf("auth is missing: provide --auth-provider and --auth-api-key, or run without --non-interactive")
-				}
-				fmt.Fprintln(stdout, "auth skipped (no api key provided)")
-			} else {
-				if err := upsertEnvKey(envPath, spec.EnvKeys[0], strings.TrimSpace(apiKeyValue)); err != nil {
-					return err
-				}
-				slog.Info("onboard: provider auth configured", "provider", spec.Provider, "env_file", envPath, "key", spec.EnvKeys[0])
-				fmt.Fprintf(stdout, "configured auth provider %s in %s\n", spec.Provider, envPath)
-			}
-		} else if *nonInteractive {
-			return fmt.Errorf("auth is missing: provide --auth-provider and --auth-api-key, or run without --non-interactive")
-		} else {
-			fmt.Fprintln(stdout, "auth skipped")
-		}
-	} else {
-		fmt.Fprintln(stdout, "provider auth already configured")
-	}
-
+	providerValue := strings.TrimSpace(*authProvider)
+	apiKeyValue := strings.TrimSpace(*authAPIKey)
 	telegramTokenValue := strings.TrimSpace(*telegramBotToken)
 	if telegramTokenValue == "" {
 		telegramTokenValue = strings.TrimSpace(envValues[telegramBotTokenEnvKey])
 	}
+	telegramModeValue, err := normalizeOnboardingTelegramMode(strings.TrimSpace(*telegramMode))
+	if err != nil {
+		return err
+	}
+	if telegramModeValue == "" {
+		telegramModeValue = "polling"
+	}
+	telegramWebhookURLValue := strings.TrimSpace(*telegramWebhookURL)
+	telegramWebhookSecretValue := strings.TrimSpace(*telegramWebhookSecret)
+	telegramWebhookListenAddrValue := strings.TrimSpace(*telegramWebhookListenAddr)
+	if telegramWebhookListenAddrValue == "" {
+		telegramWebhookListenAddrValue = defaultTelegramWebhookListenAddr
+	}
+	telegramWebhookPathValue := strings.TrimSpace(*telegramWebhookPath)
+	if telegramWebhookPathValue == "" {
+		telegramWebhookPathValue = defaultTelegramWebhookPath
+	}
+	configureTelegram := telegramTokenValue != ""
 
-	if telegramTokenValue == "" && !*nonInteractive {
-		telegramTokenValue, err = promptLine(in, stdout, "telegram bot token (leave blank to skip): ")
+	if !*nonInteractive {
+		wizardValues, err := runInteractiveOnboardingWizard(in, stdout, onboardingWizardDefaults{
+			Provider:                  providerValue,
+			ProviderAPIKey:            apiKeyValue,
+			ConfigureTelegram:         configureTelegram,
+			TelegramMode:              telegramModeValue,
+			TelegramBotToken:          telegramTokenValue,
+			TelegramWebhookURL:        telegramWebhookURLValue,
+			TelegramWebhookSecret:     telegramWebhookSecretValue,
+			TelegramWebhookListenAddr: telegramWebhookListenAddrValue,
+			TelegramWebhookPath:       telegramWebhookPathValue,
+		})
 		if err != nil {
 			return err
 		}
+		providerValue = wizardValues.Provider
+		apiKeyValue = wizardValues.ProviderAPIKey
+		configureTelegram = wizardValues.ConfigureTelegram
+		telegramModeValue = wizardValues.TelegramMode
+		telegramTokenValue = wizardValues.TelegramBotToken
+		telegramWebhookURLValue = wizardValues.TelegramWebhookURL
+		telegramWebhookSecretValue = wizardValues.TelegramWebhookSecret
+		telegramWebhookListenAddrValue = wizardValues.TelegramWebhookListenAddr
+		telegramWebhookPathValue = wizardValues.TelegramWebhookPath
 	}
 
-	if telegramTokenValue != "" {
+	if strings.TrimSpace(providerValue) == "" {
+		if !hasAnyProviderAuth(envValues) {
+			return fmt.Errorf("auth is missing: provide --auth-provider and --auth-api-key, or run without --non-interactive")
+		}
+		fmt.Fprintln(stdout, "provider auth already configured")
+	} else {
+		spec, ok := findProviderSpec(providerValue)
+		if !ok {
+			return fmt.Errorf("unknown auth provider %q", providerValue)
+		}
+		if spec.Provider == "openai-codex" {
+			if strings.TrimSpace(apiKeyValue) != "" {
+				fmt.Fprintln(stdout, "ignoring api key for openai-codex; using oauth login flow")
+			}
+			if err := runAuthLogin([]string{"--provider", "openai-codex", "--env-file", envPath}, in, stdout); err != nil {
+				return fmt.Errorf("configure auth provider %s: %w", spec.Provider, err)
+			}
+		} else {
+			if strings.TrimSpace(apiKeyValue) == "" {
+				return fmt.Errorf("auth is missing: provide --auth-provider and --auth-api-key, or run without --non-interactive")
+			}
+			if err := upsertEnvKey(envPath, spec.EnvKeys[0], strings.TrimSpace(apiKeyValue)); err != nil {
+				return err
+			}
+			slog.Info("onboard: provider auth configured", "provider", spec.Provider, "env_file", envPath, "key", spec.EnvKeys[0])
+			fmt.Fprintf(stdout, "configured auth provider %s in %s\n", spec.Provider, envPath)
+		}
+	}
+
+	if configureTelegram && telegramTokenValue != "" {
 		if err := upsertEnvKey(envPath, telegramBotTokenEnvKey, telegramTokenValue); err != nil {
 			return err
 		}
 		slog.Info("onboard: telegram bot token configured", "env_file", envPath, "key", telegramBotTokenEnvKey)
 		fmt.Fprintf(stdout, "configured %s in %s\n", telegramBotTokenEnvKey, envPath)
-		enabled, err := setGatewayTelegramEnabled(gatewayPath, true)
+
+		mode := telegramModeValue
+		if mode == "" {
+			mode = "polling"
+		}
+		mutation := gatewayTelegramMutation{}
+		enabled := true
+		mutation.Enabled = &enabled
+		mutation.Mode = &mode
+		if mode == "webhook" {
+			if strings.TrimSpace(telegramWebhookURLValue) == "" || strings.TrimSpace(telegramWebhookSecretValue) == "" {
+				return fmt.Errorf("telegram webhook mode requires webhook url and secret")
+			}
+			mutation.WebhookListenAddr = &telegramWebhookListenAddrValue
+			mutation.WebhookPath = &telegramWebhookPathValue
+			mutation.WebhookURL = &telegramWebhookURLValue
+			mutation.WebhookSecret = &telegramWebhookSecretValue
+		}
+		changed, err := setGatewayTelegramConfig(gatewayPath, mutation)
 		if err != nil {
-			return fmt.Errorf("enable gateway telegram in %s: %w", gatewayPath, err)
+			return fmt.Errorf("configure gateway telegram in %s: %w", gatewayPath, err)
 		}
-		if enabled {
-			slog.Info("onboard: enabled telegram gateway integration", "gateway_config_path", gatewayPath)
-			fmt.Fprintf(stdout, "enabled gateway telegram in %s\n", gatewayPath)
+		if changed {
+			slog.Info("onboard: configured telegram gateway integration", "gateway_config_path", gatewayPath, "mode", mode)
+			fmt.Fprintf(stdout, "configured gateway telegram in %s (mode=%s)\n", gatewayPath, mode)
 		}
-	}
-	if telegramTokenValue == "" {
+	} else {
 		fmt.Fprintln(stdout, "telegram config incomplete (set bot token to enable telegram integration)")
 	}
 
 	return nil
+}
+
+type onboardingWizardDefaults struct {
+	Provider                  string
+	ProviderAPIKey            string
+	ConfigureTelegram         bool
+	TelegramMode              string
+	TelegramBotToken          string
+	TelegramWebhookURL        string
+	TelegramWebhookSecret     string
+	TelegramWebhookListenAddr string
+	TelegramWebhookPath       string
+}
+
+type onboardingWizardValues struct {
+	Provider                  string
+	ProviderAPIKey            string
+	ConfigureTelegram         bool
+	TelegramMode              string
+	TelegramBotToken          string
+	TelegramWebhookURL        string
+	TelegramWebhookSecret     string
+	TelegramWebhookListenAddr string
+	TelegramWebhookPath       string
+}
+
+func runInteractiveOnboardingWizard(in io.Reader, out io.Writer, defaults onboardingWizardDefaults) (onboardingWizardValues, error) {
+	values := onboardingWizardValues{
+		Provider:                  strings.TrimSpace(defaults.Provider),
+		ProviderAPIKey:            strings.TrimSpace(defaults.ProviderAPIKey),
+		ConfigureTelegram:         defaults.ConfigureTelegram,
+		TelegramMode:              strings.TrimSpace(defaults.TelegramMode),
+		TelegramBotToken:          strings.TrimSpace(defaults.TelegramBotToken),
+		TelegramWebhookURL:        strings.TrimSpace(defaults.TelegramWebhookURL),
+		TelegramWebhookSecret:     strings.TrimSpace(defaults.TelegramWebhookSecret),
+		TelegramWebhookListenAddr: strings.TrimSpace(defaults.TelegramWebhookListenAddr),
+		TelegramWebhookPath:       strings.TrimSpace(defaults.TelegramWebhookPath),
+	}
+	if values.Provider == "" {
+		values.Provider = "openai-codex"
+	}
+	mode, err := normalizeOnboardingTelegramMode(values.TelegramMode)
+	if err != nil {
+		values.TelegramMode = "polling"
+	} else {
+		values.TelegramMode = mode
+	}
+	if values.TelegramMode == "" {
+		values.TelegramMode = "polling"
+	}
+	if values.TelegramWebhookListenAddr == "" {
+		values.TelegramWebhookListenAddr = defaultTelegramWebhookListenAddr
+	}
+	if values.TelegramWebhookPath == "" {
+		values.TelegramWebhookPath = defaultTelegramWebhookPath
+	}
+
+	var acceptedDanger bool
+	if err := runHuhForm(in, out, huh.NewGroup(
+		huh.NewConfirm().
+			Title("gopher can execute local commands with broad access. continue?").
+			Description("only continue if you trust this setup and understand it can modify files, run processes, and call external services.").
+			Affirmative("Yes, continue").
+			Negative("No, cancel").
+			Value(&acceptedDanger),
+	)); err != nil {
+		return onboardingWizardValues{}, err
+	}
+	if !acceptedDanger {
+		return onboardingWizardValues{}, fmt.Errorf("onboarding cancelled")
+	}
+
+	providerOptions := make([]huh.Option[string], 0, len(providerAuthSpecs))
+	for _, spec := range providerAuthSpecs {
+		label := spec.Provider
+		if spec.Provider == "openai-codex" {
+			label = "openai-codex (oauth)"
+		}
+		providerOptions = append(providerOptions, huh.NewOption(label, spec.Provider))
+	}
+	if err := runHuhForm(in, out, huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("choose ai provider").
+			Options(providerOptions...).
+			Value(&values.Provider).
+			Validate(func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("provider is required")
+				}
+				return nil
+			}),
+	)); err != nil {
+		return onboardingWizardValues{}, err
+	}
+
+	if values.Provider != "openai-codex" {
+		if err := runHuhForm(in, out, huh.NewGroup(
+			huh.NewInput().
+				Title(fmt.Sprintf("enter %s api key/token", values.Provider)).
+				Description("this is stored in the onboarding env file.").
+				Value(&values.ProviderAPIKey).
+				EchoMode(huh.EchoModePassword).
+				Validate(func(v string) error {
+					if strings.TrimSpace(v) == "" {
+						return fmt.Errorf("api key/token is required")
+					}
+					return nil
+				}),
+		)); err != nil {
+			return onboardingWizardValues{}, err
+		}
+	}
+
+	if err := runHuhForm(in, out, huh.NewGroup(
+		huh.NewConfirm().
+			Title("configure telegram integration?").
+			Affirmative("Yes").
+			Negative("No").
+			Value(&values.ConfigureTelegram),
+	)); err != nil {
+		return onboardingWizardValues{}, err
+	}
+	if !values.ConfigureTelegram {
+		return values, nil
+	}
+
+	if err := runHuhForm(in, out, huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("telegram ingress mode").
+			Options(
+				huh.NewOption("polling", "polling"),
+				huh.NewOption("websocket/webhook", "webhook"),
+			).
+			Value(&values.TelegramMode),
+	)); err != nil {
+		return onboardingWizardValues{}, err
+	}
+
+	if err := runHuhForm(in, out, huh.NewGroup(
+		huh.NewInput().
+			Title("telegram bot token").
+			Value(&values.TelegramBotToken).
+			EchoMode(huh.EchoModePassword).
+			Validate(func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("telegram bot token is required")
+				}
+				return nil
+			}),
+	)); err != nil {
+		return onboardingWizardValues{}, err
+	}
+
+	if values.TelegramMode == "webhook" {
+		if err := runHuhForm(in, out, huh.NewGroup(
+			huh.NewInput().
+				Title("telegram webhook url (https)").
+				Placeholder("https://example.ts.net/_gopher/telegram/webhook").
+				Value(&values.TelegramWebhookURL).
+				Validate(func(v string) error {
+					if strings.TrimSpace(v) == "" {
+						return fmt.Errorf("webhook url is required")
+					}
+					if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(v)), "https://") {
+						return fmt.Errorf("webhook url must use https")
+					}
+					return nil
+				}),
+			huh.NewInput().
+				Title("telegram webhook secret").
+				Value(&values.TelegramWebhookSecret).
+				EchoMode(huh.EchoModePassword).
+				Validate(func(v string) error {
+					if strings.TrimSpace(v) == "" {
+						return fmt.Errorf("webhook secret is required")
+					}
+					return nil
+				}),
+		)); err != nil {
+			return onboardingWizardValues{}, err
+		}
+	}
+
+	return values, nil
+}
+
+func runHuhForm(in io.Reader, out io.Writer, groups ...*huh.Group) error {
+	form := huh.NewForm(groups...).WithInput(in).WithOutput(out)
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return fmt.Errorf("onboarding cancelled")
+		}
+		return err
+	}
+	return nil
+}
+
+func normalizeOnboardingTelegramMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	switch mode {
+	case "":
+		return "", nil
+	case "polling":
+		return "polling", nil
+	case "webhook", "websocket":
+		return "webhook", nil
+	default:
+		return "", fmt.Errorf("invalid telegram mode %q: expected polling or websocket", raw)
+	}
 }
 
 func runFactoryResetSubcommand(args []string, stdout, stderr io.Writer) (err error) {
@@ -283,16 +543,6 @@ func hasAnyProviderAuth(values map[string]string) bool {
 		}
 	}
 	return false
-}
-
-func promptLine(in io.Reader, out io.Writer, prompt string) (string, error) {
-	fmt.Fprint(out, prompt)
-	reader := bufio.NewReader(in)
-	text, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	return strings.TrimSpace(text), nil
 }
 
 func defaultFactoryResetPaths(workspace string) ([]string, error) {

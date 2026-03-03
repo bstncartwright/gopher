@@ -51,19 +51,24 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		slog.Error("load_agent: required config file missing", "workspace", workspaceAbs, "error", err)
 		return nil, err
 	}
-	policiesPath, err := resolveAgentFile(workspaceAbs, "policies")
+	legacyPoliciesPath, err := resolveOptionalAgentFile(workspaceAbs, "policies")
 	if err != nil {
-		slog.Error("load_agent: required policies file missing", "workspace", workspaceAbs, "error", err)
-		return nil, err
+		slog.Error("load_agent: failed to resolve optional legacy policies file", "workspace", workspaceAbs, "error", err)
+		return nil, fmt.Errorf("resolve optional policies file: %w", err)
 	}
-	slog.Debug("load_agent: required files verified", "config_path", configPath, "policies_path", policiesPath)
+	slog.Debug("load_agent: config file verified", "config_path", configPath, "legacy_policies_path", legacyPoliciesPath)
 
+	configBlob, err := os.ReadFile(configPath)
+	if err != nil {
+		slog.Error("load_agent: failed to read config file", "config_path", configPath, "error", err)
+		return nil, fmt.Errorf("read %s: %w", filepath.Base(configPath), err)
+	}
 	config := AgentConfig{}
 	if err := validateConfigRemovedContextManagementKeys(configPath); err != nil {
 		slog.Error("load_agent: removed context_management keys found", "config_path", configPath, "error", err)
 		return nil, err
 	}
-	if err := decodeAgentDocument(configPath, &config); err != nil {
+	if err := decodeRawWithFormat(configPath, configBlob, &config); err != nil {
 		slog.Error("load_agent: failed to read config", "config_path", configPath, "error", err)
 		return nil, fmt.Errorf("read %s: %w", filepath.Base(configPath), err)
 	}
@@ -103,12 +108,32 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	}
 	slog.Debug("load_agent: heartbeat config normalized", "enabled", heartbeat.Enabled, "every", heartbeat.Every)
 
+	rawConfig := map[string]any{}
+	if err := decodeRawWithFormat(configPath, configBlob, &rawConfig); err != nil {
+		slog.Error("load_agent: failed to parse config source", "config_path", configPath, "error", err)
+		return nil, fmt.Errorf("read %s: %w", filepath.Base(configPath), err)
+	}
+
 	policies := AgentPolicies{}
-	if err := decodePoliciesFile(policiesPath, &policies); err != nil {
-		slog.Error("load_agent: failed to read policies", "policies_path", policiesPath, "error", err)
-		return nil, fmt.Errorf("read %s: %w", filepath.Base(policiesPath), err)
+	policiesSource := ""
+	if rawPolicies, ok := readMapField(rawConfig, "policies"); ok {
+		if config.Policies != nil {
+			policies = *config.Policies
+		}
+		applyDefaultPoliciesFromRawMap(rawPolicies, &policies)
+		policiesSource = filepath.Base(configPath) + " [policies]"
+	} else if legacyPoliciesPath != "" {
+		if err := decodePoliciesFile(legacyPoliciesPath, &policies); err != nil {
+			slog.Error("load_agent: failed to read legacy policies", "policies_path", legacyPoliciesPath, "error", err)
+			return nil, fmt.Errorf("read %s: %w", filepath.Base(legacyPoliciesPath), err)
+		}
+		policiesSource = filepath.Base(legacyPoliciesPath)
+	} else {
+		policies = defaultOpenPolicies(workspaceAbs)
+		policiesSource = "built-in defaults"
 	}
 	slog.Info("load_agent: loaded policies",
+		"source", policiesSource,
 		"can_shell", policies.CanShell,
 		"shell_allowlist", policies.ShellAllowlist,
 		"fs_roots", policies.FSRoots,
@@ -120,6 +145,9 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	if err != nil {
 		slog.Error("load_agent: failed to parse model_policy", "model_policy", config.ModelPolicy, "error", err)
 		return nil, err
+	}
+	if shouldEnableApplyPatchForModelPolicy(config.ModelPolicy) {
+		policies.ApplyPatchEnabled = true
 	}
 	slog.Debug("load_agent: parsed model policy", "provider_name", providerName, "model_id", modelID)
 	model, ok := ai.GetModel(providerName, modelID)
@@ -259,6 +287,27 @@ func resolveAgentFile(workspace, baseName string) (string, error) {
 	return "", fmt.Errorf("required file missing: %s.{toml,json}", baseName)
 }
 
+func resolveOptionalAgentFile(workspace, baseName string) (string, error) {
+	candidates := []string{
+		filepath.Join(workspace, baseName+".toml"),
+		filepath.Join(workspace, baseName+".json"),
+	}
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("stat %s: %w", path, err)
+		}
+		if info.IsDir() {
+			continue
+		}
+		return path, nil
+	}
+	return "", nil
+}
+
 func decodeAgentDocument(path string, out any) error {
 	blob, err := os.ReadFile(path)
 	if err != nil {
@@ -298,6 +347,13 @@ func applyDefaultPolicies(path string, raw []byte, policies *AgentPolicies) {
 	if err := decodeRawWithFormat(path, raw, &rawPolicies); err != nil {
 		return
 	}
+	applyDefaultPoliciesFromRawMap(rawPolicies, policies)
+}
+
+func applyDefaultPoliciesFromRawMap(rawPolicies map[string]any, policies *AgentPolicies) {
+	if policies == nil {
+		return
+	}
 	canShell := readBoolField(rawPolicies, "can_shell")
 	shellAllowlist := readStringSliceField(rawPolicies, "shell_allowlist")
 	if canShell != nil && !*canShell && shellAllowlistIsUnspecifiedOrDefault(shellAllowlist) {
@@ -307,7 +363,7 @@ func applyDefaultPolicies(path string, raw []byte, policies *AgentPolicies) {
 		policies.CanShell = true
 	}
 
-	rawNetworkAny, hasNetwork := rawPolicies["network"]
+	rawNetworkAny, hasNetwork := readFieldValue(rawPolicies, "network")
 	rawNetwork, ok := rawNetworkAny.(map[string]any)
 	if !hasNetwork || !ok {
 		policies.Network.Enabled = true
@@ -346,7 +402,7 @@ func decodeRawWithFormat(path string, raw []byte, out any) error {
 }
 
 func readBoolField(raw map[string]any, key string) *bool {
-	value, ok := raw[key]
+	value, ok := readFieldValue(raw, key)
 	if !ok {
 		return nil
 	}
@@ -358,7 +414,7 @@ func readBoolField(raw map[string]any, key string) *bool {
 }
 
 func readStringSliceField(raw map[string]any, key string) *[]string {
-	value, ok := raw[key]
+	value, ok := readFieldValue(raw, key)
 	if !ok {
 		return nil
 	}
@@ -380,6 +436,33 @@ func readStringSliceField(raw map[string]any, key string) *[]string {
 		out = append(out, text)
 	}
 	return &out
+}
+
+func readMapField(raw map[string]any, key string) (map[string]any, bool) {
+	value, ok := readFieldValue(raw, key)
+	if !ok || value == nil {
+		return nil, false
+	}
+	parsed, ok := value.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	return parsed, true
+}
+
+func readFieldValue(raw map[string]any, key string) (any, bool) {
+	if raw == nil {
+		return nil, false
+	}
+	if value, ok := raw[key]; ok {
+		return value, true
+	}
+	for candidateKey, value := range raw {
+		if strings.EqualFold(strings.TrimSpace(candidateKey), key) {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func networkDomainsAreUnrestricted(allowDomains *[]string, blockDomains *[]string) bool {
@@ -409,10 +492,16 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 	if cfg == nil {
 		return
 	}
-	// Backfill baseline tools for legacy configs that omit enabled_tools entirely.
 	if len(cfg.EnabledTools) == 0 {
+		// Unset enabled_tools means "all built-in tools".
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:fs")
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:runtime")
+		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
+		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "cron")
+		if !cfg.DisableDefaultSearchMCP {
+			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:web")
+		}
+		return
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
 	if cfg.DisableDefaultSearchMCP {
@@ -420,6 +509,11 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_search")
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_fetch")
+}
+
+func shouldEnableApplyPatchForModelPolicy(modelPolicy string) bool {
+	policy := strings.ToLower(strings.TrimSpace(modelPolicy))
+	return strings.Contains(policy, "openai") && strings.Contains(policy, "codex")
 }
 
 func applyDefaultContextManagement(cfg *AgentConfig) {
@@ -494,6 +588,29 @@ func appendUniqueTool(tools []string, target string) []string {
 	return append(tools, target)
 }
 
+func defaultOpenPolicies(workspaceAbs string) AgentPolicies {
+	root := filesystemRootForWorkspace(workspaceAbs)
+	return AgentPolicies{
+		FSRoots:           []string{root},
+		AllowCrossAgentFS: true,
+		CanShell:          true,
+		ShellAllowlist:    nil,
+		Network: NetworkPolicy{
+			Enabled:      true,
+			AllowDomains: nil,
+			BlockDomains: nil,
+		},
+	}
+}
+
+func filesystemRootForWorkspace(workspaceAbs string) string {
+	root := string(filepath.Separator)
+	if volume := filepath.VolumeName(workspaceAbs); volume != "" {
+		root = volume + string(filepath.Separator)
+	}
+	return root
+}
+
 func resolveAllowedFSRoots(workspace string, roots []string, allowCrossAgentFS bool) ([]string, error) {
 	workspaceAbs, err := filepath.Abs(workspace)
 	if err != nil {
@@ -502,7 +619,11 @@ func resolveAllowedFSRoots(workspace string, roots []string, allowCrossAgentFS b
 	workspaceRoot := evalSymlinksOrAncestor(filepath.Clean(workspaceAbs))
 
 	if len(roots) == 0 {
-		roots = []string{"./"}
+		if allowCrossAgentFS {
+			roots = []string{filesystemRootForWorkspace(workspaceAbs)}
+		} else {
+			roots = []string{"./"}
+		}
 	}
 
 	out := make([]string, 0, len(roots))

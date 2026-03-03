@@ -373,14 +373,13 @@ func ensureAgentWorkspace(agentID, workspace string) error {
 	}
 
 	files := map[string]string{
-		"AGENTS.md":     defaultAgentsTemplate(agentID),
-		"SOUL.md":       defaultSoulTemplate(),
-		"TOOLS.md":      defaultToolsTemplate(),
-		"IDENTITY.md":   defaultIdentityTemplate(),
-		"USER.md":       defaultUserTemplate(),
-		"HEARTBEAT.md":  defaultHeartbeatTemplate(),
-		"config.toml":   defaultConfigTemplate(agentID),
-		"policies.toml": defaultPoliciesTemplate(),
+		"AGENTS.md":    defaultAgentsTemplate(agentID),
+		"SOUL.md":      defaultSoulTemplate(),
+		"TOOLS.md":     defaultToolsTemplate(),
+		"IDENTITY.md":  defaultIdentityTemplate(),
+		"USER.md":      defaultUserTemplate(),
+		"HEARTBEAT.md": defaultHeartbeatTemplate(),
+		"config.toml":  defaultConfigTemplate(agentID),
 	}
 	if brandNew {
 		files["BOOTSTRAP.md"] = defaultBootstrapTemplate()

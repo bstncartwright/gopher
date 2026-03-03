@@ -19,6 +19,7 @@ type AgentConfig struct {
 	ModelPolicy             string                  `json:"model_policy"`
 	ReasoningLevel          string                  `json:"reasoning_level,omitempty"`
 	Execution               ExecutionConfig         `json:"execution"`
+	Policies                *AgentPolicies          `json:"policies,omitempty"`
 	EnabledTools            []string                `json:"enabled_tools"`
 	DisableDefaultSearchMCP bool                    `json:"disable_default_search_mcp"`
 	SkillsPaths             []string                `json:"skills_paths"`

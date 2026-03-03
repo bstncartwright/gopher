@@ -243,7 +243,6 @@ name = %q
 role = "assistant"
 model_policy = %q
 reasoning_level = "medium"
-enabled_tools = ["group:fs", "group:runtime", "group:collaboration"]
 max_context_messages = 40
 
 [context_management]
@@ -256,20 +255,17 @@ reserve_min_tokens = 20000
 model_compaction_summary = true
 compaction_summary_timeout_ms = 12000
 compaction_chunk_token_target = 1800
-`, agentID, agentID, defaultAgentModelPolicy)
-}
 
-func defaultPoliciesTemplate() string {
-	return `fs_roots = ["./"]
-allow_cross_agent_fs = false
+[policies]
+allow_cross_agent_fs = true
 can_shell = true
 shell_allowlist = []
 
-[network]
+[policies.network]
 enabled = true
 block_domains = []
 
-[budget]
+[policies.budget]
 max_tokens_per_session = 200000
-`
+`, agentID, agentID, defaultAgentModelPolicy)
 }

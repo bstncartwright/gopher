@@ -122,3 +122,29 @@ func TestReplayFromStore(t *testing.T) {
 		t.Fatalf("expected participant metadata from creation event")
 	}
 }
+
+func TestReplayRestoresDisplayNameFromCreatedMetadata(t *testing.T) {
+	now := time.Now().UTC()
+	replayed, err := Replay([]Event{
+		{
+			ID:        "s2-000001",
+			SessionID: "s2",
+			From:      "system",
+			Type:      EventControl,
+			Payload: ControlPayload{
+				Action: ControlActionSessionCreated,
+				Metadata: map[string]any{
+					"display_name": "Planner Session",
+				},
+			},
+			Timestamp: now,
+			Seq:       1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Replay() error: %v", err)
+	}
+	if replayed.DisplayName != "Planner Session" {
+		t.Fatalf("display name = %q, want Planner Session", replayed.DisplayName)
+	}
+}

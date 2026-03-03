@@ -19,12 +19,13 @@ type EventStore interface {
 }
 
 type SessionRecord struct {
-	SessionID SessionID     `json:"session_id"`
-	Status    SessionStatus `json:"status"`
-	CreatedAt time.Time     `json:"created_at"`
-	UpdatedAt time.Time     `json:"updated_at"`
-	LastSeq   uint64        `json:"last_seq"`
-	InFlight  bool          `json:"in_flight"`
+	SessionID   SessionID     `json:"session_id"`
+	DisplayName string        `json:"display_name,omitempty"`
+	Status      SessionStatus `json:"status"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+	LastSeq     uint64        `json:"last_seq"`
+	InFlight    bool          `json:"in_flight"`
 }
 
 type SessionRegistryStore interface {
@@ -81,6 +82,9 @@ func (s *InMemoryEventStore) Append(ctx context.Context, e Event) error {
 		if record.SessionID == "" {
 			record.SessionID = e.SessionID
 		}
+		if displayName, ok := displayNameFromSessionCreatedEvent(e); ok {
+			record.DisplayName = displayName
+		}
 		if e.Seq > record.LastSeq {
 			record.LastSeq = e.Seq
 		}
@@ -136,6 +140,9 @@ func (s *InMemoryEventStore) UpsertSession(ctx context.Context, record SessionRe
 	defer s.mu.Unlock()
 	existing, ok := s.sessions[record.SessionID]
 	if ok {
+		if strings.TrimSpace(record.DisplayName) == "" {
+			record.DisplayName = existing.DisplayName
+		}
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = existing.CreatedAt
 		}

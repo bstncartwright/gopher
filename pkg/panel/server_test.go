@@ -405,6 +405,39 @@ func TestPanelSessionsHideStaleByDefault(t *testing.T) {
 	}
 }
 
+func TestPanelSessionsUseSessionDisplayNameFallback(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	store.addSession("sess-name", sessionrt.SessionActive, []sessionrt.Event{
+		{
+			SessionID: "sess-name",
+			Seq:       1,
+			Type:      sessionrt.EventControl,
+			Timestamp: now,
+			Payload: sessionrt.ControlPayload{
+				Action: sessionrt.ControlActionSessionCreated,
+				Metadata: map[string]any{
+					"display_name": "Weekly Planning",
+				},
+			},
+		},
+	})
+
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/session/sess-name", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Weekly Planning") {
+		t.Fatalf("expected display_name fallback in detail view, got: %s", rec.Body.String())
+	}
+}
+
 func TestToEventRowsFiltersDeltasAndLabelsBuiltInTools(t *testing.T) {
 	now := time.Now().UTC()
 	rows := toEventRows([]sessionrt.Event{

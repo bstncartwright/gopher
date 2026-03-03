@@ -120,10 +120,16 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateSessionOptions) 
 	}
 
 	id := m.newSessionID()
+	createdAt := m.now().UTC()
+	displayName := normalizeDisplayName(opts.DisplayName)
+	if displayName == "" {
+		displayName = defaultSessionDisplayName(createdAt, participants)
+	}
 	session := &Session{
 		ID:           id,
+		DisplayName:  displayName,
 		Participants: participants,
-		CreatedAt:    m.now().UTC(),
+		CreatedAt:    createdAt,
 		Status:       SessionActive,
 	}
 	rt := newSessionRuntime(session)
@@ -147,6 +153,7 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateSessionOptions) 
 			Action: ControlActionSessionCreated,
 			Metadata: map[string]any{
 				"participants": participantsList(session.Participants),
+				"display_name": session.DisplayName,
 			},
 		},
 	}
@@ -409,6 +416,7 @@ func cloneSession(session *Session) *Session {
 
 	return &Session{
 		ID:           session.ID,
+		DisplayName:  session.DisplayName,
 		Participants: participants,
 		CreatedAt:    session.CreatedAt,
 		Status:       session.Status,

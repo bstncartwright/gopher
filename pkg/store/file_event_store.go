@@ -95,6 +95,9 @@ func (s *FileEventStore) Append(ctx context.Context, event sessionrt.Event) erro
 		record.Status = sessionrt.SessionActive
 		record.CreatedAt = event.Timestamp
 	}
+	if displayName, ok := displayNameFromSessionCreatedEvent(event); ok {
+		record.DisplayName = displayName
+	}
 	if record.LastSeq > 0 {
 		switch {
 		case event.Seq <= record.LastSeq:
@@ -225,6 +228,9 @@ func (s *FileEventStore) UpsertSession(ctx context.Context, record sessionrt.Ses
 	defer s.mu.Unlock()
 	existing := s.sessions[record.SessionID]
 	if existing.SessionID != "" {
+		if strings.TrimSpace(record.DisplayName) == "" {
+			record.DisplayName = existing.DisplayName
+		}
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = existing.CreatedAt
 		}
@@ -451,10 +457,11 @@ func readEventsFile(path string) ([]sessionrt.Event, error) {
 
 func deriveSessionRecord(events []sessionrt.Event) sessionrt.SessionRecord {
 	record := sessionrt.SessionRecord{
-		SessionID: events[0].SessionID,
-		Status:    sessionrt.SessionActive,
-		CreatedAt: events[0].Timestamp,
-		UpdatedAt: events[0].Timestamp,
+		SessionID:   events[0].SessionID,
+		DisplayName: sessionrt.DisplayNameFromEvents(events),
+		Status:      sessionrt.SessionActive,
+		CreatedAt:   events[0].Timestamp,
+		UpdatedAt:   events[0].Timestamp,
 	}
 	for _, event := range events {
 		if event.Seq > record.LastSeq {
@@ -472,6 +479,33 @@ func deriveSessionRecord(events []sessionrt.Event) sessionrt.SessionRecord {
 		record.UpdatedAt = time.Now().UTC()
 	}
 	return record
+}
+
+func displayNameFromSessionCreatedEvent(event sessionrt.Event) (string, bool) {
+	if event.Type != sessionrt.EventControl {
+		return "", false
+	}
+	control, ok := event.Payload.(sessionrt.ControlPayload)
+	if !ok {
+		controlMap, ok := event.Payload.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		action, _ := controlMap["action"].(string)
+		if strings.TrimSpace(action) != sessionrt.ControlActionSessionCreated {
+			return "", false
+		}
+		metadata, _ := controlMap["metadata"].(map[string]any)
+		raw, _ := metadata["display_name"].(string)
+		name := strings.TrimSpace(raw)
+		return name, name != ""
+	}
+	if strings.TrimSpace(control.Action) != sessionrt.ControlActionSessionCreated {
+		return "", false
+	}
+	raw, _ := control.Metadata["display_name"].(string)
+	name := strings.TrimSpace(raw)
+	return name, name != ""
 }
 
 func transitionStatus(current sessionrt.SessionStatus, event sessionrt.Event) sessionrt.SessionStatus {

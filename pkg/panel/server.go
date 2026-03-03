@@ -447,6 +447,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		metadata := s.lookupSessionMetadata(record.SessionID)
 		title := metadata.ConversationName
 		if title == "" {
+			title = strings.TrimSpace(record.DisplayName)
+		}
+		if title == "" {
 			title = metadata.ConversationID
 		}
 		if title == "" {
@@ -497,6 +500,8 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	data.ConversationID = metadata.ConversationID
 	if metadata.ConversationName != "" {
 		data.Title = metadata.ConversationName
+	} else if displayName := sessionrt.DisplayNameFromEvents(events); displayName != "" {
+		data.Title = displayName
 	} else if metadata.ConversationID != "" {
 		data.Title = metadata.ConversationID
 	} else {

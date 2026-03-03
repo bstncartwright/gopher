@@ -48,6 +48,11 @@ func (m *Manager) Recover(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("replay session %s: %w", record.SessionID, err)
 		}
+		if displayName := normalizeDisplayName(record.DisplayName); displayName != "" {
+			replayed.DisplayName = displayName
+		} else if replayed.DisplayName == "" {
+			replayed.DisplayName = defaultSessionDisplayName(replayed.CreatedAt, replayed.Participants)
+		}
 
 		rt := newSessionRuntime(replayed)
 		rt.inFlight = record.InFlight

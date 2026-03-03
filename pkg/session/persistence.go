@@ -35,12 +35,13 @@ func (m *Manager) persistSessionRecord(ctx context.Context, rt *sessionRuntime, 
 		updatedAt = m.now().UTC()
 	}
 	record := SessionRecord{
-		SessionID: rt.sessionID,
-		Status:    rt.session.Status,
-		CreatedAt: rt.session.CreatedAt,
-		UpdatedAt: updatedAt,
-		LastSeq:   rt.nextSeq,
-		InFlight:  rt.inFlight,
+		SessionID:   rt.sessionID,
+		DisplayName: rt.session.DisplayName,
+		Status:      rt.session.Status,
+		CreatedAt:   rt.session.CreatedAt,
+		UpdatedAt:   updatedAt,
+		LastSeq:     rt.nextSeq,
+		InFlight:    rt.inFlight,
 	}
 	return m.registry.UpsertSession(ctx, record)
 }

@@ -1101,12 +1101,16 @@ func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversatio
 		"agent_id", desiredAgentID,
 		"sender_id", senderID,
 	)
-	created, err := p.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+	createOpts := sessionrt.CreateSessionOptions{
 		Participants: []sessionrt.Participant{
 			{ID: desiredAgentID, Type: sessionrt.ActorAgent},
 			{ID: externalActorID(senderID), Type: sessionrt.ActorHuman},
 		},
-	})
+	}
+	if conversationName != "" {
+		createOpts.DisplayName = conversationName
+	}
+	created, err := p.manager.CreateSession(ctx, createOpts)
 	if err != nil {
 		slog.Error("dm_pipeline: failed to create session",
 			"conversation_id", conversationID,

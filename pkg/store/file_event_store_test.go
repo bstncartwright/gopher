@@ -185,3 +185,39 @@ func TestFileEventStoreListSessionsWithLargeEventLine(t *testing.T) {
 		t.Fatalf("expected last seq 2, got %d", records[0].LastSeq)
 	}
 }
+
+func TestFileEventStoreExtractsDisplayNameFromCreatedEvent(t *testing.T) {
+	store, err := NewFileEventStore(FileEventStoreOptions{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewFileEventStore() error: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := store.Append(context.Background(), sessionrt.Event{
+		ID:        "s2-000001",
+		SessionID: "s2",
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventControl,
+		Payload: sessionrt.ControlPayload{
+			Action: sessionrt.ControlActionSessionCreated,
+			Metadata: map[string]any{
+				"display_name": "Planning Room",
+			},
+		},
+		Timestamp: now,
+		Seq:       1,
+	}); err != nil {
+		t.Fatalf("Append(created) error: %v", err)
+	}
+
+	records, err := store.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions() error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 session record, got %d", len(records))
+	}
+	if records[0].DisplayName != "Planning Room" {
+		t.Fatalf("display_name = %q, want Planning Room", records[0].DisplayName)
+	}
+}

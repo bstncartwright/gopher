@@ -243,7 +243,6 @@ name = %q
 role = "assistant"
 model_policy = %q
 reasoning_level = "medium"
-enabled_tools = ["group:fs", "group:runtime", "group:collaboration"]
 max_context_messages = 40
 
 [context_management]

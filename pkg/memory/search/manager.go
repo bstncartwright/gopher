@@ -335,10 +335,7 @@ func (m *Manager) Search(ctx context.Context, req memory.MemorySearchRequest) (m
 	return resp, nil
 }
 
-func (m *Manager) Read(ctx context.Context, req memory.MemoryReadRequest) (memory.MemoryReadResponse, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+func (m *Manager) Read(_ context.Context, req memory.MemoryReadRequest) (memory.MemoryReadResponse, error) {
 	if !m.enabled {
 		return memory.MemoryReadResponse{}, nil
 	}

@@ -824,24 +824,6 @@ func parseTelegramMessageID(eventID string) (int64, error) {
 	return value, nil
 }
 
-func formatAttachmentNotice(attachments []transport.OutboundAttachment) string {
-	names := make([]string, 0, len(attachments))
-	for _, attachment := range attachments {
-		name := strings.TrimSpace(attachment.Name)
-		if name == "" {
-			name = filepath.Base(strings.TrimSpace(attachment.Path))
-		}
-		if name == "" {
-			continue
-		}
-		names = append(names, name)
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	return "Generated files: " + strings.Join(names, ", ")
-}
-
 func selectTelegramAttachmentMethod(attachment transport.OutboundAttachment) string {
 	mimeType := strings.ToLower(strings.TrimSpace(attachment.MIMEType))
 	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(attachment.Path)))

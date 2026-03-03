@@ -1,3 +1,4 @@
+//lint:file-ignore SA1019 nhooyr websocket is currently required for codex websocket compatibility in tests.
 package ai
 
 import (

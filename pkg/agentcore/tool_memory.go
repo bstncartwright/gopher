@@ -2,7 +2,6 @@ package agentcore
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/bstncartwright/gopher/pkg/memory"
@@ -146,15 +145,4 @@ func (t *memoryGetTool) Run(ctx context.Context, input ToolInput) (ToolOutput, e
 		"text":       resp.Text,
 	}
 	return ToolOutput{Status: ToolStatusOK, Result: result}, nil
-}
-
-func memorySearchDiagnosticsStatus(agent *Agent, ctx context.Context) (memory.MemorySearchStatus, error) {
-	if agent == nil || agent.MemorySearch == nil {
-		return memory.MemorySearchStatus{Enabled: false, Mode: "disabled"}, nil
-	}
-	status, err := agent.MemorySearch.Status(ctx)
-	if err != nil {
-		return memory.MemorySearchStatus{}, fmt.Errorf("memory status: %w", err)
-	}
-	return status, nil
 }

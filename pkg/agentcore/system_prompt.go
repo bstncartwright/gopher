@@ -104,7 +104,11 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		sections = append(sections,
 			"## OpenClaw Self-Update",
 			"Only perform self-update actions when explicitly requested by the user.",
-			"Use gopher-native flows: `gopher update` for binary updates; for config changes, edit config files and restart the relevant service.",
+			"Treat requests like \"update yourself\", \"update itself\", or \"self-update\" as explicit self-update requests.",
+			"For binary updates, run `gopher update` using available execution tools and report the actual command result.",
+			"Do not replace a requested self-update with memory updates, policy notes, or future-intent promises.",
+			"Only update memory when the user explicitly asks to remember or store memory.",
+			"For config changes, edit config files and restart the relevant service.",
 			"",
 		)
 	}

@@ -416,7 +416,12 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	}
 	defer cleanupLogs()
 
-	slog.Info("gateway_run: starting gateway", "node_id", cfg.NodeID, "gateway_id", cfg.GatewayNodeID)
+	slog.Info(
+		"gateway_run: starting gateway",
+		"node_id", cfg.NodeID,
+		"gateway_id", cfg.GatewayNodeID,
+		"version", currentBinaryVersion(),
+	)
 	client, err := fabricts.NewClient(fabricts.ClientOptions{
 		URL:            cfg.NATSURL,
 		Name:           "gopher-gateway-" + cfg.NodeID,
@@ -494,6 +499,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	slog.Info("gateway_run: gateway running",
 		"node_id", cfg.NodeID,
 		"gateway_id", cfg.GatewayNodeID,
+		"version", currentBinaryVersion(),
 		"nats_url", cfg.NATSURL,
 		"heartbeat_interval", cfg.HeartbeatInterval.String(),
 		"prune_interval", cfg.PruneInterval.String(),

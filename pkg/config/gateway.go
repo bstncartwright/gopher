@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -190,6 +191,7 @@ type rawUpdateConfig struct {
 func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error) {
 	cfg := defaultGatewayConfig()
 	sources := []string{"defaults"}
+	slog.Debug("config_gateway: loading gateway config", "working_dir", strings.TrimSpace(opts.WorkingDir), "explicit_config_path", strings.TrimSpace(opts.ConfigPath))
 
 	workingDir := strings.TrimSpace(opts.WorkingDir)
 	if workingDir == "" {
@@ -203,11 +205,13 @@ func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error)
 	if err != nil {
 		return GatewayConfig{}, nil, fmt.Errorf("resolve working directory: %w", err)
 	}
+	slog.Debug("config_gateway: resolved working directory", "working_dir", workingDir)
 
 	primaryPath, localPath, err := resolveConfigPaths(workingDir, strings.TrimSpace(opts.ConfigPath))
 	if err != nil {
 		return GatewayConfig{}, nil, err
 	}
+	slog.Debug("config_gateway: resolved config file paths", "primary_path", primaryPath, "local_path", localPath)
 
 	if primaryPath != "" {
 		raw, err := loadRawGatewayFile(primaryPath)
@@ -219,6 +223,7 @@ func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error)
 		}
 		cfg.PrimaryConfigPath = primaryPath
 		sources = append(sources, primaryPath)
+		slog.Debug("config_gateway: applied primary config file", "path", primaryPath)
 	}
 
 	if localPath != "" {
@@ -231,6 +236,7 @@ func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error)
 		}
 		cfg.LocalConfigPath = localPath
 		sources = append(sources, localPath)
+		slog.Debug("config_gateway: applied local config file", "path", localPath)
 	}
 
 	envMap := opts.Env
@@ -242,6 +248,7 @@ func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error)
 	}
 	if hasGatewayEnv(envMap) {
 		sources = append(sources, "env:GOPHER_*")
+		slog.Debug("config_gateway: applied environment overrides")
 	}
 
 	if err := applyGatewayOverrides(&cfg, opts.Overrides); err != nil {
@@ -249,11 +256,13 @@ func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error)
 	}
 	if hasGatewayOverrides(opts.Overrides) {
 		sources = append(sources, "cli-flags")
+		slog.Debug("config_gateway: applied cli overrides")
 	}
 
 	if err := validateGatewayConfig(&cfg); err != nil {
 		return GatewayConfig{}, nil, err
 	}
+	slog.Info("config_gateway: gateway config loaded", "node_id", cfg.NodeID, "gateway_node_id", cfg.GatewayNodeID, "nats_url", cfg.NATSURL, "sources", strings.Join(sources, ","))
 	return cfg, sources, nil
 }
 

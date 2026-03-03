@@ -84,7 +84,12 @@ type nodeAdminService struct {
 	requestRestart func(string)
 }
 
-func runNodeSubcommand(args []string, stdout, stderr io.Writer) error {
+func runNodeSubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("node", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if len(args) == 0 {
 		printNodeUsage(stdout)
 		return nil
@@ -100,6 +105,7 @@ func runNodeSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		slog.Info("node_run: parsed run flags", "explicit_config_path", strings.TrimSpace(inputs.ConfigPath))
 		workingDir, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("resolve working directory: %w", err)
@@ -112,6 +118,7 @@ func runNodeSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		slog.Info("node_run: node config loaded", "node_id", cfg.NodeID, "sources", strings.Join(sources, ","))
 		workspace, err := resolveRuntimeWorkspace(workingDir, cfg.PrimaryConfigPath, cfg.LocalConfigPath)
 		if err != nil {
 			return err
@@ -527,6 +534,14 @@ func runNodeConfigureSubcommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Info(
+		"node_run: configure requested",
+		"target_node", inputs.TargetNode,
+		"gateway_config_path", inputs.GatewayConfigPath,
+		"gateway_nats_override", strings.TrimSpace(inputs.GatewayNATSURL) != "",
+		"restart_after_configure", inputs.Restart,
+		"restart_timeout", inputs.RestartTimeout.String(),
+	)
 	clientOpts, err := resolveNodeAdminClientOptions(inputs.GatewayConfigPath, inputs.GatewayNATSURL)
 	if err != nil {
 		return err
@@ -574,6 +589,13 @@ func runNodeRestartSubcommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Info(
+		"node_run: restart requested",
+		"target_node", inputs.TargetNode,
+		"gateway_config_path", inputs.GatewayConfigPath,
+		"gateway_nats_override", strings.TrimSpace(inputs.GatewayNATSURL) != "",
+		"verify_timeout", inputs.VerifyTimeout.String(),
+	)
 	clientOpts, err := resolveNodeAdminClientOptions(inputs.GatewayConfigPath, inputs.GatewayNATSURL)
 	if err != nil {
 		return err
@@ -885,6 +907,7 @@ func runNodeConfigSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err := writeConfigFileWithBackup(target, []byte(config.DefaultNodeTOML())); err != nil {
 			return err
 		}
+		slog.Info("node_run: wrote node config template", "path", target, "force", *force)
 		fmt.Fprintf(stdout, "wrote %s\n", target)
 		return nil
 	case "help", "-h", "--help":

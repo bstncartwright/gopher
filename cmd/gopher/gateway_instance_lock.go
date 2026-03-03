@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,10 +33,12 @@ func acquireGatewayInstanceLock(workspace string) (*gatewayInstanceLock, error) 
 		return nil, fmt.Errorf("acquire gateway instance lock: workspace is required")
 	}
 	lockDir := filepath.Join(cleanWorkspace, gatewayInstanceLockRelativePath, gatewayInstanceLockDirName)
+	slog.Debug("gateway_lock: acquiring instance lock", "workspace", cleanWorkspace, "lock_dir", lockDir)
 
 	for attempt := 0; attempt < 2; attempt++ {
 		lock, err := createGatewayInstanceLock(lockDir)
 		if err == nil {
+			slog.Info("gateway_lock: lock acquired", "lock_dir", lockDir, "attempt", attempt+1)
 			return lock, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
@@ -51,6 +54,7 @@ func acquireGatewayInstanceLock(workspace string) (*gatewayInstanceLock, error) 
 			)
 		}
 		if processIsRunning(owner.PID) {
+			slog.Warn("gateway_lock: active owner detected", "lock_dir", lockDir, "owner_pid", owner.PID)
 			return nil, fmt.Errorf(
 				"gateway is already running for workspace %s (pid=%d, lock=%s)",
 				cleanWorkspace,
@@ -66,6 +70,7 @@ func acquireGatewayInstanceLock(workspace string) (*gatewayInstanceLock, error) 
 				removeErr,
 			)
 		}
+		slog.Warn("gateway_lock: removed stale lock directory", "lock_dir", lockDir, "stale_pid", owner.PID)
 	}
 
 	return nil, fmt.Errorf("gateway is already running for workspace %s (lock=%s)", cleanWorkspace, lockDir)
@@ -136,6 +141,7 @@ func (l *gatewayInstanceLock) Release() error {
 	if err := os.RemoveAll(l.lockDir); err != nil {
 		return fmt.Errorf("release gateway instance lock: %w", err)
 	}
+	slog.Debug("gateway_lock: lock released", "lock_dir", l.lockDir)
 	l.lockDir = ""
 	return nil
 }

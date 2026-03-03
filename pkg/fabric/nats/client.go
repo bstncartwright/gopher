@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ var _ Subscription = (*natsSubscription)(nil)
 
 func NewClient(opts ClientOptions) (*Client, error) {
 	if opts.Connection != nil {
+		slog.Debug("nats_client: using caller-provided nats connection", "owned", false)
 		return &Client{conn: opts.Connection, owned: false}, nil
 	}
 
@@ -54,11 +56,21 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	if opts.MaxReconnects > 0 {
 		natsOpts = append(natsOpts, gonats.MaxReconnects(opts.MaxReconnects))
 	}
+	slog.Info(
+		"nats_client: connecting",
+		"url", url,
+		"name", strings.TrimSpace(opts.Name),
+		"connect_timeout", opts.ConnectTimeout.String(),
+		"reconnect_wait", opts.ReconnectWait.String(),
+		"max_reconnects", opts.MaxReconnects,
+	)
 
 	conn, err := gonats.Connect(url, natsOpts...)
 	if err != nil {
+		slog.Error("nats_client: connect failed", "url", url, "error", err)
 		return nil, fmt.Errorf("connect nats: %w", err)
 	}
+	slog.Info("nats_client: connected", "url", url, "client_id", conn.ConnectedServerId())
 	return &Client{conn: conn, owned: true}, nil
 }
 
@@ -77,6 +89,7 @@ func (c *Client) Publish(ctx context.Context, message Message) error {
 	if strings.TrimSpace(message.Subject) == "" {
 		return fmt.Errorf("subject is required")
 	}
+	slog.Debug("nats_client: publishing message", "subject", message.Subject, "reply", message.Reply, "bytes", len(message.Data))
 
 	msg := &gonats.Msg{
 		Subject: message.Subject,
@@ -100,6 +113,7 @@ func (c *Client) Subscribe(subject string, handler Handler) (Subscription, error
 	if handler == nil {
 		return nil, fmt.Errorf("handler is required")
 	}
+	slog.Debug("nats_client: subscribing", "subject", subject)
 
 	sub, err := c.conn.Subscribe(subject, func(msg *gonats.Msg) {
 		handler(context.Background(), Message{Subject: msg.Subject, Reply: msg.Reply, Data: append([]byte(nil), msg.Data...)})
@@ -126,6 +140,7 @@ func (c *Client) Request(ctx context.Context, subject string, data []byte) ([]by
 	if subject == "" {
 		return nil, fmt.Errorf("subject is required")
 	}
+	slog.Debug("nats_client: request", "subject", subject, "bytes", len(data))
 
 	msg := &gonats.Msg{Subject: subject, Data: append([]byte(nil), data...)}
 	response, err := c.conn.RequestMsgWithContext(ctx, msg)
@@ -141,6 +156,7 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	if c.owned {
+		slog.Debug("nats_client: closing owned connection")
 		c.conn.Close()
 	}
 	return nil

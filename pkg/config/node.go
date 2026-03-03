@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -59,6 +60,7 @@ type rawNodeRuntime struct {
 func LoadNodeConfig(opts NodeLoadOptions) (NodeConfig, []string, error) {
 	cfg := defaultNodeConfig()
 	sources := []string{"defaults"}
+	slog.Debug("config_node: loading node config", "working_dir", strings.TrimSpace(opts.WorkingDir), "explicit_config_path", strings.TrimSpace(opts.ConfigPath))
 
 	workingDir := strings.TrimSpace(opts.WorkingDir)
 	if workingDir == "" {
@@ -72,11 +74,13 @@ func LoadNodeConfig(opts NodeLoadOptions) (NodeConfig, []string, error) {
 	if err != nil {
 		return NodeConfig{}, nil, fmt.Errorf("resolve working directory: %w", err)
 	}
+	slog.Debug("config_node: resolved working directory", "working_dir", workingDir)
 
 	primaryPath, localPath, err := resolveNodeConfigPaths(workingDir, strings.TrimSpace(opts.ConfigPath))
 	if err != nil {
 		return NodeConfig{}, nil, err
 	}
+	slog.Debug("config_node: resolved config file paths", "primary_path", primaryPath, "local_path", localPath)
 
 	if primaryPath != "" {
 		raw, err := loadRawNodeFile(primaryPath)
@@ -88,6 +92,7 @@ func LoadNodeConfig(opts NodeLoadOptions) (NodeConfig, []string, error) {
 		}
 		cfg.PrimaryConfigPath = primaryPath
 		sources = append(sources, primaryPath)
+		slog.Debug("config_node: applied primary config file", "path", primaryPath)
 	}
 
 	if localPath != "" {
@@ -100,6 +105,7 @@ func LoadNodeConfig(opts NodeLoadOptions) (NodeConfig, []string, error) {
 		}
 		cfg.LocalConfigPath = localPath
 		sources = append(sources, localPath)
+		slog.Debug("config_node: applied local config file", "path", localPath)
 	}
 
 	envMap := opts.Env
@@ -111,6 +117,7 @@ func LoadNodeConfig(opts NodeLoadOptions) (NodeConfig, []string, error) {
 	}
 	if hasNodeEnv(envMap) {
 		sources = append(sources, "env:GOPHER_NODE_*")
+		slog.Debug("config_node: applied environment overrides")
 	}
 
 	if err := applyNodeOverrides(&cfg, opts.Overrides); err != nil {
@@ -118,11 +125,13 @@ func LoadNodeConfig(opts NodeLoadOptions) (NodeConfig, []string, error) {
 	}
 	if hasNodeOverrides(opts.Overrides) {
 		sources = append(sources, "cli-flags")
+		slog.Debug("config_node: applied cli overrides")
 	}
 
 	if err := validateNodeConfig(&cfg); err != nil {
 		return NodeConfig{}, nil, err
 	}
+	slog.Info("config_node: node config loaded", "node_id", cfg.NodeID, "nats_url", cfg.NATSURL, "sources", strings.Join(sources, ","))
 	return cfg, sources, nil
 }
 

@@ -88,7 +88,12 @@ var newGatewayPanel = func(opts panel.ServerOptions) (panelRuntime, error) {
 	return panel.NewServer(opts)
 }
 
-func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
+func runGatewaySubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("gateway", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if len(args) == 0 {
 		printGatewayUsage(stdout)
 		return nil
@@ -104,6 +109,10 @@ func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		slog.Info(
+			"gateway_run: parsed run flags",
+			"explicit_config_path", strings.TrimSpace(inputs.ConfigPath),
+		)
 		workingDir, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("resolve working directory: %w", err)
@@ -119,6 +128,7 @@ func runGatewaySubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		slog.Info("gateway_run: gateway config loaded", "node_id", cfg.NodeID, "gateway_id", cfg.GatewayNodeID, "sources", strings.Join(sources, ","))
 		workspace, err := resolveRuntimeWorkspace(workingDir, cfg.PrimaryConfigPath, cfg.LocalConfigPath)
 		if err != nil {
 			return err
@@ -318,6 +328,7 @@ func parseGatewayRunFlags(args []string) (gatewayRunInputs, error) {
 }
 
 func ensureGatewayRunConfigExists(workingDir, explicitPath string) error {
+	slog.Debug("gateway_run: ensuring config exists", "working_dir", workingDir, "explicit_path", explicitPath)
 	workingDir = strings.TrimSpace(workingDir)
 	if workingDir == "" {
 		return fmt.Errorf("working directory is required")
@@ -335,6 +346,7 @@ func ensureGatewayRunConfigExists(workingDir, explicitPath string) error {
 		if err := writeConfigFileWithBackup(target, []byte(config.DefaultGatewayTOML())); err != nil {
 			return err
 		}
+		slog.Info("gateway_run: wrote default gateway config", "path", target)
 		return nil
 	}
 
@@ -349,6 +361,7 @@ func ensureGatewayRunConfigExists(workingDir, explicitPath string) error {
 			if info.IsDir() {
 				return fmt.Errorf("config path %s is a directory", target)
 			}
+			slog.Debug("gateway_run: explicit config already exists", "path", target)
 			return nil
 		}
 		if !os.IsNotExist(err) {
@@ -365,6 +378,7 @@ func ensureGatewayRunConfigExists(workingDir, explicitPath string) error {
 		if primaryInfo.IsDir() {
 			return fmt.Errorf("config path %s is a directory", primary)
 		}
+		slog.Debug("gateway_run: primary config already exists", "path", primary)
 		return nil
 	}
 	if !os.IsNotExist(primaryErr) {
@@ -376,6 +390,7 @@ func ensureGatewayRunConfigExists(workingDir, explicitPath string) error {
 		if localInfo.IsDir() {
 			return fmt.Errorf("config path %s is a directory", local)
 		}
+		slog.Debug("gateway_run: local override config already exists", "path", local)
 		return nil
 	}
 	if !os.IsNotExist(localErr) {
@@ -634,6 +649,7 @@ func runGatewayConfigSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err := writeConfigFileWithBackup(target, []byte(config.DefaultGatewayTOML())); err != nil {
 			return err
 		}
+		slog.Info("gateway_run: wrote gateway config template", "path", target, "force", *force)
 		fmt.Fprintf(stdout, "wrote %s\n", target)
 		return nil
 	case "help", "-h", "--help":

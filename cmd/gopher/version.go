@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 )
 
@@ -17,5 +18,6 @@ func currentBinaryVersion() string {
 }
 
 func printBinaryVersion(out io.Writer) {
+	slog.Debug("version: printing binary version", "version", currentBinaryVersion())
 	fmt.Fprintf(out, "gopher %s\n", currentBinaryVersion())
 }

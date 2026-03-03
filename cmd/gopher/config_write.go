@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 )
 
@@ -13,12 +14,14 @@ var (
 )
 
 func writeConfigFileWithBackup(target string, content []byte) error {
+	slog.Debug("config_write: writing config file with backup semantics", "target", target, "bytes", len(content))
 	info, err := configFileStat(target)
 	if err != nil {
 		if os.IsNotExist(err) {
 			if err := configFileWrite(target, content, 0o644); err != nil {
 				return fmt.Errorf("write config file %s: %w", target, err)
 			}
+			slog.Info("config_write: wrote new config file", "target", target)
 			return nil
 		}
 		return fmt.Errorf("stat config file %s: %w", target, err)
@@ -46,6 +49,7 @@ func writeConfigFileWithBackup(target string, content []byte) error {
 		return fmt.Errorf("write config file %s: %w", target, err)
 	}
 	_ = configFileRemove(backupPath)
+	slog.Info("config_write: replaced config file and removed backup", "target", target, "backup_path", backupPath)
 	return nil
 }
 

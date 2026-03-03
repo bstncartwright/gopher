@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -34,7 +35,12 @@ var providerAuthSpecs = []providerAuthSpec{
 
 var loginOpenAICodexForAuth = ai.LoginOpenAICodex
 
-func runAuthSubcommand(args []string, stdout, stderr io.Writer) error {
+func runAuthSubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("auth", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if len(args) == 0 || wantsHelp(args) {
 		printAuthUsage(stdout)
 		return nil
@@ -71,6 +77,7 @@ func printAuthUsage(out io.Writer) {
 }
 
 func runAuthProviders(out io.Writer) error {
+	slog.Debug("auth: listing supported providers", "providers", len(providerAuthSpecs))
 	fmt.Fprintln(out, "supported providers:")
 	for _, spec := range providerAuthSpecs {
 		fmt.Fprintf(out, "  - %s (%s) -> %s\n", spec.Provider, spec.Mode, strings.Join(spec.EnvKeys, ", "))
@@ -93,6 +100,7 @@ func runAuthList(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("auth: loaded env file for list", "env_file", strings.TrimSpace(*envFile), "keys_count", len(values))
 
 	fmt.Fprintln(out, "provider auth status:")
 	for _, spec := range providerAuthSpecs {
@@ -156,6 +164,7 @@ func runAuthSet(args []string, out io.Writer) error {
 	if targetValue == "" {
 		return fmt.Errorf("secret value is required")
 	}
+	slog.Info("auth: setting credential key", "env_file", strings.TrimSpace(*envFile), "key", targetKey)
 
 	if err := upsertEnvKey(strings.TrimSpace(*envFile), targetKey, targetValue); err != nil {
 		return err
@@ -183,6 +192,7 @@ func runAuthLogin(args []string, in io.Reader, out io.Writer) error {
 	if providerID != "openai-codex" {
 		return fmt.Errorf("interactive oauth login is not supported for provider %q", providerID)
 	}
+	slog.Info("auth: starting provider oauth login", "provider", providerID, "env_file", strings.TrimSpace(*envFile))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -247,6 +257,7 @@ func runAuthLogin(args []string, in io.Reader, out io.Writer) error {
 	if err := removeEnvKeys(strings.TrimSpace(*envFile), []string{"OPENAI_CODEX_API_KEY"}); err != nil {
 		return err
 	}
+	slog.Info("auth: oauth login completed", "provider", providerID, "env_file", strings.TrimSpace(*envFile))
 	fmt.Fprintf(out, "logged in %s and wrote credentials to %s\n", providerID, strings.TrimSpace(*envFile))
 	return nil
 }
@@ -278,6 +289,7 @@ func runAuthUnset(args []string, out io.Writer) error {
 	if len(targetKeys) == 0 {
 		return fmt.Errorf("either --provider or --key is required")
 	}
+	slog.Info("auth: unsetting credential keys", "env_file", strings.TrimSpace(*envFile), "keys", strings.Join(targetKeys, ","))
 
 	if err := removeEnvKeys(strings.TrimSpace(*envFile), targetKeys); err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,7 +25,12 @@ type agentRecord struct {
 
 var validAgentIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
-func runAgentSubcommand(args []string, stdout, stderr io.Writer) error {
+func runAgentSubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("agent", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if len(args) == 0 || wantsHelp(args) {
 		printAgentUsage(stdout)
 		return nil
@@ -55,6 +61,7 @@ func printAgentUsage(out io.Writer) {
 }
 
 func runAgentCreate(args []string, out io.Writer) error {
+	slog.Debug("agent: create requested", "args_count", len(args))
 	flags := flag.NewFlagSet("agent create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	registryPathFlag := flags.String("registry-path", "", "registry path")
@@ -79,6 +86,7 @@ func runAgentCreate(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("agent: resolved paths for create", "registry_path", registryPath, "workspace_root", workspaceRoot)
 	registry, err := loadAgentRegistry(registryPath)
 	if err != nil {
 		return err
@@ -141,11 +149,13 @@ func runAgentCreate(args []string, out io.Writer) error {
 	if err := saveAgentRegistry(registryPath, registry); err != nil {
 		return err
 	}
+	slog.Info("agent: create completed", "agent_id", id, "workspace", workspace, "registry_path", registryPath, "reactivated", found)
 	fmt.Fprintf(out, "created agent %s (%s)\n", id, workspace)
 	return nil
 }
 
 func runAgentList(args []string, out io.Writer) error {
+	slog.Debug("agent: list requested", "args_count", len(args))
 	flags := flag.NewFlagSet("agent list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	registryPathFlag := flags.String("registry-path", "", "registry path")
@@ -165,6 +175,7 @@ func runAgentList(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("agent: loaded registry for list", "registry_path", registryPath, "records", len(registry))
 	if len(registry) == 0 {
 		fmt.Fprintln(out, "no agents found")
 		return nil
@@ -181,6 +192,7 @@ func runAgentList(args []string, out io.Writer) error {
 }
 
 func runAgentDelete(args []string, out io.Writer) error {
+	slog.Debug("agent: delete requested", "args_count", len(args))
 	flags := flag.NewFlagSet("agent delete", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	registryPathFlag := flags.String("registry-path", "", "registry path")
@@ -203,6 +215,7 @@ func runAgentDelete(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("agent: resolved paths for delete", "registry_path", registryPath, "workspace_root", workspaceRoot)
 	registry, err := loadAgentRegistry(registryPath)
 	if err != nil {
 		return err
@@ -235,6 +248,7 @@ func runAgentDelete(args []string, out io.Writer) error {
 	if err := saveAgentRegistry(registryPath, registry); err != nil {
 		return err
 	}
+	slog.Info("agent: delete completed", "agent_id", id, "workspace", workspace, "hard_delete", *hard, "registry_path", registryPath)
 	if *hard {
 		fmt.Fprintf(out, "deleted agent %s (hard)\n", id)
 		return nil

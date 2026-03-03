@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+const processLogLevelEnv = "GOPHER_LOG_LEVEL"
+
 func setupProcessLogging(workingDir string, component string, stderr io.Writer) (*log.Logger, func(), error) {
 	base := strings.TrimSpace(workingDir)
 	if base == "" {
@@ -33,10 +35,11 @@ func setupProcessLogging(workingDir string, component string, stderr io.Writer) 
 	if stderr != nil {
 		dest = io.MultiWriter(stderr, file)
 	}
+	level, invalidLevel, rawLevel := resolveProcessLogLevel()
 
 	prevSlog := slog.Default()
 	handler := slog.NewTextHandler(dest, &slog.HandlerOptions{
-		Level:     slog.LevelDebug,
+		Level:     level,
 		AddSource: true,
 	})
 	slog.SetDefault(slog.New(handler).With("component", name))
@@ -45,6 +48,27 @@ func setupProcessLogging(workingDir string, component string, stderr io.Writer) 
 		_ = file.Close()
 	}
 	logger := log.New(dest, "", log.LstdFlags)
-	logger.Printf("logging configured component=%s path=%s", name, logPath)
+	logger.Printf("logging configured component=%s path=%s level=%s", name, logPath, level.String())
+	if invalidLevel {
+		logger.Printf("invalid %s=%q; using level=%s", processLogLevelEnv, rawLevel, level.String())
+	}
 	return logger, cleanup, nil
+}
+
+func resolveProcessLogLevel() (level slog.Level, invalid bool, raw string) {
+	raw = strings.TrimSpace(os.Getenv(processLogLevelEnv))
+	switch strings.ToLower(raw) {
+	case "":
+		return slog.LevelInfo, false, raw
+	case "debug":
+		return slog.LevelDebug, false, raw
+	case "info":
+		return slog.LevelInfo, false, raw
+	case "warn", "warning":
+		return slog.LevelWarn, false, raw
+	case "error":
+		return slog.LevelError, false, raw
+	default:
+		return slog.LevelInfo, true, raw
+	}
 }

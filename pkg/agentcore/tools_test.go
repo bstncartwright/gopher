@@ -52,4 +52,7 @@ func TestBuildRegistryGroupRuntimeEnablesGopherMeta(t *testing.T) {
 	if _, ok := registry.Get("gopher_meta"); !ok {
 		t.Fatalf("expected gopher_meta tool to be enabled")
 	}
+	if _, ok := registry.Get("gopher_update"); !ok {
+		t.Fatalf("expected gopher_update tool to be enabled")
+	}
 }

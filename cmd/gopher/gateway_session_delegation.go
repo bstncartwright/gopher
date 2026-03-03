@@ -1351,31 +1351,6 @@ func controlPayloadFromAny(payload any) (sessionrt.ControlPayload, bool) {
 	}
 }
 
-func errorMessageFromAny(payload any) string {
-	switch typed := payload.(type) {
-	case sessionrt.ErrorPayload:
-		return strings.TrimSpace(typed.Message)
-	case *sessionrt.ErrorPayload:
-		if typed == nil {
-			return ""
-		}
-		return strings.TrimSpace(typed.Message)
-	case map[string]any:
-		msg, _ := typed["message"].(string)
-		return strings.TrimSpace(msg)
-	default:
-		blob, err := json.Marshal(payload)
-		if err != nil {
-			return ""
-		}
-		decoded := sessionrt.ErrorPayload{}
-		if err := json.Unmarshal(blob, &decoded); err != nil {
-			return ""
-		}
-		return strings.TrimSpace(decoded.Message)
-	}
-}
-
 func delegationStatus(record map[string]any) string {
 	status := strings.ToLower(strings.TrimSpace(stringFromMap(record, "status")))
 	if status == "" {

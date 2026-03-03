@@ -2,12 +2,13 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestAgentCreateListDeleteLifecycle(t *testing.T) {
@@ -30,7 +31,7 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 
 	plannerWorkspace := filepath.Join(workspaceRoot, "planner")
 	for _, name := range []string{
-		"AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "config.json", "policies.json",
+		"AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "config.toml", "policies.toml",
 	} {
 		if _, err := os.Stat(filepath.Join(plannerWorkspace, name)); err != nil {
 			t.Fatalf("expected workspace file %s: %v", name, err)
@@ -171,13 +172,13 @@ func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
 		t.Fatalf("expected agent id in AGENTS.md")
 	}
 
-	configBlob, err := os.ReadFile(filepath.Join(workspace, "config.json"))
+	configBlob, err := os.ReadFile(filepath.Join(workspace, "config.toml"))
 	if err != nil {
-		t.Fatalf("read config.json: %v", err)
+		t.Fatalf("read config.toml: %v", err)
 	}
 	var config map[string]any
-	if err := json.Unmarshal(configBlob, &config); err != nil {
-		t.Fatalf("config.json should be valid JSON: %v", err)
+	if err := toml.Unmarshal(configBlob, &config); err != nil {
+		t.Fatalf("config.toml should be valid TOML: %v", err)
 	}
 	if got, _ := config["agent_id"].(string); got != "writer" {
 		t.Fatalf("config agent_id=%q, want writer", got)

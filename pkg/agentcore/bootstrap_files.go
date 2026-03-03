@@ -174,7 +174,9 @@ func hasAgentWorkspaceChild(root string) bool {
 			continue
 		}
 		candidate := filepath.Join(root, entry.Name())
-		if fileExists(filepath.Join(candidate, "config.json")) && fileExists(filepath.Join(candidate, "policies.json")) {
+		hasConfig := fileExists(filepath.Join(candidate, "config.toml")) || fileExists(filepath.Join(candidate, "config.json"))
+		hasPolicies := fileExists(filepath.Join(candidate, "policies.toml")) || fileExists(filepath.Join(candidate, "policies.json"))
+		if hasConfig && hasPolicies {
 			return true
 		}
 	}

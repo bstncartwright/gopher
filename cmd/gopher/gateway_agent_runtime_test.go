@@ -84,11 +84,11 @@ func TestDiscoverGatewayAgentWorkspacesCreatesMainWorkspaceWhenMissing(t *testin
 	if got, want := workspaces[0], filepath.Join(workspace, "agents", "main"); got != want {
 		t.Fatalf("workspace = %q, want %q", got, want)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "config.json")); err != nil {
-		t.Fatalf("expected default config.json to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "config.toml")); err != nil {
+		t.Fatalf("expected default config.toml to exist: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "policies.json")); err != nil {
-		t.Fatalf("expected default policies.json to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "policies.toml")); err != nil {
+		t.Fatalf("expected default policies.toml to exist: %v", err)
 	}
 }
 

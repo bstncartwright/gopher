@@ -379,8 +379,8 @@ func ensureAgentWorkspace(agentID, workspace string) error {
 		"IDENTITY.md":   defaultIdentityTemplate(),
 		"USER.md":       defaultUserTemplate(),
 		"HEARTBEAT.md":  defaultHeartbeatTemplate(),
-		"config.json":   defaultConfigTemplate(agentID),
-		"policies.json": defaultPoliciesTemplate(),
+		"config.toml":   defaultConfigTemplate(agentID),
+		"policies.toml": defaultPoliciesTemplate(),
 	}
 	if brandNew {
 		files["BOOTSTRAP.md"] = defaultBootstrapTemplate()

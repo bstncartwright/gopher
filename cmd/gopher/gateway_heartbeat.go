@@ -14,6 +14,7 @@ import (
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/gateway"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
+	"github.com/pelletier/go-toml/v2"
 )
 
 type gatewayHeartbeatToolService struct {
@@ -93,8 +94,11 @@ func (s *gatewayHeartbeatToolService) SetHeartbeat(_ context.Context, req agentc
 		}
 	}
 
-	configPath := filepath.Join(agent.Workspace, "config.json")
-	doc, err := readJSONDocument(configPath)
+	configPath, err := resolveAgentConfigPath(agent.Workspace)
+	if err != nil {
+		return agentcore.HeartbeatState{}, err
+	}
+	doc, err := readConfigDocument(configPath)
 	if err != nil {
 		slog.Error("gateway_heartbeat_tool: read config failed", "agent_id", actorID, "path", configPath, "error", err)
 		return agentcore.HeartbeatState{}, err
@@ -186,8 +190,11 @@ func (s *gatewayHeartbeatToolService) DisableHeartbeat(_ context.Context, agentI
 		return agentcore.HeartbeatState{}, err
 	}
 
-	configPath := filepath.Join(agent.Workspace, "config.json")
-	doc, err := readJSONDocument(configPath)
+	configPath, err := resolveAgentConfigPath(agent.Workspace)
+	if err != nil {
+		return agentcore.HeartbeatState{}, err
+	}
+	doc, err := readConfigDocument(configPath)
 	if err != nil {
 		slog.Error("gateway_heartbeat_tool: read config failed for disable", "agent_id", actorID, "path", configPath, "error", err)
 		return agentcore.HeartbeatState{}, err
@@ -222,15 +229,15 @@ func (s *gatewayHeartbeatToolService) resolveAgent(agentID string) (sessionrt.Ac
 }
 
 func (s *gatewayHeartbeatToolService) persistConfigAndHydrateAgent(path string, doc map[string]any) (agentcore.AgentConfig, agentcore.AgentHeartbeat, error) {
-	if err := writeJSONDocument(path, doc); err != nil {
+	if err := writeConfigDocument(path, doc); err != nil {
 		return agentcore.AgentConfig{}, agentcore.AgentHeartbeat{}, err
 	}
-	blob, err := json.Marshal(doc)
+	blob, err := marshalConfigDocument(path, doc)
 	if err != nil {
 		return agentcore.AgentConfig{}, agentcore.AgentHeartbeat{}, fmt.Errorf("marshal updated config: %w", err)
 	}
 	updatedConfig := agentcore.AgentConfig{}
-	if err := json.Unmarshal(blob, &updatedConfig); err != nil {
+	if err := unmarshalConfigDocument(path, blob, &updatedConfig); err != nil {
 		return agentcore.AgentConfig{}, agentcore.AgentHeartbeat{}, fmt.Errorf("decode updated config: %w", err)
 	}
 	updatedHeartbeat, err := agentcore.NormalizeHeartbeatConfig(updatedConfig.Heartbeat)
@@ -264,30 +271,49 @@ func heartbeatStateFromAgent(agent *agentcore.Agent) agentcore.HeartbeatState {
 	return state
 }
 
-func readJSONDocument(path string) (map[string]any, error) {
+func resolveAgentConfigPath(workspace string) (string, error) {
+	candidates := []string{
+		filepath.Join(workspace, "config.toml"),
+		filepath.Join(workspace, "config.json"),
+	}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("stat config %s: %w", candidate, err)
+		}
+		if !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("agent config not found in workspace %s", workspace)
+}
+
+func readConfigDocument(path string) (map[string]any, error) {
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 	doc := map[string]any{}
-	if err := json.Unmarshal(blob, &doc); err != nil {
+	if err := unmarshalConfigDocument(path, blob, &doc); err != nil {
 		return nil, fmt.Errorf("decode config %s: %w", path, err)
 	}
 	return doc, nil
 }
 
-func writeJSONDocument(path string, doc map[string]any) error {
-	blob, err := json.MarshalIndent(doc, "", "  ")
+func writeConfigDocument(path string, doc map[string]any) error {
+	blob, err := marshalConfigDocument(path, doc)
 	if err != nil {
 		return fmt.Errorf("encode config %s: %w", path, err)
 	}
-	blob = append(blob, '\n')
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir config dir %s: %w", dir, err)
 	}
-	tmpFile, err := os.CreateTemp(dir, "config.json.tmp-*")
+	tmpFile, err := os.CreateTemp(dir, "config.tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp config file: %w", err)
 	}
@@ -309,4 +335,34 @@ func writeJSONDocument(path string, doc map[string]any) error {
 		return fmt.Errorf("replace config file: %w", err)
 	}
 	return nil
+}
+
+func marshalConfigDocument(path string, doc map[string]any) ([]byte, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		blob, err := toml.Marshal(doc)
+		if err != nil {
+			return nil, err
+		}
+		return append(blob, '\n'), nil
+	case ".json":
+		blob, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return append(blob, '\n'), nil
+	default:
+		return nil, fmt.Errorf("unsupported config format %q", filepath.Ext(path))
+	}
+}
+
+func unmarshalConfigDocument(path string, blob []byte, out any) error {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		return toml.Unmarshal(blob, out)
+	case ".json":
+		return json.Unmarshal(blob, out)
+	default:
+		return fmt.Errorf("unsupported config format %q", filepath.Ext(path))
+	}
 }

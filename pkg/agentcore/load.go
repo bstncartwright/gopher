@@ -22,10 +22,6 @@ const (
 	defaultHeartbeatAckMaxChars = 300
 )
 
-func defaultShellAllowlistValues() []string {
-	return []string{"echo", "git", "go", "bun", "node", "bash", "gopher"}
-}
-
 func LoadAgent(workspacePath string) (*Agent, error) {
 	slog.Info("load_agent: starting agent load", "workspace_path", workspacePath)
 	if strings.TrimSpace(workspacePath) == "" {
@@ -280,13 +276,11 @@ func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
 	if rawPolicies.CanShell == nil {
 		policies.CanShell = true
 	}
-	if rawPolicies.ShellAllowlist == nil && policies.CanShell {
-		policies.ShellAllowlist = defaultShellAllowlistValues()
-	}
 
 	if len(rawPolicies.Network) == 0 {
 		policies.Network.Enabled = true
-		policies.Network.AllowDomains = []string{"*"}
+		policies.Network.AllowDomains = nil
+		policies.Network.BlockDomains = nil
 		return
 	}
 
@@ -300,14 +294,12 @@ func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
 	}
 	if rawNetwork.Enabled != nil && !*rawNetwork.Enabled && networkDomainsAreUnrestricted(rawNetwork.AllowDomains, rawNetwork.BlockDomains) {
 		policies.Network.Enabled = true
-		policies.Network.AllowDomains = []string{"*"}
+		policies.Network.AllowDomains = nil
+		policies.Network.BlockDomains = nil
 		return
 	}
 	if rawNetwork.Enabled == nil {
 		policies.Network.Enabled = true
-	}
-	if rawNetwork.AllowDomains == nil && policies.Network.Enabled {
-		policies.Network.AllowDomains = []string{"*"}
 	}
 	if rawNetwork.BlockDomains == nil && policies.Network.Enabled {
 		policies.Network.BlockDomains = nil
@@ -337,16 +329,7 @@ func shellAllowlistIsUnspecifiedOrDefault(allowlist *[]string) bool {
 	if len(normalizedAllowlist) == 0 {
 		return true
 	}
-	defaultAllowlist := normalizeUniqueStrings(defaultShellAllowlistValues())
-	if len(normalizedAllowlist) != len(defaultAllowlist) {
-		return false
-	}
-	for i := range normalizedAllowlist {
-		if normalizedAllowlist[i] != defaultAllowlist[i] {
-			return false
-		}
-	}
-	return true
+	return false
 }
 
 func applyDefaultEnabledTools(cfg *AgentConfig) {

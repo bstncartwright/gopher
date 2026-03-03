@@ -324,7 +324,7 @@ example `agents/builder/policies.json`:
   "fs_roots": ["./"],
   "allow_cross_agent_fs": false,
   "can_shell": true,
-  "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher", "opencode"],
+  "shell_allowlist": [],
   "network": {
     "enabled": true,
     "block_domains": []
@@ -351,7 +351,7 @@ runtime guardrails for `opencode` via `exec`:
 
 troubleshooting:
 - `exec denied: command "opencode" is not in shell_allowlist`:
-  add `opencode` to `shell_allowlist`.
+  add `opencode` to `shell_allowlist` (only applies when you enable allowlist mode).
 - `exec denied: opencode binary not found in PATH`:
   install/fix `opencode` path on the runtime host.
 - `exec denied: opencode one-shot automation requires opencode run --format json ...`:
@@ -484,7 +484,7 @@ optional controls:
 node admin controls over NATS:
 - `gopher node configure --target-node <id> ...` persists remote `node.toml` and can request restart.
 - `gopher node restart --target-node <id>` requests remote restart with best-effort rejoin warning.
-- agents can invoke these via the `exec` tool when `gopher` is allowed in `shell_allowlist`.
+- agents can invoke these via the `exec` tool by default; if you enable allowlist mode, include `gopher`.
 
 ## safety philosophy
 

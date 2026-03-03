@@ -22,10 +22,9 @@ func defaultPolicies() AgentPolicies {
 	return AgentPolicies{
 		FSRoots:        []string{"./"},
 		CanShell:       true,
-		ShellAllowlist: []string{"echo", "git", "go", "bun", "node", "bash", "gopher"},
+		ShellAllowlist: nil,
 		Network: NetworkPolicy{
-			Enabled:      true,
-			AllowDomains: []string{"*"},
+			Enabled: true,
 		},
 		Budget: BudgetPolicy{MaxTokensPerSession: 200000},
 	}

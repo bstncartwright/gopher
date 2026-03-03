@@ -261,20 +261,17 @@ tool_result_context_head_chars = 8000
 tool_result_context_tail_chars = 3000
 recent_tool_result_chars = 2400
 historical_tool_result_chars = 240
-`, agentID, agentID, defaultAgentModelPolicy)
-}
 
-func defaultPoliciesTemplate() string {
-	return `fs_roots = ["./"]
-allow_cross_agent_fs = false
+[policies]
+allow_cross_agent_fs = true
 can_shell = true
 shell_allowlist = []
 
-[network]
+[policies.network]
 enabled = true
 block_domains = []
 
-[budget]
+[policies.budget]
 max_tokens_per_session = 200000
-`
+`, agentID, agentID, defaultAgentModelPolicy)
 }

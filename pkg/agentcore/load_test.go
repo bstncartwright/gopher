@@ -17,7 +17,6 @@ func TestLoadAgentMissingRequiredFiles(t *testing.T) {
 		needle string
 	}{
 		{name: "config.json", needle: "config"},
-		{name: "policies.json", needle: "policies"},
 	}
 	for _, tc := range required {
 		t.Run(tc.name, func(t *testing.T) {
@@ -34,6 +33,102 @@ func TestLoadAgentMissingRequiredFiles(t *testing.T) {
 				t.Fatalf("expected error to mention %s, got: %v", tc.needle, err)
 			}
 		})
+	}
+}
+
+func TestLoadAgentSupportsPoliciesEmbeddedInConfigWithoutLegacyPoliciesFile(t *testing.T) {
+	config := defaultConfig()
+	policies := defaultPolicies()
+	config.Policies = &policies
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	if err := os.Remove(filepath.Join(workspace, "policies.json")); err != nil {
+		t.Fatalf("remove policies.json: %v", err)
+	}
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if !reflect.DeepEqual(agent.Policies.FSRoots, []string{"./"}) {
+		t.Fatalf("fs_roots = %#v, want [\"./\"]", agent.Policies.FSRoots)
+	}
+	if !agent.Policies.CanShell {
+		t.Fatalf("can_shell = false, want true")
+	}
+}
+
+func TestLoadAgentEmbeddedPoliciesAllowCrossAgentWithoutFSRootsDefaultsOpen(t *testing.T) {
+	config := defaultConfig()
+	policies := defaultPolicies()
+	policies.FSRoots = nil
+	policies.AllowCrossAgentFS = true
+	config.Policies = &policies
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	if err := os.Remove(filepath.Join(workspace, "policies.json")); err != nil {
+		t.Fatalf("remove policies.json: %v", err)
+	}
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if len(agent.allowedFSRoots) == 0 {
+		t.Fatalf("expected default allowed fs roots")
+	}
+	root := filesystemRootForWorkspace(workspace)
+	if !reflect.DeepEqual(agent.allowedFSRoots, []string{root}) {
+		t.Fatalf("allowed fs roots = %#v, want [%q]", agent.allowedFSRoots, root)
+	}
+}
+
+func TestLoadAgentMissingPoliciesInConfigAndLegacyFileUsesOpenDefaults(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	if err := os.Remove(filepath.Join(workspace, "policies.json")); err != nil {
+		t.Fatalf("remove policies.json: %v", err)
+	}
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if !agent.Policies.AllowCrossAgentFS {
+		t.Fatalf("allow_cross_agent_fs = false, want true")
+	}
+	if !agent.Policies.CanShell {
+		t.Fatalf("can_shell = false, want true")
+	}
+	if !agent.Policies.Network.Enabled {
+		t.Fatalf("network.enabled = false, want true")
+	}
+	if len(agent.Policies.FSRoots) == 0 {
+		t.Fatalf("expected default open fs root")
+	}
+	root := string(filepath.Separator)
+	if volume := filepath.VolumeName(workspace); volume != "" {
+		root = volume + string(filepath.Separator)
+	}
+	if !reflect.DeepEqual(agent.Policies.FSRoots, []string{root}) {
+		t.Fatalf("fs_roots = %#v, want [%q]", agent.Policies.FSRoots, root)
+	}
+}
+
+func TestLoadAgentPrefersEmbeddedPoliciesOverLegacyPoliciesFile(t *testing.T) {
+	config := defaultConfig()
+	policies := defaultPolicies()
+	policies.CanShell = false
+	policies.ShellAllowlist = []string{"echo"}
+	config.Policies = &policies
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if agent.Policies.CanShell {
+		t.Fatalf("expected embedded config policies to override legacy policies file")
+	}
+	if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo"}) {
+		t.Fatalf("shell_allowlist = %#v, want [\"echo\"]", agent.Policies.ShellAllowlist)
 	}
 }
 

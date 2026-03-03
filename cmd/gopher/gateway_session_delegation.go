@@ -705,31 +705,6 @@ func (s *gatewaySessionDelegationToolService) readDelegationRecords() map[string
 	return out
 }
 
-func (s *gatewaySessionDelegationToolService) sendDelegationControlEvent(ctx context.Context, sourceSessionID sessionrt.SessionID, action string, metadata map[string]any) error {
-	if s == nil || s.manager == nil {
-		return nil
-	}
-	if strings.TrimSpace(string(sourceSessionID)) == "" || strings.TrimSpace(action) == "" {
-		return nil
-	}
-	event := sessionrt.Event{
-		SessionID: sourceSessionID,
-		From:      sessionrt.SystemActorID,
-		Type:      sessionrt.EventControl,
-		Payload: sessionrt.ControlPayload{
-			Action:   strings.TrimSpace(action),
-			Metadata: metadata,
-		},
-	}
-	if err := s.manager.SendEvent(ctx, event); err != nil {
-		if s.logger != nil {
-			s.logger.Printf("delegation control event send failed action=%s source_session=%s err=%v", action, sourceSessionID, err)
-		}
-		return err
-	}
-	return nil
-}
-
 func (s *gatewaySessionDelegationToolService) sendDelegationControlEventAsync(sourceSessionID sessionrt.SessionID, action string, metadata map[string]any) {
 	if s == nil || s.manager == nil {
 		return

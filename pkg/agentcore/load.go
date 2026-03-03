@@ -326,10 +326,7 @@ func shellAllowlistIsUnspecifiedOrDefault(allowlist *[]string) bool {
 		return true
 	}
 	normalizedAllowlist := normalizeUniqueStrings(*allowlist)
-	if len(normalizedAllowlist) == 0 {
-		return true
-	}
-	return false
+	return len(normalizedAllowlist) == 0
 }
 
 func applyDefaultEnabledTools(cfg *AgentConfig) {

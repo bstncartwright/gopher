@@ -11,24 +11,25 @@ import (
 )
 
 type ContextRequest struct {
-	BaseSystemPrompt         string
-	Messages                 []ai.Message
-	Retrieved                []memory.MemoryRecord
-	CompactionSummaries      []string
-	CurrentTask              string
-	MaxTokens                int
-	MaxMemories              int
-	ReserveMinTokens         int
-	EnablePruning            bool
-	EnableRepair             bool
-	EnableCompaction         bool
-	PruneOptions             PruneOptions
-	BootstrapTokens          int
-	WorkingTokens            int
-	OverflowRetries          int
-	OverflowStage            string
-	Warnings                 []string
-	CompactionSummaryBuilder CompactionSummaryBuilder
+	BaseSystemPrompt           string
+	Messages                   []ai.Message
+	Retrieved                  []memory.MemoryRecord
+	CompactionSummaries        []string
+	CurrentTask                string
+	MaxTokens                  int
+	MaxMemories                int
+	ReserveMinTokens           int
+	EnablePruning              bool
+	EnableRepair               bool
+	EnableCompaction           bool
+	PruneOptions               PruneOptions
+	BootstrapTokens            int
+	WorkingTokens              int
+	OverflowRetries            int
+	OverflowStage              string
+	Warnings                   []string
+	CompactionSummaryBuilder   CompactionSummaryBuilder
+	RetrievedMemoryLanePercent int
 }
 
 type CompactionSummaryBuilder func(ctx context.Context, dropped []ai.Message, fallback func([]ai.Message) CompactionResult) (CompactionResult, string, error)
@@ -140,7 +141,11 @@ func (a *DefaultAssembler) Build(ctx context.Context, input ContextRequest) (Con
 	}
 
 	recentCap := percentOf(usable, 45)
-	memoryCap := percentOf(usable, 15)
+	memoryPercent := input.RetrievedMemoryLanePercent
+	if memoryPercent <= 0 {
+		memoryPercent = 20
+	}
+	memoryCap := percentOf(usable, memoryPercent)
 	compactionCap := percentOf(usable, 8)
 
 	if recentCap <= 0 {

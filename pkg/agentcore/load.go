@@ -14,7 +14,10 @@ import (
 	"github.com/bstncartwright/gopher/pkg/ai"
 	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
 	"github.com/bstncartwright/gopher/pkg/memory"
+	"github.com/bstncartwright/gopher/pkg/memory/embedding"
+	memfiles "github.com/bstncartwright/gopher/pkg/memory/files"
 	"github.com/bstncartwright/gopher/pkg/memory/retrieval"
+	memsearch "github.com/bstncartwright/gopher/pkg/memory/search"
 	memsqlite "github.com/bstncartwright/gopher/pkg/memory/store/sqlite"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -97,6 +100,10 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		config.TimeFormat = "auto"
 	}
 	applyDefaultContextManagement(&config)
+	applyDefaultMemoryConfig(&config)
+	if err := config.MemorySearch.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid memory_search config: %w", err)
+	}
 	if err := validateRequiredCapabilities(config.Execution.RequiredCapabilities); err != nil {
 		slog.Error("load_agent: invalid required_capabilities", "required_capabilities", config.Execution.RequiredCapabilities, "error", err)
 		return nil, err
@@ -173,6 +180,9 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		contextWindow = 12000
 		slog.Debug("load_agent: using default context window", "context_window", contextWindow)
 	}
+	tzLocation := resolvePromptLocation(config.UserTimezone)
+	memoryFiles := memfiles.NewManager(workspaceAbs, tzLocation, nil)
+	memorySearch := buildMemorySearchManager(workspaceAbs, config, memoryFiles)
 
 	agent := &Agent{
 		ID:             config.AgentID,
@@ -183,6 +193,8 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		Policies:       policies,
 		Tools:          buildRegistry(config.EnabledTools, policies),
 		Memory:         NewFileMemoryStore(filepath.Join(workspaceAbs, "memory", "working.json")),
+		MemoryFiles:    memoryFiles,
+		MemorySearch:   memorySearch,
 		LongTermMemory: buildLongTermMemoryManager(workspaceAbs),
 		Assembler:      ctxbundle.NewAssembler(ctxbundle.AssemblerOptions{DefaultMaxTokens: contextWindow}),
 		Logger:         NewJSONLEventLogger(filepath.Join(workspaceAbs, "logs", "events.jsonl")),
@@ -244,6 +256,74 @@ func buildLongTermMemoryManager(workspaceAbs string) memory.MemoryManager {
 		return nil
 	}
 	slog.Debug("build_long_term_memory_manager: initialized successfully", "path", path)
+	return manager
+}
+
+func buildMemorySearchManager(workspaceAbs string, cfg AgentConfig, fileManager *memfiles.Manager) memory.MemorySearchManager {
+	if !cfg.MemorySearch.EnabledValue() || !cfg.Memory.EnabledValue() {
+		manager, err := memsearch.NewManager(memsearch.ManagerOptions{
+			Workspace: workspaceAbs,
+			DBPath:    filepath.Join(workspaceAbs, "memory", "memory.db"),
+			Files:     fileManager,
+			Enabled:   false,
+			Provider:  embedding.New(embedding.Options{Name: "none"}),
+		})
+		if err != nil {
+			slog.Warn("build_memory_search_manager: failed to initialize disabled manager", "error", err)
+			return nil
+		}
+		return manager
+	}
+
+	providerName := strings.TrimSpace(cfg.MemorySearch.EmbeddingProvider)
+	if providerName == "" {
+		providerName = "none"
+	}
+	provider := embedding.New(embedding.Options{
+		Name:        providerName,
+		ModelName:   cfg.MemorySearch.EmbeddingModel,
+		BaseURL:     cfg.MemorySearch.EmbeddingBaseURL,
+		Timeout:     cfg.MemorySearch.EmbeddingTimeoutValue(),
+		MaxBatch:    cfg.MemorySearch.EmbeddingMaxBatchValue(),
+		MaxInputLen: cfg.MemorySearch.EmbeddingMaxCharsValue(),
+		Retries:     cfg.MemorySearch.EmbeddingRetriesValue(),
+		Concurrency: cfg.MemorySearch.EmbeddingConcurrencyValue(),
+	})
+
+	manager, err := memsearch.NewManager(memsearch.ManagerOptions{
+		Workspace:            workspaceAbs,
+		DBPath:               filepath.Join(workspaceAbs, "memory", "memory.db"),
+		Files:                fileManager,
+		Provider:             provider,
+		Enabled:              true,
+		Sources:              cfg.MemorySearch.SourcesValue(),
+		MaxResults:           cfg.MemorySearch.MaxResultsValue(),
+		MinScore:             cfg.MemorySearch.MinScoreValue(),
+		HybridEnabled:        cfg.MemorySearch.Hybrid.EnabledValue(),
+		VectorWeight:         cfg.MemorySearch.Hybrid.VectorWeightValue(),
+		TextWeight:           cfg.MemorySearch.Hybrid.TextWeightValue(),
+		CandidateMultiplier:  cfg.MemorySearch.Hybrid.CandidateMultiplierValue(),
+		MMREnabled:           cfg.MemorySearch.MMR.EnabledValue(),
+		MMRLambda:            cfg.MemorySearch.MMR.LambdaValue(),
+		TemporalDecayEnabled: cfg.MemorySearch.TemporalDecay.EnabledValue(),
+		TemporalHalfLifeDays: cfg.MemorySearch.TemporalDecay.HalfLifeDaysValue(),
+		ChunkTokens:          cfg.MemorySearch.ChunkTokensValue(),
+		ChunkOverlap:         cfg.MemorySearch.ChunkOverlapValue(),
+	})
+	if err != nil {
+		slog.Warn("build_memory_search_manager: failed to initialize; disabling", "error", err)
+		disabled, disabledErr := memsearch.NewManager(memsearch.ManagerOptions{
+			Workspace: workspaceAbs,
+			DBPath:    filepath.Join(workspaceAbs, "memory", "memory.db"),
+			Files:     fileManager,
+			Enabled:   false,
+			Provider:  embedding.New(embedding.Options{Name: "none"}),
+		})
+		if disabledErr != nil {
+			return nil
+		}
+		return disabled
+	}
 	return manager
 }
 
@@ -494,6 +574,7 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 	}
 	if len(cfg.EnabledTools) == 0 {
 		// Unset enabled_tools means "all built-in tools".
+		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:memory")
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:fs")
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:runtime")
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
@@ -504,6 +585,7 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 		return
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
+	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:memory")
 	if cfg.DisableDefaultSearchMCP {
 		return
 	}
@@ -537,6 +619,53 @@ func applyDefaultContextManagement(cfg *AgentConfig) {
 	cfg.ContextManagement.ReserveMinTokens = cfg.ContextManagement.ReserveMinTokensValue()
 	cfg.ContextManagement.CompactionSummaryTimeoutMS = cfg.ContextManagement.CompactionSummaryTimeoutMSValue()
 	cfg.ContextManagement.CompactionChunkTokenTarget = cfg.ContextManagement.CompactionChunkTokenTargetValue()
+	cfg.ContextManagement.RetrievedMemoryLanePercent = cfg.ContextManagement.RetrievedMemoryLanePercentValue()
+	if cfg.ContextManagement.MemoryFlush.Enabled == nil {
+		cfg.ContextManagement.MemoryFlush.Enabled = boolPtr(true)
+	}
+	cfg.ContextManagement.MemoryFlush.SoftThresholdTokens = cfg.ContextManagement.MemoryFlush.SoftThresholdTokensValue()
+	cfg.ContextManagement.MemoryFlush.Prompt = cfg.ContextManagement.MemoryFlush.PromptValue()
+	cfg.ContextManagement.MemoryFlush.SystemPrompt = cfg.ContextManagement.MemoryFlush.SystemPromptValue()
+	cfg.ContextManagement.MemoryFlush.ForceFlushTranscriptBytes = cfg.ContextManagement.MemoryFlush.ForceFlushTranscriptBytesValue()
+}
+
+func applyDefaultMemoryConfig(cfg *AgentConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Memory.Enabled == nil {
+		cfg.Memory.Enabled = boolPtr(true)
+	}
+	cfg.Memory.Sources = cfg.Memory.SourcesValue()
+	cfg.Memory.Citations = cfg.Memory.CitationsModeValue()
+
+	if cfg.MemorySearch.Enabled == nil {
+		cfg.MemorySearch.Enabled = boolPtr(true)
+	}
+	cfg.MemorySearch.Sources = cfg.MemorySearch.SourcesValue()
+	cfg.MemorySearch.MaxResults = cfg.MemorySearch.MaxResultsValue()
+	cfg.MemorySearch.MinScore = cfg.MemorySearch.MinScoreValue()
+	if cfg.MemorySearch.Hybrid.Enabled == nil {
+		cfg.MemorySearch.Hybrid.Enabled = boolPtr(true)
+	}
+	cfg.MemorySearch.Hybrid.VectorWeight = cfg.MemorySearch.Hybrid.VectorWeightValue()
+	cfg.MemorySearch.Hybrid.TextWeight = cfg.MemorySearch.Hybrid.TextWeightValue()
+	cfg.MemorySearch.Hybrid.CandidateMultiplier = cfg.MemorySearch.Hybrid.CandidateMultiplierValue()
+	if cfg.MemorySearch.MMR.Enabled == nil {
+		cfg.MemorySearch.MMR.Enabled = boolPtr(false)
+	}
+	cfg.MemorySearch.MMR.Lambda = cfg.MemorySearch.MMR.LambdaValue()
+	if cfg.MemorySearch.TemporalDecay.Enabled == nil {
+		cfg.MemorySearch.TemporalDecay.Enabled = boolPtr(false)
+	}
+	cfg.MemorySearch.TemporalDecay.HalfLifeDays = cfg.MemorySearch.TemporalDecay.HalfLifeDaysValue()
+	cfg.MemorySearch.ChunkTokens = cfg.MemorySearch.ChunkTokensValue()
+	cfg.MemorySearch.ChunkOverlap = cfg.MemorySearch.ChunkOverlapValue()
+	cfg.MemorySearch.EmbeddingTimeoutMS = int(cfg.MemorySearch.EmbeddingTimeoutValue() / time.Millisecond)
+	cfg.MemorySearch.EmbeddingMaxBatch = cfg.MemorySearch.EmbeddingMaxBatchValue()
+	cfg.MemorySearch.EmbeddingMaxChars = cfg.MemorySearch.EmbeddingMaxCharsValue()
+	cfg.MemorySearch.EmbeddingRetries = cfg.MemorySearch.EmbeddingRetriesValue()
+	cfg.MemorySearch.EmbeddingConcurrent = cfg.MemorySearch.EmbeddingConcurrencyValue()
 }
 
 func validateConfigRemovedContextManagementKeys(path string) error {

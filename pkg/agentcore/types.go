@@ -2,12 +2,14 @@ package agentcore
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
 	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
 	"github.com/bstncartwright/gopher/pkg/memory"
+	memfiles "github.com/bstncartwright/gopher/pkg/memory/files"
 )
 
 type Message = ai.Message
@@ -29,6 +31,8 @@ type AgentConfig struct {
 	UserTimezone            string                  `json:"user_timezone" toml:"user_timezone"`
 	TimeFormat              string                  `json:"time_format" toml:"time_format"`
 	Heartbeat               HeartbeatConfig         `json:"heartbeat" toml:"heartbeat"`
+	Memory                  MemoryConfig            `json:"memory,omitempty" toml:"memory,omitempty"`
+	MemorySearch            MemorySearchConfig      `json:"memory_search,omitempty" toml:"memory_search,omitempty"`
 	ContextManagement       ContextManagementConfig `json:"context_management,omitempty" toml:"context_management,omitempty"`
 }
 
@@ -37,12 +41,65 @@ type ContextManagementConfig struct {
 	EnableCompaction    *bool `json:"enable_compaction,omitempty" toml:"enable_compaction,omitempty"`
 	EnableOverflowRetry *bool `json:"enable_overflow_retry,omitempty" toml:"enable_overflow_retry,omitempty"`
 
-	Mode                       string `json:"mode,omitempty" toml:"mode,omitempty"`
-	OverflowRetryLimit         int    `json:"overflow_retry_limit,omitempty" toml:"overflow_retry_limit,omitempty"`
-	ReserveMinTokens           int    `json:"reserve_min_tokens,omitempty" toml:"reserve_min_tokens,omitempty"`
-	ModelCompactionSummary     *bool  `json:"model_compaction_summary,omitempty" toml:"model_compaction_summary,omitempty"`
-	CompactionSummaryTimeoutMS int    `json:"compaction_summary_timeout_ms,omitempty" toml:"compaction_summary_timeout_ms,omitempty"`
-	CompactionChunkTokenTarget int    `json:"compaction_chunk_token_target,omitempty" toml:"compaction_chunk_token_target,omitempty"`
+	Mode                       string                      `json:"mode,omitempty" toml:"mode,omitempty"`
+	OverflowRetryLimit         int                         `json:"overflow_retry_limit,omitempty" toml:"overflow_retry_limit,omitempty"`
+	ReserveMinTokens           int                         `json:"reserve_min_tokens,omitempty" toml:"reserve_min_tokens,omitempty"`
+	ModelCompactionSummary     *bool                       `json:"model_compaction_summary,omitempty" toml:"model_compaction_summary,omitempty"`
+	CompactionSummaryTimeoutMS int                         `json:"compaction_summary_timeout_ms,omitempty" toml:"compaction_summary_timeout_ms,omitempty"`
+	CompactionChunkTokenTarget int                         `json:"compaction_chunk_token_target,omitempty" toml:"compaction_chunk_token_target,omitempty"`
+	RetrievedMemoryLanePercent int                         `json:"retrieved_memory_lane_percent,omitempty" toml:"retrieved_memory_lane_percent,omitempty"`
+	MemoryFlush                CompactionMemoryFlushConfig `json:"memory_flush,omitempty" toml:"memory_flush,omitempty"`
+}
+
+type CompactionMemoryFlushConfig struct {
+	Enabled                   *bool  `json:"enabled,omitempty" toml:"enabled,omitempty"`
+	SoftThresholdTokens       int    `json:"soft_threshold_tokens,omitempty" toml:"soft_threshold_tokens,omitempty"`
+	Prompt                    string `json:"prompt,omitempty" toml:"prompt,omitempty"`
+	SystemPrompt              string `json:"system_prompt,omitempty" toml:"system_prompt,omitempty"`
+	ForceFlushTranscriptBytes int64  `json:"force_flush_transcript_bytes,omitempty" toml:"force_flush_transcript_bytes,omitempty"`
+}
+
+type MemoryConfig struct {
+	Enabled   *bool    `json:"enabled,omitempty" toml:"enabled,omitempty"`
+	Sources   []string `json:"sources,omitempty" toml:"sources,omitempty"`
+	Citations string   `json:"citations,omitempty" toml:"citations,omitempty"`
+}
+
+type MemorySearchConfig struct {
+	Enabled             *bool                     `json:"enabled,omitempty" toml:"enabled,omitempty"`
+	Sources             []string                  `json:"sources,omitempty" toml:"sources,omitempty"`
+	MaxResults          int                       `json:"max_results,omitempty" toml:"max_results,omitempty"`
+	MinScore            float64                   `json:"min_score,omitempty" toml:"min_score,omitempty"`
+	Hybrid              MemorySearchHybridConfig  `json:"hybrid,omitempty" toml:"hybrid,omitempty"`
+	MMR                 MemorySearchMMRConfig     `json:"mmr,omitempty" toml:"mmr,omitempty"`
+	TemporalDecay       MemoryTemporalDecayConfig `json:"temporal_decay,omitempty" toml:"temporal_decay,omitempty"`
+	ChunkTokens         int                       `json:"chunk_tokens,omitempty" toml:"chunk_tokens,omitempty"`
+	ChunkOverlap        int                       `json:"chunk_overlap,omitempty" toml:"chunk_overlap,omitempty"`
+	EmbeddingProvider   string                    `json:"embedding_provider,omitempty" toml:"embedding_provider,omitempty"`
+	EmbeddingModel      string                    `json:"embedding_model,omitempty" toml:"embedding_model,omitempty"`
+	EmbeddingBaseURL    string                    `json:"embedding_base_url,omitempty" toml:"embedding_base_url,omitempty"`
+	EmbeddingTimeoutMS  int                       `json:"embedding_timeout_ms,omitempty" toml:"embedding_timeout_ms,omitempty"`
+	EmbeddingMaxBatch   int                       `json:"embedding_max_batch,omitempty" toml:"embedding_max_batch,omitempty"`
+	EmbeddingMaxChars   int                       `json:"embedding_max_chars,omitempty" toml:"embedding_max_chars,omitempty"`
+	EmbeddingRetries    int                       `json:"embedding_retries,omitempty" toml:"embedding_retries,omitempty"`
+	EmbeddingConcurrent int                       `json:"embedding_concurrency,omitempty" toml:"embedding_concurrency,omitempty"`
+}
+
+type MemorySearchHybridConfig struct {
+	Enabled             *bool   `json:"enabled,omitempty" toml:"enabled,omitempty"`
+	VectorWeight        float64 `json:"vector_weight,omitempty" toml:"vector_weight,omitempty"`
+	TextWeight          float64 `json:"text_weight,omitempty" toml:"text_weight,omitempty"`
+	CandidateMultiplier int     `json:"candidate_multiplier,omitempty" toml:"candidate_multiplier,omitempty"`
+}
+
+type MemorySearchMMRConfig struct {
+	Enabled *bool   `json:"enabled,omitempty" toml:"enabled,omitempty"`
+	Lambda  float64 `json:"lambda,omitempty" toml:"lambda,omitempty"`
+}
+
+type MemoryTemporalDecayConfig struct {
+	Enabled      *bool `json:"enabled,omitempty" toml:"enabled,omitempty"`
+	HalfLifeDays int   `json:"half_life_days,omitempty" toml:"half_life_days,omitempty"`
 }
 
 const (
@@ -51,9 +108,30 @@ const (
 	defaultReserveMinTokens              = 20000
 	defaultCompactionSummaryTimeoutMS    = 12000
 	defaultCompactionChunkTokenTarget    = 1800
+	defaultRetrievedMemoryLanePercent    = 20
+	defaultMemoryCitationMode            = "auto"
+	defaultMemorySearchMaxResults        = 6
+	defaultMemorySearchMinScore          = 0.35
+	defaultMemorySearchVectorWeight      = 0.7
+	defaultMemorySearchTextWeight        = 0.3
+	defaultMemorySearchCandidateMultiple = 4
+	defaultMemorySearchMMRLambda         = 0.7
+	defaultMemorySearchHalfLifeDays      = 30
+	defaultMemoryChunkTokens             = 400
+	defaultMemoryChunkOverlap            = 80
+	defaultMemoryEmbeddingTimeoutMS      = 12000
+	defaultMemoryEmbeddingMaxBatch       = 16
+	defaultMemoryEmbeddingMaxChars       = 6000
+	defaultMemoryEmbeddingRetries        = 2
+	defaultMemoryEmbeddingConcurrency    = 4
+	defaultFlushSoftThresholdTokens      = 4000
+	defaultFlushPrompt                   = "Summarize durable facts from this conversation transcript and write concise memory notes. Reply NO_REPLY."
+	defaultFlushSystemPrompt             = "You are running a silent pre-compaction memory flush. Extract durable facts, preferences, decisions, and recent progress. Respond with concise markdown bullet points or NO_REPLY."
+	defaultForceFlushTranscriptBytes     = int64(2 << 20)
 	maxAllowedOverflowRetryLimit         = 6
 	maxAllowedCompactionSummaryTimeoutMS = 120000
 	maxAllowedCompactionChunkTokenTarget = 12000
+	maxRetrievedMemoryLanePercent        = 50
 )
 
 func (c ContextManagementConfig) PruningEnabled() bool {
@@ -123,6 +201,248 @@ func (c ContextManagementConfig) CompactionChunkTokenTargetValue() int {
 		chunkTokens = maxAllowedCompactionChunkTokenTarget
 	}
 	return chunkTokens
+}
+
+func (c ContextManagementConfig) RetrievedMemoryLanePercentValue() int {
+	percent := c.RetrievedMemoryLanePercent
+	if percent <= 0 {
+		percent = defaultRetrievedMemoryLanePercent
+	}
+	if percent > maxRetrievedMemoryLanePercent {
+		percent = maxRetrievedMemoryLanePercent
+	}
+	return percent
+}
+
+func (c CompactionMemoryFlushConfig) EnabledValue() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+func (c CompactionMemoryFlushConfig) SoftThresholdTokensValue() int {
+	if c.SoftThresholdTokens <= 0 {
+		return defaultFlushSoftThresholdTokens
+	}
+	return c.SoftThresholdTokens
+}
+
+func (c CompactionMemoryFlushConfig) PromptValue() string {
+	prompt := strings.TrimSpace(c.Prompt)
+	if prompt == "" {
+		return defaultFlushPrompt
+	}
+	return prompt
+}
+
+func (c CompactionMemoryFlushConfig) SystemPromptValue() string {
+	prompt := strings.TrimSpace(c.SystemPrompt)
+	if prompt == "" {
+		return defaultFlushSystemPrompt
+	}
+	return prompt
+}
+
+func (c CompactionMemoryFlushConfig) ForceFlushTranscriptBytesValue() int64 {
+	if c.ForceFlushTranscriptBytes <= 0 {
+		return defaultForceFlushTranscriptBytes
+	}
+	return c.ForceFlushTranscriptBytes
+}
+
+func (c MemoryConfig) EnabledValue() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+func (c MemoryConfig) SourcesValue() []string {
+	if len(c.Sources) == 0 {
+		return []string{"memory"}
+	}
+	out := make([]string, 0, len(c.Sources))
+	seen := map[string]struct{}{}
+	for _, source := range c.Sources {
+		source = strings.ToLower(strings.TrimSpace(source))
+		if source == "" {
+			continue
+		}
+		if _, ok := seen[source]; ok {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	if len(out) == 0 {
+		return []string{"memory"}
+	}
+	return out
+}
+
+func (c MemoryConfig) CitationsModeValue() string {
+	mode := strings.ToLower(strings.TrimSpace(c.Citations))
+	switch mode {
+	case "on", "off", "auto":
+		return mode
+	default:
+		return defaultMemoryCitationMode
+	}
+}
+
+func (c MemorySearchConfig) EnabledValue() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+func (c MemorySearchConfig) SourcesValue() []string {
+	if len(c.Sources) == 0 {
+		return []string{"memory"}
+	}
+	out := make([]string, 0, len(c.Sources))
+	seen := map[string]struct{}{}
+	for _, source := range c.Sources {
+		source = strings.ToLower(strings.TrimSpace(source))
+		if source == "" {
+			continue
+		}
+		if _, ok := seen[source]; ok {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	if len(out) == 0 {
+		return []string{"memory"}
+	}
+	return out
+}
+
+func (c MemorySearchConfig) MaxResultsValue() int {
+	if c.MaxResults <= 0 {
+		return defaultMemorySearchMaxResults
+	}
+	if c.MaxResults > 32 {
+		return 32
+	}
+	return c.MaxResults
+}
+
+func (c MemorySearchConfig) MinScoreValue() float64 {
+	if c.MinScore <= 0 {
+		return defaultMemorySearchMinScore
+	}
+	if c.MinScore > 1 {
+		return 1
+	}
+	return c.MinScore
+}
+
+func (c MemorySearchHybridConfig) EnabledValue() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+func (c MemorySearchHybridConfig) VectorWeightValue() float64 {
+	weight := c.VectorWeight
+	if weight <= 0 {
+		weight = defaultMemorySearchVectorWeight
+	}
+	return weight
+}
+
+func (c MemorySearchHybridConfig) TextWeightValue() float64 {
+	weight := c.TextWeight
+	if weight <= 0 {
+		weight = defaultMemorySearchTextWeight
+	}
+	return weight
+}
+
+func (c MemorySearchHybridConfig) CandidateMultiplierValue() int {
+	if c.CandidateMultiplier <= 0 {
+		return defaultMemorySearchCandidateMultiple
+	}
+	if c.CandidateMultiplier > 12 {
+		return 12
+	}
+	return c.CandidateMultiplier
+}
+
+func (c MemorySearchMMRConfig) EnabledValue() bool {
+	return c.Enabled != nil && *c.Enabled
+}
+
+func (c MemorySearchMMRConfig) LambdaValue() float64 {
+	if c.Lambda <= 0 || c.Lambda > 1 {
+		return defaultMemorySearchMMRLambda
+	}
+	return c.Lambda
+}
+
+func (c MemoryTemporalDecayConfig) EnabledValue() bool {
+	return c.Enabled != nil && *c.Enabled
+}
+
+func (c MemoryTemporalDecayConfig) HalfLifeDaysValue() int {
+	if c.HalfLifeDays <= 0 {
+		return defaultMemorySearchHalfLifeDays
+	}
+	return c.HalfLifeDays
+}
+
+func (c MemorySearchConfig) ChunkTokensValue() int {
+	if c.ChunkTokens <= 0 {
+		return defaultMemoryChunkTokens
+	}
+	return c.ChunkTokens
+}
+
+func (c MemorySearchConfig) ChunkOverlapValue() int {
+	if c.ChunkOverlap <= 0 {
+		return defaultMemoryChunkOverlap
+	}
+	return c.ChunkOverlap
+}
+
+func (c MemorySearchConfig) EmbeddingTimeoutValue() time.Duration {
+	timeoutMS := c.EmbeddingTimeoutMS
+	if timeoutMS <= 0 {
+		timeoutMS = defaultMemoryEmbeddingTimeoutMS
+	}
+	return time.Duration(timeoutMS) * time.Millisecond
+}
+
+func (c MemorySearchConfig) EmbeddingMaxBatchValue() int {
+	if c.EmbeddingMaxBatch <= 0 {
+		return defaultMemoryEmbeddingMaxBatch
+	}
+	return c.EmbeddingMaxBatch
+}
+
+func (c MemorySearchConfig) EmbeddingMaxCharsValue() int {
+	if c.EmbeddingMaxChars <= 0 {
+		return defaultMemoryEmbeddingMaxChars
+	}
+	return c.EmbeddingMaxChars
+}
+
+func (c MemorySearchConfig) EmbeddingRetriesValue() int {
+	if c.EmbeddingRetries < 0 {
+		return 0
+	}
+	if c.EmbeddingRetries == 0 {
+		return defaultMemoryEmbeddingRetries
+	}
+	return c.EmbeddingRetries
+}
+
+func (c MemorySearchConfig) EmbeddingConcurrencyValue() int {
+	if c.EmbeddingConcurrent <= 0 {
+		return defaultMemoryEmbeddingConcurrency
+	}
+	return c.EmbeddingConcurrent
+}
+
+func (c MemorySearchConfig) Validate() error {
+	weights := c.Hybrid.VectorWeightValue() + c.Hybrid.TextWeightValue()
+	if weights <= 0 {
+		return fmt.Errorf("memory_search hybrid weights must be positive")
+	}
+	return nil
 }
 
 func (c AgentConfig) ReasoningLevelValue() ai.ThinkingLevel {
@@ -218,6 +538,8 @@ type Agent struct {
 
 	Tools                 ToolRegistry
 	Memory                MemoryStore
+	MemoryFiles           *memfiles.Manager
+	MemorySearch          memory.MemorySearchManager
 	LongTermMemory        memory.MemoryManager
 	Assembler             ctxbundle.Assembler
 	Logger                EventLogger

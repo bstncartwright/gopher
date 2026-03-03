@@ -64,6 +64,9 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 
 	for _, enabledTool := range enabled {
 		switch enabledTool {
+		case "group:memory":
+			add(&memorySearchTool{})
+			add(&memoryGetTool{})
 		case "group:fs":
 			add(&readTool{})
 			add(&writeTool{})
@@ -115,6 +118,10 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(&messageTool{})
 		case "reaction":
 			add(&reactionTool{})
+		case "memory_search":
+			add(&memorySearchTool{})
+		case "memory_get":
+			add(&memoryGetTool{})
 		case "web_search", "search_mcp", "search":
 			add(newWebSearchMCPTool())
 		case "web_fetch", "fetch_mcp", "fetch", "fetch_content":

@@ -140,7 +140,7 @@ func TestBuildAgentSystemPromptSelfUpdateInstructionsAreExplicit(t *testing.T) {
 		"Treat requests like \"update yourself\", \"update itself\", or \"self-update\" as explicit self-update requests.",
 		"For binary updates, prefer `gopher_update` when available; otherwise run `gopher update` using available execution tools and report the actual command result.",
 		"Do not replace a requested self-update with memory updates, policy notes, or future-intent promises.",
-		"Only update memory when the user explicitly asks to remember or store memory.",
+		"Before answering prior-work, preference, or history questions, call `memory_search` to retrieve relevant memory snippets.",
 	}
 	for _, needle := range required {
 		if !strings.Contains(prompt, needle) {

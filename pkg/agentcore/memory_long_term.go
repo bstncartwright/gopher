@@ -20,7 +20,7 @@ type toolObservation struct {
 }
 
 func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage string, finalText string, tools []toolObservation, turnErr error) {
-	if a == nil || a.LongTermMemory == nil || s == nil {
+	if a == nil || s == nil {
 		return
 	}
 	if ctx == nil || ctx.Err() != nil {
@@ -36,6 +36,44 @@ func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage
 		} else {
 			outcome = outcome + " (error: " + strings.TrimSpace(turnErr.Error()) + ")"
 		}
+	}
+	dailyWritten := false
+	if a.MemoryFiles != nil && a.Config.Memory.EnabledValue() {
+		lines := []string{}
+		if strings.TrimSpace(userMessage) != "" {
+			lines = append(lines, "Task: "+squeezeWhitespace(userMessage))
+		}
+		if strings.TrimSpace(outcome) != "" {
+			lines = append(lines, "Outcome: "+squeezeWhitespace(outcome))
+		}
+		if len(tools) > 0 {
+			toolParts := make([]string, 0, len(tools))
+			for _, tool := range tools {
+				if strings.TrimSpace(tool.Name) == "" {
+					continue
+				}
+				toolParts = append(toolParts, strings.TrimSpace(tool.Name)+":"+strings.TrimSpace(string(tool.Status)))
+			}
+			if len(toolParts) > 0 {
+				lines = append(lines, "Tools: "+strings.Join(toolParts, ", "))
+			}
+		}
+		if len(lines) > 0 {
+			if _, err := a.MemoryFiles.AppendDailyEntry(strings.Join(lines, "\n")); err == nil {
+				dailyWritten = true
+			}
+		}
+		if fact, ok := parseRememberFact(userMessage); ok {
+			if _, err := a.MemoryFiles.AppendOrUpsertMemoryFact(fact, "Facts"); err == nil {
+				dailyWritten = true
+			}
+		}
+		if dailyWritten && a.MemorySearch != nil {
+			_ = a.MemorySearch.Sync(ctx, false)
+		}
+	}
+	if a.LongTermMemory == nil {
+		return
 	}
 
 	if strings.TrimSpace(userMessage) != "" || outcome != "" {

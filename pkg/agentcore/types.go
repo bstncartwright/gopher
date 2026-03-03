@@ -13,36 +13,36 @@ import (
 type Message = ai.Message
 
 type AgentConfig struct {
-	AgentID                 string                  `json:"agent_id"`
-	Name                    string                  `json:"name"`
-	Role                    string                  `json:"role"`
-	ModelPolicy             string                  `json:"model_policy"`
-	ReasoningLevel          string                  `json:"reasoning_level,omitempty"`
-	Execution               ExecutionConfig         `json:"execution"`
-	Policies                *AgentPolicies          `json:"policies,omitempty"`
-	EnabledTools            []string                `json:"enabled_tools"`
-	DisableDefaultSearchMCP bool                    `json:"disable_default_search_mcp"`
-	SkillsPaths             []string                `json:"skills_paths"`
-	MaxContextMessages      int                     `json:"max_context_messages"`
-	BootstrapMaxChars       int                     `json:"bootstrap_max_chars"`
-	BootstrapTotalMaxChars  int                     `json:"bootstrap_total_max_chars"`
-	UserTimezone            string                  `json:"user_timezone"`
-	TimeFormat              string                  `json:"time_format"`
-	Heartbeat               HeartbeatConfig         `json:"heartbeat"`
-	ContextManagement       ContextManagementConfig `json:"context_management,omitempty"`
+	AgentID                 string                  `json:"agent_id" toml:"agent_id"`
+	Name                    string                  `json:"name" toml:"name"`
+	Role                    string                  `json:"role" toml:"role"`
+	ModelPolicy             string                  `json:"model_policy" toml:"model_policy"`
+	ReasoningLevel          string                  `json:"reasoning_level,omitempty" toml:"reasoning_level,omitempty"`
+	Execution               ExecutionConfig         `json:"execution" toml:"execution"`
+	Policies                *AgentPolicies          `json:"policies,omitempty" toml:"policies,omitempty"`
+	EnabledTools            []string                `json:"enabled_tools" toml:"enabled_tools"`
+	DisableDefaultSearchMCP bool                    `json:"disable_default_search_mcp" toml:"disable_default_search_mcp"`
+	SkillsPaths             []string                `json:"skills_paths" toml:"skills_paths"`
+	MaxContextMessages      int                     `json:"max_context_messages" toml:"max_context_messages"`
+	BootstrapMaxChars       int                     `json:"bootstrap_max_chars" toml:"bootstrap_max_chars"`
+	BootstrapTotalMaxChars  int                     `json:"bootstrap_total_max_chars" toml:"bootstrap_total_max_chars"`
+	UserTimezone            string                  `json:"user_timezone" toml:"user_timezone"`
+	TimeFormat              string                  `json:"time_format" toml:"time_format"`
+	Heartbeat               HeartbeatConfig         `json:"heartbeat" toml:"heartbeat"`
+	ContextManagement       ContextManagementConfig `json:"context_management,omitempty" toml:"context_management,omitempty"`
 }
 
 type ContextManagementConfig struct {
-	EnablePruning       *bool `json:"enable_pruning,omitempty"`
-	EnableCompaction    *bool `json:"enable_compaction,omitempty"`
-	EnableOverflowRetry *bool `json:"enable_overflow_retry,omitempty"`
+	EnablePruning       *bool `json:"enable_pruning,omitempty" toml:"enable_pruning,omitempty"`
+	EnableCompaction    *bool `json:"enable_compaction,omitempty" toml:"enable_compaction,omitempty"`
+	EnableOverflowRetry *bool `json:"enable_overflow_retry,omitempty" toml:"enable_overflow_retry,omitempty"`
 
-	Mode                       string `json:"mode,omitempty"`
-	OverflowRetryLimit         int    `json:"overflow_retry_limit,omitempty"`
-	ReserveMinTokens           int    `json:"reserve_min_tokens,omitempty"`
-	ModelCompactionSummary     *bool  `json:"model_compaction_summary,omitempty"`
-	CompactionSummaryTimeoutMS int    `json:"compaction_summary_timeout_ms,omitempty"`
-	CompactionChunkTokenTarget int    `json:"compaction_chunk_token_target,omitempty"`
+	Mode                       string `json:"mode,omitempty" toml:"mode,omitempty"`
+	OverflowRetryLimit         int    `json:"overflow_retry_limit,omitempty" toml:"overflow_retry_limit,omitempty"`
+	ReserveMinTokens           int    `json:"reserve_min_tokens,omitempty" toml:"reserve_min_tokens,omitempty"`
+	ModelCompactionSummary     *bool  `json:"model_compaction_summary,omitempty" toml:"model_compaction_summary,omitempty"`
+	CompactionSummaryTimeoutMS int    `json:"compaction_summary_timeout_ms,omitempty" toml:"compaction_summary_timeout_ms,omitempty"`
+	CompactionChunkTokenTarget int    `json:"compaction_chunk_token_target,omitempty" toml:"compaction_chunk_token_target,omitempty"`
 }
 
 const (
@@ -151,21 +151,21 @@ func normalizeReasoningLevel(raw string) ai.ThinkingLevel {
 }
 
 type ExecutionConfig struct {
-	RequiredCapabilities []string `json:"required_capabilities"`
+	RequiredCapabilities []string `json:"required_capabilities" toml:"required_capabilities"`
 }
 
 type HeartbeatConfig struct {
-	Every       string                      `json:"every"`
-	Prompt      string                      `json:"prompt"`
-	AckMaxChars int                         `json:"ack_max_chars"`
-	Session     string                      `json:"session,omitempty"`
-	ActiveHours *HeartbeatActiveHoursConfig `json:"active_hours,omitempty"`
+	Every       string                      `json:"every" toml:"every"`
+	Prompt      string                      `json:"prompt" toml:"prompt"`
+	AckMaxChars int                         `json:"ack_max_chars" toml:"ack_max_chars"`
+	Session     string                      `json:"session,omitempty" toml:"session,omitempty"`
+	ActiveHours *HeartbeatActiveHoursConfig `json:"active_hours,omitempty" toml:"active_hours,omitempty"`
 }
 
 type HeartbeatActiveHoursConfig struct {
-	Start    string `json:"start"`
-	End      string `json:"end"`
-	Timezone string `json:"timezone,omitempty"`
+	Start    string `json:"start" toml:"start"`
+	End      string `json:"end" toml:"end"`
+	Timezone string `json:"timezone,omitempty" toml:"timezone,omitempty"`
 }
 
 type AgentHeartbeat struct {
@@ -188,24 +188,24 @@ type AgentHeartbeatActiveHours struct {
 }
 
 type NetworkPolicy struct {
-	Enabled      bool     `json:"enabled"`
-	AllowDomains []string `json:"allow_domains"`
-	BlockDomains []string `json:"block_domains"`
+	Enabled      bool     `json:"enabled" toml:"enabled"`
+	AllowDomains []string `json:"allow_domains" toml:"allow_domains"`
+	BlockDomains []string `json:"block_domains" toml:"block_domains"`
 }
 
 type BudgetPolicy struct {
-	MaxTokensPerSession int `json:"max_tokens_per_session"`
+	MaxTokensPerSession int `json:"max_tokens_per_session" toml:"max_tokens_per_session"`
 }
 
 type AgentPolicies struct {
-	FSRoots           []string            `json:"fs_roots"`
-	AllowCrossAgentFS bool                `json:"allow_cross_agent_fs"`
-	CanShell          bool                `json:"can_shell"`
-	ShellAllowlist    []string            `json:"shell_allowlist"`
-	Network           NetworkPolicy       `json:"network"`
-	Budget            BudgetPolicy        `json:"budget"`
-	ApplyPatchEnabled bool                `json:"apply_patch_enabled"`
-	LoopDetection     LoopDetectionConfig `json:"loop_detection"`
+	FSRoots           []string            `json:"fs_roots" toml:"fs_roots"`
+	AllowCrossAgentFS bool                `json:"allow_cross_agent_fs" toml:"allow_cross_agent_fs"`
+	CanShell          bool                `json:"can_shell" toml:"can_shell"`
+	ShellAllowlist    []string            `json:"shell_allowlist" toml:"shell_allowlist"`
+	Network           NetworkPolicy       `json:"network" toml:"network"`
+	Budget            BudgetPolicy        `json:"budget" toml:"budget"`
+	ApplyPatchEnabled bool                `json:"apply_patch_enabled" toml:"apply_patch_enabled"`
+	LoopDetection     LoopDetectionConfig `json:"loop_detection" toml:"loop_detection"`
 }
 
 type Agent struct {

@@ -286,8 +286,9 @@ func runNodeWithContext(ctx context.Context, cfg config.NodeConfig, sources []st
 	}
 	defer runtime.Stop()
 
-	logger.Printf("node running node_id=%s nats_url=%q heartbeat_interval=%s capabilities=%s config_sources=%s",
+	logger.Printf("node running node_id=%s version=%s nats_url=%q heartbeat_interval=%s capabilities=%s config_sources=%s",
 		cfg.NodeID,
+		currentBinaryVersion(),
 		cfg.NATSURL,
 		cfg.HeartbeatInterval.String(),
 		mustJSON(cfg.Capabilities),

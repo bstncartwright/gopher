@@ -53,6 +53,34 @@ func TestBinaryVersionFromBuildInfoSkipsPseudoModuleVersion(t *testing.T) {
 	}
 }
 
+func TestSemverVersionFromBuildInfoUsesBinaryVersion(t *testing.T) {
+	info := &rdebug.BuildInfo{
+		Main: rdebug.Module{
+			Path:    "github.com/bstncartwright/gopher",
+			Version: "(devel)",
+		},
+		Settings: []rdebug.BuildSetting{
+			{Key: "-ldflags", Value: "-s -w -X main.binaryVersion=v1.2.3"},
+			{Key: "vcs.revision", Value: "deadbeef"},
+		},
+	}
+	if got := semverVersionFromBuildInfo(info); got != "v1.2.3" {
+		t.Fatalf("semverVersionFromBuildInfo() = %q, want v1.2.3", got)
+	}
+}
+
+func TestSemverVersionFromBuildInfoStripsPseudoVersionHash(t *testing.T) {
+	info := &rdebug.BuildInfo{
+		Main: rdebug.Module{
+			Path:    "github.com/bstncartwright/gopher",
+			Version: "v1.2.3-20260227100000-deadbeefcafe",
+		},
+	}
+	if got := semverVersionFromBuildInfo(info); got != "v1.2.3" {
+		t.Fatalf("semverVersionFromBuildInfo() = %q, want v1.2.3", got)
+	}
+}
+
 func TestGopherMetaToolRunDetectsStaleRuntimeVersion(t *testing.T) {
 	dir := t.TempDir()
 	currentExecutable := filepath.Join(dir, "current-gopher")
@@ -149,6 +177,9 @@ func TestGopherMetaToolRunDetectsStaleRuntimeVersion(t *testing.T) {
 	if got := running["binary_version"]; got != "v1.2.3" {
 		t.Fatalf("running.binary_version = %v, want v1.2.3", got)
 	}
+	if got := running["semver_version"]; got != "v1.2.3" {
+		t.Fatalf("running.semver_version = %v, want v1.2.3", got)
+	}
 	if got := running["build_version"]; got != "(devel)" {
 		t.Fatalf("running.build_version = %v, want (devel)", got)
 	}
@@ -157,10 +188,16 @@ func TestGopherMetaToolRunDetectsStaleRuntimeVersion(t *testing.T) {
 	if got := current["binary_version"]; got != "v1.2.4" {
 		t.Fatalf("on_disk_current_executable.binary_version = %v, want v1.2.4", got)
 	}
+	if got := current["semver_version"]; got != "v1.2.4" {
+		t.Fatalf("on_disk_current_executable.semver_version = %v, want v1.2.4", got)
+	}
 
 	gopherPath := mustMap(t, result, "on_disk_gopher_path")
 	if got := gopherPath["binary_version"]; got != "v1.2.5" {
 		t.Fatalf("on_disk_gopher_path.binary_version = %v, want v1.2.5", got)
+	}
+	if got := gopherPath["semver_version"]; got != "v1.2.5" {
+		t.Fatalf("on_disk_gopher_path.semver_version = %v, want v1.2.5", got)
 	}
 
 	stale := mustMap(t, result, "stale_runtime")

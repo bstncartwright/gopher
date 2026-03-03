@@ -469,6 +469,8 @@ var (
 	codexWSSessions = map[string]*cachedWebSocketConnection{}
 )
 
+const codexWebSocketReadLimitBytes int64 = 10 << 20 // 10 MiB
+
 func processCodexWebSocket(ctx context.Context, wsURL string, body codexRequestBody, headers http.Header, output *AssistantMessage, stream *AssistantMessageEventStream, model Model, options *OpenAICodexResponsesOptions, started *bool) error {
 	conn, release, err := acquireCodexWebSocket(ctx, wsURL, headers, options.SessionID)
 	if err != nil {
@@ -602,5 +604,6 @@ func dialCodexWebSocket(ctx context.Context, wsURL string, headers http.Header) 
 	if err != nil {
 		return nil, err
 	}
+	conn.SetReadLimit(codexWebSocketReadLimitBytes)
 	return conn, nil
 }

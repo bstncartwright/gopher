@@ -3,6 +3,7 @@ package ai
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -13,6 +14,7 @@ type openAIResponsesStreamOptions struct {
 
 func convertResponsesMessages(model Model, conversation Context, allowedToolCallProviders map[Provider]struct{}, includeSystemPrompt bool) []any {
 	messages := make([]any, 0, len(conversation.Messages)+2)
+	emittedFunctionCalls := map[string]struct{}{}
 	normalizeToolCallID := func(id string, _ Model, _ Message) string {
 		if _, ok := allowedToolCallProviders[model.Provider]; !ok {
 			return id
@@ -104,6 +106,9 @@ func convertResponsesMessages(model Model, conversation Context, allowedToolCall
 					if len(parts) > 1 {
 						itemID = parts[1]
 					}
+					if strings.TrimSpace(callID) != "" {
+						emittedFunctionCalls[callID] = struct{}{}
+					}
 					messages = append(messages, map[string]any{
 						"type":      "function_call",
 						"id":        itemID,
@@ -122,6 +127,21 @@ func convertResponsesMessages(model Model, conversation Context, allowedToolCall
 			callID := msg.ToolCallID
 			if strings.Contains(callID, "|") {
 				callID = strings.SplitN(callID, "|", 2)[0]
+			}
+			callID = strings.TrimSpace(callID)
+			if callID == "" {
+				continue
+			}
+			if _, exists := emittedFunctionCalls[callID]; !exists {
+				// Never emit function_call_output without a matching function_call in
+				// the same request payload; Responses API rejects orphan outputs.
+				slog.Warn("openai_responses: dropping orphan function_call_output",
+					"provider", model.Provider,
+					"model_id", model.ID,
+					"tool_name", msg.ToolName,
+					"call_id", callID,
+				)
+				continue
 			}
 			messages = append(messages, map[string]any{
 				"type":    "function_call_output",

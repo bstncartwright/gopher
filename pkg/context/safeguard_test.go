@@ -100,6 +100,51 @@ func TestRepairMessagesDropsOrphanToolResultsAndStaleToolCalls(t *testing.T) {
 	}
 }
 
+func TestRepairMessagesMatchesResponsesStyleToolCallIDs(t *testing.T) {
+	messages := []ai.Message{
+		{
+			Role: ai.RoleAssistant,
+			Content: []ai.ContentBlock{
+				{Type: ai.ContentTypeToolCall, ID: "call-1|fc_1", Name: "read", Arguments: map[string]any{"path": "a.txt"}},
+			},
+			Timestamp: 1,
+		},
+		ai.NewToolResultMessage("call-1", "different-name", []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "ok"}}, false),
+	}
+
+	repaired, actions := RepairMessages(messages, RepairOptions{})
+	if len(actions) != 0 {
+		t.Fatalf("expected no repair actions, got %#v", actions)
+	}
+	if len(repaired) != 2 {
+		t.Fatalf("expected tool result to be retained, got len=%d", len(repaired))
+	}
+	if repaired[1].Role != ai.RoleToolResult {
+		t.Fatalf("expected second message to remain a tool result, got %s", repaired[1].Role)
+	}
+}
+
+func TestRepairMessagesDropsOrphanToolResultEvenWhenToolNameMatches(t *testing.T) {
+	messages := []ai.Message{
+		{
+			Role: ai.RoleAssistant,
+			Content: []ai.ContentBlock{
+				{Type: ai.ContentTypeToolCall, ID: "call-ok", Name: "read", Arguments: map[string]any{"path": "ok.txt"}},
+			},
+			Timestamp: 1,
+		},
+		ai.NewToolResultMessage("call-orphan", "read", []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "orphan"}}, false),
+	}
+
+	repaired, _ := RepairMessages(messages, RepairOptions{})
+	if len(repaired) != 1 {
+		t.Fatalf("expected orphan tool result to be dropped, got len=%d", len(repaired))
+	}
+	if repaired[0].Role != ai.RoleAssistant {
+		t.Fatalf("expected assistant message to remain, got %s", repaired[0].Role)
+	}
+}
+
 func TestSelectMessagesBudgetWithRepairLeavesNoOrphanToolResults(t *testing.T) {
 	messages := []ai.Message{
 		{Role: ai.RoleUser, Content: "u1", Timestamp: 1},

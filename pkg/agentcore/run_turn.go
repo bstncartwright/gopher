@@ -533,9 +533,9 @@ func (a *Agent) recoverFromContextOverflow(ctx context.Context, s *Session, in T
 		return ai.Context{}, fmt.Errorf("cannot recover context overflow without agent/session")
 	}
 	overflowStage := fmt.Sprintf("retry_%d", retries)
-	if a.SessionMemoryFlusher != nil && flushAttempted != nil && !*flushAttempted {
+	if flushAttempted != nil && !*flushAttempted && a.shouldTriggerPreCompactionFlush(s) {
 		*flushAttempted = true
-		if err := a.SessionMemoryFlusher.FlushSession(ctx, s.ID); err != nil {
+		if err := a.flushMemoryBeforeCompaction(ctx, s, reason); err != nil {
 			s.LastContextDiagnostics.Warnings = append(s.LastContextDiagnostics.Warnings, "memory flush before compaction failed: "+err.Error())
 		}
 	}
@@ -644,6 +644,145 @@ func (a *Agent) contextOverflowError(cause error, diagnostics ctxbundle.ContextD
 		diagnostics.CompactionSummaryLane.CapTokens,
 	)
 	return fmt.Errorf("%s", msg)
+}
+
+func (a *Agent) shouldTriggerPreCompactionFlush(s *Session) bool {
+	if a == nil || s == nil {
+		return false
+	}
+	flushCfg := a.Config.ContextManagement.MemoryFlush
+	if !flushCfg.EnabledValue() {
+		return false
+	}
+	if !a.hasMemoryWriteTools() {
+		return false
+	}
+	estimated := ctxbundle.EstimateMessagesTokens(s.Messages)
+	trigger := a.model.ContextWindow - a.Config.ContextManagement.ReserveMinTokensValue() - flushCfg.SoftThresholdTokensValue()
+	if trigger < 1 {
+		trigger = 1
+	}
+	if estimated >= trigger {
+		return true
+	}
+	transcript := renderFlushTranscript(s.Messages, flushCfg.ForceFlushTranscriptBytesValue())
+	if len(transcript) >= int(flushCfg.ForceFlushTranscriptBytesValue()) {
+		return true
+	}
+	// Overflow already occurred; flush once to reduce durable-memory loss even when token estimation undershoots.
+	return len(s.Messages) > 0
+}
+
+func (a *Agent) hasMemoryWriteTools() bool {
+	if a == nil {
+		return false
+	}
+	if a.MemoryFiles == nil {
+		return false
+	}
+	if hasTool(a.Tools, "write") || hasTool(a.Tools, "edit") || hasTool(a.Tools, "apply_patch") {
+		return true
+	}
+	return false
+}
+
+func (a *Agent) flushMemoryBeforeCompaction(ctx context.Context, s *Session, reason string) error {
+	if a == nil || s == nil {
+		return nil
+	}
+	if a.SessionMemoryFlusher != nil {
+		if err := a.SessionMemoryFlusher.FlushSession(ctx, s.ID); err != nil {
+			return err
+		}
+		// When a dedicated flusher is available, avoid consuming an extra provider turn.
+		return nil
+	}
+	if a.MemoryFiles == nil {
+		return nil
+	}
+	flushCfg := a.Config.ContextManagement.MemoryFlush
+	transcript := renderFlushTranscript(s.Messages, flushCfg.ForceFlushTranscriptBytesValue())
+	if strings.TrimSpace(transcript) == "" {
+		return nil
+	}
+
+	summary := summarizeFlushTranscript(transcript, reason)
+	if summary == "" {
+		return nil
+	}
+	if _, err := a.MemoryFiles.AppendDailyEntry(summary); err != nil {
+		return err
+	}
+	if a.MemorySearch != nil {
+		_ = a.MemorySearch.Sync(ctx, false)
+	}
+	return nil
+}
+
+func renderFlushTranscript(messages []ai.Message, maxBytes int64) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	if maxBytes <= 0 {
+		maxBytes = 2 << 20
+	}
+	lines := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		role := strings.ToLower(strings.TrimSpace(string(msg.Role)))
+		if role == "" {
+			role = "unknown"
+		}
+		content := flushMessageText(msg)
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		lines = append(lines, role+": "+strings.TrimSpace(content))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	joined := strings.Join(lines, "\n")
+	if int64(len(joined)) <= maxBytes {
+		return joined
+	}
+	return joined[len(joined)-int(maxBytes):]
+}
+
+func flushMessageText(msg ai.Message) string {
+	if text, ok := msg.ContentText(); ok {
+		return text
+	}
+	if blocks, ok := msg.ContentBlocks(); ok {
+		parts := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if block.Type != ai.ContentTypeText {
+				continue
+			}
+			trimmed := strings.TrimSpace(block.Text)
+			if trimmed == "" {
+				continue
+			}
+			parts = append(parts, trimmed)
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
+func summarizeFlushTranscript(transcript string, reason string) string {
+	lines := strings.Split(strings.TrimSpace(transcript), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	maxLines := 8
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	summary := "Pre-compaction flush"
+	if strings.TrimSpace(reason) != "" {
+		summary += " (" + strings.TrimSpace(reason) + ")"
+	}
+	return summary + "\n" + strings.Join(lines, "\n")
 }
 
 func getMapKeys(m map[string]any) []string {

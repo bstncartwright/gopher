@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -120,6 +119,9 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 
 	var retrieved []memory.MemoryRecord
 	if mode == PromptModeFull && !opts.DisableRetrievedMemory {
+		if a.MemorySearch != nil {
+			_ = a.MemorySearch.Sync(ctx, false)
+		}
 		retrieved = a.retrieveLongTermMemory(ctx, s, userMessage)
 	}
 
@@ -153,24 +155,25 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 			summaryBuilder = a.newModelCompactionSummaryBuilder(s)
 		}
 		assembled, err := a.Assembler.Build(ctx, ctxbundle.ContextRequest{
-			BaseSystemPrompt:         systemPrompt,
-			Messages:                 messages,
-			Retrieved:                retrieved,
-			CompactionSummaries:      compactionSummaries,
-			CurrentTask:              expandedUserMessage,
-			MaxTokens:                a.model.ContextWindow,
-			MaxMemories:              maxMemories,
-			ReserveMinTokens:         a.Config.ContextManagement.ReserveMinTokensValue(),
-			EnablePruning:            a.Config.ContextManagement.PruningEnabled(),
-			EnableRepair:             enableRepair,
-			EnableCompaction:         a.Config.ContextManagement.CompactionEnabled(),
-			PruneOptions:             ctxbundle.PruneOptions{},
-			BootstrapTokens:          bootstrapTokens,
-			WorkingTokens:            workingTokens,
-			OverflowRetries:          opts.OverflowRetries,
-			OverflowStage:            opts.OverflowStage,
-			Warnings:                 opts.Warnings,
-			CompactionSummaryBuilder: summaryBuilder,
+			BaseSystemPrompt:           systemPrompt,
+			Messages:                   messages,
+			Retrieved:                  retrieved,
+			CompactionSummaries:        compactionSummaries,
+			CurrentTask:                expandedUserMessage,
+			MaxTokens:                  a.model.ContextWindow,
+			MaxMemories:                maxMemories,
+			ReserveMinTokens:           a.Config.ContextManagement.ReserveMinTokensValue(),
+			EnablePruning:              a.Config.ContextManagement.PruningEnabled(),
+			EnableRepair:               enableRepair,
+			EnableCompaction:           a.Config.ContextManagement.CompactionEnabled(),
+			PruneOptions:               ctxbundle.PruneOptions{},
+			BootstrapTokens:            bootstrapTokens,
+			WorkingTokens:              workingTokens,
+			RetrievedMemoryLanePercent: a.Config.ContextManagement.RetrievedMemoryLanePercentValue(),
+			OverflowRetries:            opts.OverflowRetries,
+			OverflowStage:              opts.OverflowStage,
+			Warnings:                   opts.Warnings,
+			CompactionSummaryBuilder:   summaryBuilder,
 		})
 		if err != nil {
 			return ai.Context{}, ctxbundle.ContextDiagnostics{}, fmt.Errorf("assemble context: %w", err)
@@ -196,6 +199,14 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	if diagnostics.ModelContextWindow <= 0 {
 		diagnostics.ModelContextWindow = a.model.ContextWindow
 	}
+	if a.MemorySearch != nil {
+		if status, err := a.MemorySearch.Status(ctx); err == nil {
+			diagnostics.MemorySearchMode = status.RetrievalMode()
+			diagnostics.MemoryProvider = status.Provider
+			diagnostics.MemoryFallbackReason = status.FallbackReason
+			diagnostics.MemoryUnavailableReason = status.UnavailableReason
+		}
+	}
 	s.LastContextDiagnostics = diagnostics
 
 	return ai.Context{
@@ -214,7 +225,58 @@ func (a *Agent) InspectContext(ctx context.Context, s *Session, in TurnInput) (c
 }
 
 func (a *Agent) retrieveLongTermMemory(ctx context.Context, s *Session, userMessage string) []memory.MemoryRecord {
-	if a == nil || a.LongTermMemory == nil {
+	if a == nil {
+		return nil
+	}
+	if a.MemorySearch != nil {
+		resp, err := a.MemorySearch.Search(ctx, memory.MemorySearchRequest{
+			Query:      userMessage,
+			MaxResults: a.Config.MemorySearch.MaxResultsValue(),
+			MinScore:   a.Config.MemorySearch.MinScoreValue(),
+			SessionKey: s.ID,
+		})
+		if err == nil {
+			out := make([]memory.MemoryRecord, 0, len(resp.Results))
+			for _, item := range resp.Results {
+				if strings.TrimSpace(item.Snippet) == "" {
+					continue
+				}
+				metadata := map[string]string{
+					"path":       item.Path,
+					"start_line": fmt.Sprintf("%d", item.StartLine),
+					"end_line":   fmt.Sprintf("%d", item.EndLine),
+					"score":      fmt.Sprintf("%.4f", item.Score),
+					"source":     item.Source,
+				}
+				if citation := strings.TrimSpace(item.Citation); citation != "" {
+					if citationsEnabledForPrompt(a.Config.Memory.CitationsModeValue()) {
+						metadata["citation"] = citation
+					}
+				}
+				out = append(out, memory.MemoryRecord{
+					ID:        item.ID,
+					Type:      memory.MemorySemantic,
+					Scope:     memory.ScopeGlobal,
+					SessionID: s.ID,
+					AgentID:   a.ID,
+					Content:   item.Snippet,
+					Metadata:  metadata,
+				})
+			}
+			if len(out) > 0 {
+				if s != nil {
+					if status, statusErr := a.MemorySearch.Status(ctx); statusErr == nil {
+						s.LastContextDiagnostics.MemorySearchMode = status.RetrievalMode()
+						s.LastContextDiagnostics.MemoryProvider = status.Provider
+						s.LastContextDiagnostics.MemoryFallbackReason = status.FallbackReason
+						s.LastContextDiagnostics.MemoryUnavailableReason = status.UnavailableReason
+					}
+				}
+				return out
+			}
+		}
+	}
+	if a.LongTermMemory == nil {
 		return nil
 	}
 
@@ -262,13 +324,6 @@ func (a *Agent) retrieveLongTermMemory(ctx context.Context, s *Session, userMess
 			out = append(out, record)
 		}
 	}
-
-	sort.SliceStable(out, func(i, j int) bool {
-		if !out[i].Timestamp.Equal(out[j].Timestamp) {
-			return out[i].Timestamp.After(out[j].Timestamp)
-		}
-		return out[i].ID < out[j].ID
-	})
 	if len(out) > 8 {
 		out = out[:8]
 	}
@@ -288,6 +343,11 @@ func renderMemoryFallbackSection(records []memory.MemoryRecord) string {
 		if len(content) > 320 {
 			content = content[:317] + "..."
 		}
+		citation := strings.TrimSpace(record.Metadata["citation"])
+		if citation != "" {
+			lines = append(lines, fmt.Sprintf("- [%s | %s] %s", record.Type.String(), citation, content))
+			continue
+		}
 		lines = append(lines, fmt.Sprintf("- [%s] %s", record.Type.String(), content))
 	}
 	if len(lines) == 1 {
@@ -302,6 +362,15 @@ func hasTool(registry ToolRegistry, name string) bool {
 	}
 	_, ok := registry.Get(name)
 	return ok
+}
+
+func citationsEnabledForPrompt(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func marshalStableJSON(v any) ([]byte, error) {

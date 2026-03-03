@@ -22,12 +22,16 @@ type ContextDiagnostics struct {
 	RetrievedMemoryLane   LaneDiagnostics `json:"retrieved_memory_lane"`
 	CompactionSummaryLane LaneDiagnostics `json:"compaction_summary_lane"`
 
-	SelectedMemoryIDs   []string `json:"selected_memory_ids,omitempty"`
-	SelectedMemoryTypes []string `json:"selected_memory_types,omitempty"`
-	PruneActions        []string `json:"prune_actions,omitempty"`
-	CompactionActions   []string `json:"compaction_actions,omitempty"`
-	PairRepairActions   []string `json:"pair_repair_actions,omitempty"`
-	Warnings            []string `json:"warnings,omitempty"`
+	SelectedMemoryIDs       []string `json:"selected_memory_ids,omitempty"`
+	SelectedMemoryTypes     []string `json:"selected_memory_types,omitempty"`
+	MemorySearchMode        string   `json:"memory_search_mode,omitempty"`
+	MemoryProvider          string   `json:"memory_provider,omitempty"`
+	MemoryFallbackReason    string   `json:"memory_fallback_reason,omitempty"`
+	MemoryUnavailableReason string   `json:"memory_unavailable_reason,omitempty"`
+	PruneActions            []string `json:"prune_actions,omitempty"`
+	CompactionActions       []string `json:"compaction_actions,omitempty"`
+	PairRepairActions       []string `json:"pair_repair_actions,omitempty"`
+	Warnings                []string `json:"warnings,omitempty"`
 }
 
 func ComputeReserveTokens(maxTokens int, reserveFloor int) int {

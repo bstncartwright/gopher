@@ -63,6 +63,10 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		return runPairSubcommand(args[1:], stdout, stderr)
 	case "update":
 		return runUpdateSubcommand(args[1:], stdout, stderr)
+	case "memory":
+		return runMemorySubcommand(args[1:], stdout, stderr)
+	case "doctor":
+		return runDoctorSubcommand(args[1:], stdout, stderr)
 	default:
 		printRootUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -91,6 +95,8 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  pair                  manage telegram pairing (status/approve)")
 	fmt.Fprintln(out, "  reset                 delete config and memory while preserving auth")
 	fmt.Fprintln(out, "  update                check and apply binary updates")
+	fmt.Fprintln(out, "  memory ...            memory index and status commands")
+	fmt.Fprintln(out, "  doctor memory         memory health diagnostics")
 	fmt.Fprintln(out, "  version               print binary version")
 	fmt.Fprintln(out, "  service ...           install and manage linux systemd service")
 	fmt.Fprintln(out, "")

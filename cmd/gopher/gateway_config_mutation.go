@@ -9,6 +9,19 @@ import (
 )
 
 func setGatewayTelegramEnabled(path string, enabled bool) (bool, error) {
+	return setGatewayTelegramConfig(path, gatewayTelegramMutation{Enabled: &enabled})
+}
+
+type gatewayTelegramMutation struct {
+	Enabled           *bool
+	Mode              *string
+	WebhookListenAddr *string
+	WebhookPath       *string
+	WebhookURL        *string
+	WebhookSecret     *string
+}
+
+func setGatewayTelegramConfig(path string, mutation gatewayTelegramMutation) (bool, error) {
 	target := strings.TrimSpace(path)
 	if target == "" {
 		return false, fmt.Errorf("gateway config path is required")
@@ -32,10 +45,57 @@ func setGatewayTelegramEnabled(path string, enabled bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if current, ok := telegram["enabled"].(bool); ok && current == enabled {
+	changed := false
+	if mutation.Enabled != nil {
+		if current, ok := telegram["enabled"].(bool); !ok || current != *mutation.Enabled {
+			telegram["enabled"] = *mutation.Enabled
+			changed = true
+		}
+	}
+	if mutation.Mode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*mutation.Mode))
+		if current, ok := telegram["mode"].(string); !ok || strings.TrimSpace(current) != mode {
+			telegram["mode"] = mode
+			changed = true
+		}
+	}
+	if mutation.WebhookListenAddr != nil || mutation.WebhookPath != nil || mutation.WebhookURL != nil || mutation.WebhookSecret != nil {
+		webhook, err := ensureNestedMap(telegram, "webhook")
+		if err != nil {
+			return false, err
+		}
+		if mutation.WebhookListenAddr != nil {
+			value := strings.TrimSpace(*mutation.WebhookListenAddr)
+			if current, ok := webhook["listen_addr"].(string); !ok || strings.TrimSpace(current) != value {
+				webhook["listen_addr"] = value
+				changed = true
+			}
+		}
+		if mutation.WebhookPath != nil {
+			value := strings.TrimSpace(*mutation.WebhookPath)
+			if current, ok := webhook["path"].(string); !ok || strings.TrimSpace(current) != value {
+				webhook["path"] = value
+				changed = true
+			}
+		}
+		if mutation.WebhookURL != nil {
+			value := strings.TrimSpace(*mutation.WebhookURL)
+			if current, ok := webhook["url"].(string); !ok || strings.TrimSpace(current) != value {
+				webhook["url"] = value
+				changed = true
+			}
+		}
+		if mutation.WebhookSecret != nil {
+			value := strings.TrimSpace(*mutation.WebhookSecret)
+			if current, ok := webhook["secret"].(string); !ok || strings.TrimSpace(current) != value {
+				webhook["secret"] = value
+				changed = true
+			}
+		}
+	}
+	if !changed {
 		return false, nil
 	}
-	telegram["enabled"] = enabled
 	updated, err := toml.Marshal(doc)
 	if err != nil {
 		return false, fmt.Errorf("serialize gateway config %s: %w", target, err)

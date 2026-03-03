@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bstncartwright/gopher/pkg/ai"
 )
 
 func TestRunOnboardingSubcommandNonInteractive(t *testing.T) {
@@ -83,6 +85,95 @@ func TestRunOnboardingSubcommandNonInteractiveFailsWhenAuthMissing(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "auth is missing") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunOnboardingSubcommandNonInteractiveWebhookMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "gopher.env")
+	gatewayPath := filepath.Join(dir, "gopher.toml")
+	nodePath := filepath.Join(dir, "node.toml")
+
+	var out bytes.Buffer
+	err := runOnboardingSubcommand([]string{
+		"--non-interactive",
+		"--gateway-config-path", gatewayPath,
+		"--node-config-path", nodePath,
+		"--env-file", envPath,
+		"--auth-provider", "zai",
+		"--auth-api-key", "zai-key",
+		"--telegram-bot-token", "bot-token",
+		"--telegram-mode", "websocket",
+		"--telegram-webhook-url", "https://example.ts.net/_gopher/telegram/webhook",
+		"--telegram-webhook-secret", "webhook-secret",
+	}, strings.NewReader(""), &out, &out)
+	if err != nil {
+		t.Fatalf("runOnboardingSubcommand() error: %v", err)
+	}
+
+	gatewayBlob, err := os.ReadFile(gatewayPath)
+	if err != nil {
+		t.Fatalf("read gateway config: %v", err)
+	}
+	gatewayText := string(gatewayBlob)
+	if !strings.Contains(gatewayText, "mode = 'webhook'") {
+		t.Fatalf("expected onboarding to set webhook mode: %s", gatewayText)
+	}
+	if !strings.Contains(gatewayText, "url = 'https://example.ts.net/_gopher/telegram/webhook'") {
+		t.Fatalf("expected onboarding to set telegram webhook url: %s", gatewayText)
+	}
+	if !strings.Contains(gatewayText, "secret = 'webhook-secret'") {
+		t.Fatalf("expected onboarding to set telegram webhook secret: %s", gatewayText)
+	}
+}
+
+func TestRunOnboardingSubcommandOpenAICodexUsesOAuthFlow(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "gopher.env")
+	gatewayPath := filepath.Join(dir, "gopher.toml")
+	nodePath := filepath.Join(dir, "node.toml")
+
+	originalLogin := loginOpenAICodexForAuth
+	loginOpenAICodexForAuth = func(callbacks ai.OAuthLoginCallbacks) (ai.OAuthCredentials, error) {
+		return ai.OAuthCredentials{
+			Access:  "access-token",
+			Refresh: "refresh-token",
+			Expires: 1730000000000,
+		}, nil
+	}
+	defer func() {
+		loginOpenAICodexForAuth = originalLogin
+	}()
+
+	var out bytes.Buffer
+	err := runOnboardingSubcommand([]string{
+		"--non-interactive",
+		"--gateway-config-path", gatewayPath,
+		"--node-config-path", nodePath,
+		"--env-file", envPath,
+		"--auth-provider", "openai-codex",
+		"--auth-api-key", "should-be-ignored",
+		"--telegram-bot-token", "bot-token",
+	}, strings.NewReader(""), &out, &out)
+	if err != nil {
+		t.Fatalf("runOnboardingSubcommand() error: %v", err)
+	}
+
+	envBlob, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	envText := string(envBlob)
+	if !strings.Contains(envText, "OPENAI_CODEX_TOKEN=access-token") {
+		t.Fatalf("expected OPENAI_CODEX_TOKEN from oauth flow: %s", envText)
+	}
+	if !strings.Contains(envText, "OPENAI_CODEX_REFRESH_TOKEN=refresh-token") {
+		t.Fatalf("expected OPENAI_CODEX_REFRESH_TOKEN from oauth flow: %s", envText)
+	}
+	if strings.Contains(envText, "OPENAI_CODEX_API_KEY=") {
+		t.Fatalf("did not expect OPENAI_CODEX_API_KEY to be written: %s", envText)
 	}
 }
 

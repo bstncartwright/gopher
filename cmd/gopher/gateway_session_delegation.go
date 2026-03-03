@@ -914,12 +914,9 @@ func (s *gatewaySessionDelegationToolService) spawnEphemeralWorker(_ context.Con
 		cfg.Name = strings.TrimSpace(string(targetAlias))
 	}
 	policies := sourceAgent.Policies
+	cfg.Policies = &policies
 
 	if err := writeAgentConfig(filepath.Join(workspace, "config.toml"), cfg); err != nil {
-		_ = os.RemoveAll(workspace)
-		return nil, err
-	}
-	if err := writeAgentConfig(filepath.Join(workspace, "policies.toml"), policies); err != nil {
 		_ = os.RemoveAll(workspace)
 		return nil, err
 	}

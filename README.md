@@ -299,6 +299,18 @@ example `agents/builder/config.json`:
   "name": "builder",
   "role": "assistant",
   "model_policy": "zai:glm-5",
+  "policies": {
+    "allow_cross_agent_fs": true,
+    "can_shell": true,
+    "shell_allowlist": [],
+    "network": {
+      "enabled": true,
+      "block_domains": []
+    },
+    "budget": {
+      "max_tokens_per_session": 200000
+    }
+  },
   "enabled_tools": ["group:fs", "group:runtime", "group:collaboration"],
   "max_context_messages": 40,
   "context_management": {
@@ -317,23 +329,7 @@ example `agents/builder/config.json`:
 }
 ```
 
-example `agents/builder/policies.json`:
-
-```json
-{
-  "fs_roots": ["./"],
-  "allow_cross_agent_fs": false,
-  "can_shell": true,
-  "shell_allowlist": [],
-  "network": {
-    "enabled": true,
-    "block_domains": []
-  },
-  "budget": {
-    "max_tokens_per_session": 200000
-  }
-}
-```
+By default this policy shape is permissive. To confine an agent, set `"allow_cross_agent_fs": false` and add explicit `"fs_roots"` values (for example `["./"]`).
 
 recommended command pattern from the agent:
 
@@ -367,7 +363,6 @@ troubleshooting:
    - `<working_dir>/agents/<agent_id>/TOOLS.md`
    - `<working_dir>/agents/<agent_id>/IDENTITY.md`
    - `<working_dir>/agents/<agent_id>/config.json`
-   - `<working_dir>/agents/<agent_id>/policies.json`
 2. configure gateway telegram block in `/etc/gopher/gopher.toml`:
 
 ```toml

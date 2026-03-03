@@ -87,8 +87,15 @@ func TestDiscoverGatewayAgentWorkspacesCreatesMainWorkspaceWhenMissing(t *testin
 	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "config.toml")); err != nil {
 		t.Fatalf("expected default config.toml to exist: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "policies.toml")); err != nil {
-		t.Fatalf("expected default policies.toml to exist: %v", err)
+	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "policies.toml")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect policies.toml in default workspace, stat err=%v", err)
+	}
+	configBlob, err := os.ReadFile(filepath.Join(workspace, "agents", "main", "config.toml"))
+	if err != nil {
+		t.Fatalf("read default config.toml: %v", err)
+	}
+	if !strings.Contains(string(configBlob), "allow_cross_agent_fs = true") {
+		t.Fatalf("expected main config to default allow_cross_agent_fs=true")
 	}
 }
 
@@ -110,20 +117,16 @@ func createGatewayTestAgentWorkspace(t *testing.T, dir, agentID string) {
 		},
 		Budget: agentcore.BudgetPolicy{MaxTokensPerSession: 10000},
 	}
+	config.Policies = &policies
 
 	configBlob, err := json.Marshal(config)
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
-	policiesBlob, err := json.Marshal(policies)
-	if err != nil {
-		t.Fatalf("marshal policies: %v", err)
-	}
 
 	mustWriteFile(t, filepath.Join(dir, "AGENTS.md"), "# AGENTS\nDo the task.")
 	mustWriteFile(t, filepath.Join(dir, "SOUL.md"), "# soul\nStay concise.")
 	mustWriteFile(t, filepath.Join(dir, "config.json"), string(configBlob))
-	mustWriteFile(t, filepath.Join(dir, "policies.json"), string(policiesBlob))
 }
 
 func mustWriteFile(t *testing.T, path string, content string) {

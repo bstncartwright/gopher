@@ -31,11 +31,14 @@ func TestAgentCreateListDeleteLifecycle(t *testing.T) {
 
 	plannerWorkspace := filepath.Join(workspaceRoot, "planner")
 	for _, name := range []string{
-		"AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "config.toml", "policies.toml",
+		"AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "config.toml",
 	} {
 		if _, err := os.Stat(filepath.Join(plannerWorkspace, name)); err != nil {
 			t.Fatalf("expected workspace file %s: %v", name, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(plannerWorkspace, "policies.toml")); !os.IsNotExist(err) {
+		t.Fatalf("did not expect policies.toml scaffold file, stat err=%v", err)
 	}
 	for _, date := range []string{
 		time.Now().Format("2006-01-02"),
@@ -190,11 +193,57 @@ func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
 		t.Fatalf("config reasoning_level=%q, want medium", got)
 	}
 
+	policiesRaw, ok := config["policies"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected [policies] table in config.toml")
+	}
+	if got, _ := policiesRaw["allow_cross_agent_fs"].(bool); !got {
+		t.Fatalf("writer allow_cross_agent_fs=%t, want true", got)
+	}
+	if _, exists := policiesRaw["fs_roots"]; exists {
+		t.Fatalf("did not expect explicit fs_roots default in config.toml")
+	}
+
 	sharedUserBlob, err := os.ReadFile(filepath.Join(workspaceRoot, "USER.md"))
 	if err != nil {
 		t.Fatalf("read shared USER.md: %v", err)
 	}
 	if !strings.Contains(string(sharedUserBlob), "Shared User Profile") {
 		t.Fatalf("expected shared user template in workspace root USER.md")
+	}
+}
+
+func TestAgentCreateMainDefaultsCrossAgentFSTrue(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	registryPath := filepath.Join(dir, "agents", "index.json")
+	workspaceRoot := filepath.Join(dir, "workspaces")
+
+	var out bytes.Buffer
+	if err := runAgentSubcommand([]string{
+		"create",
+		"--registry-path", registryPath,
+		"--workspace-root", workspaceRoot,
+		"--id", "main",
+	}, &out, &out); err != nil {
+		t.Fatalf("create main failed: %v", err)
+	}
+
+	configPath := filepath.Join(workspaceRoot, "main", "config.toml")
+	configBlob, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", configPath, err)
+	}
+	var config map[string]any
+	if err := toml.Unmarshal(configBlob, &config); err != nil {
+		t.Fatalf("config.toml should be valid TOML: %v", err)
+	}
+	policiesRaw, ok := config["policies"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected [policies] table in config.toml")
+	}
+	if got, _ := policiesRaw["allow_cross_agent_fs"].(bool); !got {
+		t.Fatalf("main allow_cross_agent_fs=%t, want true", got)
 	}
 }

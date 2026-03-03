@@ -126,7 +126,7 @@ func (t *webFetchMCPTool) Run(ctx context.Context, input ToolInput) (ToolOutput,
 		return t.success(urls, "exa", payload, false, ""), nil
 	}
 
-	if providerOverride == "exa" || noFallback {
+	if noFallback {
 		return t.fail(primaryErr)
 	}
 

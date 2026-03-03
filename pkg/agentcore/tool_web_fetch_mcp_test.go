@@ -141,6 +141,64 @@ func TestWebFetchMCPToolRunFallsBackToTavilyOnQuota(t *testing.T) {
 	}
 }
 
+func TestWebFetchMCPToolRunFallsBackToTavilyOnRateLimitWhenProviderOverrideExa(t *testing.T) {
+	t.Setenv("EXA_API_KEY", "exa-key")
+	t.Setenv("TAVILY_API_KEY", "tavily-key")
+
+	exaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": 429, "message": "rate limit exceeded"}})
+	}))
+	defer exaServer.Close()
+
+	tavilyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req["method"] {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sess-tv")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{}})
+		case "notifications/initialized":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "result": map[string]any{}})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"tools": []any{map[string]any{"name": "tavily_extract"}}}})
+		case "tools/call":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 3, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "tavily extract"}}}})
+		default:
+			t.Fatalf("unexpected method: %v", req["method"])
+		}
+	}))
+	defer tavilyServer.Close()
+
+	tool := newWebFetchMCPToolWithProviders(
+		newExaMCPProvider(exaServer.URL, "EXA_API_KEY", exaServer.Client()),
+		newTavilyMCPProvider(tavilyServer.URL, "TAVILY_API_KEY", tavilyServer.Client()),
+	)
+
+	output, err := tool.Run(context.Background(), ToolInput{Args: map[string]any{
+		"url":      "https://example.com",
+		"provider": "exa",
+	}})
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("status = %q, want ok", output.Status)
+	}
+	result, _ := output.Result.(map[string]any)
+	if got := strings.TrimSpace(result["provider"].(string)); got != "tavily" {
+		t.Fatalf("provider = %q, want tavily", got)
+	}
+	if got, _ := result["fallback_used"].(bool); !got {
+		t.Fatalf("fallback_used = false, want true")
+	}
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(result["fallback_reason"].(string))), "rate") {
+		t.Fatalf("fallback_reason = %v, want rate-limit", result["fallback_reason"])
+	}
+}
+
 func TestWebFetchMCPToolRunRequiresURL(t *testing.T) {
 	t.Setenv("EXA_API_KEY", "exa-key")
 	t.Setenv("TAVILY_API_KEY", "tavily-key")

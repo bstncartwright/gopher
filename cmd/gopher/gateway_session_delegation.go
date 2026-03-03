@@ -1307,9 +1307,6 @@ func delegationTerminalStatusFromEvent(event sessionrt.Event) (status string, re
 		default:
 			return "", "", false
 		}
-	case sessionrt.EventError:
-		errMessage := errorMessageFromAny(event.Payload)
-		return "failed", strings.TrimSpace(errMessage), true
 	default:
 		return "", "", false
 	}

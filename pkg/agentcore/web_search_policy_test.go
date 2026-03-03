@@ -128,3 +128,64 @@ func TestWebFetchPolicyAllowedWhenNoRequiredHostsAreBlocked(t *testing.T) {
 		t.Fatalf("expected web_fetch policy allow when required hosts are not blocked, got: %v", err)
 	}
 }
+
+func TestGopherUpdatePolicyDeniedWhenNetworkDisabled(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"gopher_update"}
+	policies := defaultPolicies()
+	policies.Network.Enabled = false
+	policies.Network.BlockDomains = []string{"example.com"}
+	workspace := createTestWorkspace(t, config, policies)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	_, err = NewToolRunner(agent).enforcePolicy("gopher_update", map[string]any{})
+	if err == nil || !IsPolicyError(err) {
+		t.Fatalf("expected policy error when network disabled, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "network.enabled=false") {
+		t.Fatalf("expected network.enabled error message, got: %v", err)
+	}
+}
+
+func TestGopherUpdatePolicyDeniedWhenRequiredHostsAreBlocked(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"gopher_update"}
+	policies := defaultPolicies()
+	policies.Network.BlockDomains = []string{"github.com"}
+	workspace := createTestWorkspace(t, config, policies)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	_, err = NewToolRunner(agent).enforcePolicy("gopher_update", map[string]any{})
+	if err == nil || !IsPolicyError(err) {
+		t.Fatalf("expected policy error when block_domains contains required hosts, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "block_domains") {
+		t.Fatalf("expected block_domains error message, got: %v", err)
+	}
+}
+
+func TestGopherUpdatePolicyAllowedWhenNoRequiredHostsAreBlocked(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"gopher_update"}
+	policies := defaultPolicies()
+	policies.Network.BlockDomains = []string{"blocked.example.com"}
+	workspace := createTestWorkspace(t, config, policies)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	_, err = NewToolRunner(agent).enforcePolicy("gopher_update", map[string]any{})
+	if err != nil {
+		t.Fatalf("expected gopher_update policy allow when required hosts are not blocked, got: %v", err)
+	}
+}

@@ -138,7 +138,7 @@ func TestBuildAgentSystemPromptSelfUpdateInstructionsAreExplicit(t *testing.T) {
 	required := []string{
 		"## OpenClaw Self-Update",
 		"Treat requests like \"update yourself\", \"update itself\", or \"self-update\" as explicit self-update requests.",
-		"For binary updates, run `gopher update` using available execution tools and report the actual command result.",
+		"For binary updates, prefer `gopher_update` when available; otherwise run `gopher update` using available execution tools and report the actual command result.",
 		"Do not replace a requested self-update with memory updates, policy notes, or future-intent promises.",
 		"Only update memory when the user explicitly asks to remember or store memory.",
 	}

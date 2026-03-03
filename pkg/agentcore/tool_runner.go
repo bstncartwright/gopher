@@ -319,6 +319,22 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 		}
 		return out, nil
 
+	case "gopher_update":
+		if !r.agent.Policies.Network.Enabled {
+			return nil, &PolicyError{Message: "gopher_update denied: policies.network.enabled=false"}
+		}
+		requiredDomains := []string{"api.github.com", "github.com", "objects.githubusercontent.com"}
+		blockedDomains := make([]string, 0, len(requiredDomains))
+		for _, domain := range requiredDomains {
+			if domainAllowed(domain, r.agent.Policies.Network.BlockDomains) {
+				blockedDomains = append(blockedDomains, domain)
+			}
+		}
+		if len(blockedDomains) > 0 {
+			return nil, &PolicyError{Message: fmt.Sprintf("gopher_update denied: %q blocked by policies.network.block_domains", strings.Join(blockedDomains, ","))}
+		}
+		return out, nil
+
 	case "message":
 		rawAttachments, exists := out["attachments"]
 		if !exists || rawAttachments == nil {

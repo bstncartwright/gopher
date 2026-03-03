@@ -105,7 +105,7 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 			"## OpenClaw Self-Update",
 			"Only perform self-update actions when explicitly requested by the user.",
 			"Treat requests like \"update yourself\", \"update itself\", or \"self-update\" as explicit self-update requests.",
-			"For binary updates, run `gopher update` using available execution tools and report the actual command result.",
+			"For binary updates, prefer `gopher_update` when available; otherwise run `gopher update` using available execution tools and report the actual command result.",
 			"Do not replace a requested self-update with memory updates, policy notes, or future-intent promises.",
 			"Only update memory when the user explicitly asks to remember or store memory.",
 			"For config changes, edit config files and restart the relevant service.",
@@ -329,6 +329,9 @@ func buildToolUsageHints(registry ToolRegistry) string {
 	}
 	if toolRegistryHas(registry, "gopher_meta") {
 		lines = append(lines, "- `gopher_meta` reports runtime/build metadata (including running binary version and on-disk binary version) to detect stale processes after updates.")
+	}
+	if toolRegistryHas(registry, "gopher_update") {
+		lines = append(lines, "- `gopher_update` runs the current executable's `update` command directly, avoiding PATH-related failures during self-update requests.")
 	}
 	if toolRegistryHas(registry, "delegate") {
 		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`}; `create` requires `message`, accepts optional `target_agent` (omitting target auto-creates a subagent), and accepts optional `model_policy` for ephemeral workers. `create` returns after spawn; do not `sleep`/busy-wait in the same turn. Treat execution as async and continue when `delegation.completed`/`delegation.failed` arrives (or use `list`/`log` in a later turn).")

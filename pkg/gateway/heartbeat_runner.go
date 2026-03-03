@@ -308,11 +308,30 @@ func (r *HeartbeatRunner) loop(ctx context.Context) {
 
 func (r *HeartbeatRunner) processDue(ctx context.Context) {
 	now := r.now().UTC()
+	schedules := r.schedulesSnapshot()
+	if len(schedules) == 0 {
+		return
+	}
+	dueSchedules := 0
+	for _, schedule := range schedules {
+		next := r.nextRunFor(schedule.AgentID, now)
+		if !next.After(now) {
+			dueSchedules++
+		}
+	}
+	if dueSchedules == 0 {
+		return
+	}
+
 	defaultTargets := r.pipeline.HeartbeatTargets()
 	sessionCache := map[sessionrt.SessionID]*sessionrt.Session{}
 	sessionErrs := map[sessionrt.SessionID]error{}
-	schedules := r.schedulesSnapshot()
-	slog.Debug("heartbeat_runner: processing due schedules", "schedules_count", len(schedules), "targets_count", len(defaultTargets))
+	slog.Debug(
+		"heartbeat_runner: processing due schedules",
+		"schedules_count", len(schedules),
+		"due_schedules_count", dueSchedules,
+		"targets_count", len(defaultTargets),
+	)
 
 	for _, schedule := range schedules {
 		next := r.nextRunFor(schedule.AgentID, now)

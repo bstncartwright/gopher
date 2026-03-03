@@ -53,3 +53,52 @@ func TestSetupProcessLoggingRequiresInputs(t *testing.T) {
 		t.Fatalf("expected error for empty component")
 	}
 }
+
+func TestSetupProcessLoggingDefaultsToInfo(t *testing.T) {
+	t.Setenv(processLogLevelEnv, "")
+	tmp := t.TempDir()
+
+	_, cleanup, err := setupProcessLogging(tmp, "gateway", nil)
+	if err != nil {
+		t.Fatalf("setupProcessLogging() error: %v", err)
+	}
+	defer cleanup()
+
+	slog.Debug("debug-line")
+	slog.Info("info-line")
+
+	logPath := filepath.Join(tmp, "logs", "gateway.log")
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	text := string(content)
+	if strings.Contains(text, "debug-line") {
+		t.Fatalf("expected debug line to be filtered at info level, got %q", text)
+	}
+	if !strings.Contains(text, "info-line") {
+		t.Fatalf("expected info line in file, got %q", text)
+	}
+}
+
+func TestSetupProcessLoggingHonorsDebugLevelEnv(t *testing.T) {
+	t.Setenv(processLogLevelEnv, "debug")
+	tmp := t.TempDir()
+
+	_, cleanup, err := setupProcessLogging(tmp, "gateway", nil)
+	if err != nil {
+		t.Fatalf("setupProcessLogging() error: %v", err)
+	}
+	defer cleanup()
+
+	slog.Debug("debug-line")
+
+	logPath := filepath.Join(tmp, "logs", "gateway.log")
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(content), "debug-line") {
+		t.Fatalf("expected debug line in file, got %q", string(content))
+	}
+}

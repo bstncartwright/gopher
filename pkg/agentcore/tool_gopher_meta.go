@@ -29,6 +29,7 @@ var (
 	gopherMetaBinaryVersionPattern = regexp.MustCompile(`(?:^|\s)-X(?:=|\s+)(?:["']?)main\.binaryVersion=([^\s"']+)(?:["']?)`)
 	gopherMetaReleaseVersion       = regexp.MustCompile(`^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 	gopherMetaPseudoVersion        = regexp.MustCompile(`^v\d+\.\d+\.\d+-\d{14}-[0-9a-f]{12}$`)
+	gopherMetaPseudoVersionPrefix  = regexp.MustCompile(`^(v\d+\.\d+\.\d+)-\d{14}-[0-9a-f]{12}$`)
 )
 
 type gopherMetaTool struct{}
@@ -202,6 +203,9 @@ func applyBuildInfoMetadata(target map[string]any, info *rdebug.BuildInfo) {
 	if version := binaryVersionFromBuildInfo(info); version != "" {
 		target["binary_version"] = version
 	}
+	if version := semverVersionFromBuildInfo(info); version != "" {
+		target["semver_version"] = version
+	}
 	if value := strings.TrimSpace(info.Main.Version); value != "" {
 		target["build_version"] = value
 	}
@@ -240,6 +244,37 @@ func binaryVersionFromBuildInfo(info *rdebug.BuildInfo) string {
 	moduleVersion := strings.TrimSpace(info.Main.Version)
 	if gopherMetaReleaseVersion.MatchString(moduleVersion) && !gopherMetaPseudoVersion.MatchString(moduleVersion) {
 		return moduleVersion
+	}
+	return ""
+}
+
+func semverVersionFromBuildInfo(info *rdebug.BuildInfo) string {
+	if info == nil {
+		return ""
+	}
+	if value := semverVersionFromString(binaryVersionFromBuildInfo(info)); value != "" {
+		return value
+	}
+	settings := buildInfoSettings(info)
+	if value := semverVersionFromString(settings["vcs.tag"]); value != "" {
+		return value
+	}
+	if value := semverVersionFromString(info.Main.Version); value != "" {
+		return value
+	}
+	return ""
+}
+
+func semverVersionFromString(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if matches := gopherMetaPseudoVersionPrefix.FindStringSubmatch(value); len(matches) == 2 {
+		return matches[1]
+	}
+	if gopherMetaReleaseVersion.MatchString(value) {
+		return value
 	}
 	return ""
 }

@@ -57,7 +57,7 @@ Before responding:
 
 ## Heartbeats and Cron
 
-- Use HEARTBEAT.md for lightweight recurring checks (only when config.json sets heartbeat.every).
+- Use HEARTBEAT.md for lightweight recurring checks (only when config.toml sets heartbeat.every).
 - Use cron for strict schedules and one-shot reminders.
 - If nothing needs attention during a heartbeat, reply exactly HEARTBEAT_OK.
 
@@ -193,19 +193,16 @@ func defaultHeartbeatTemplate() string {
 
 This file is inert by default.
 
-Heartbeats run only when config.json includes heartbeat settings, for example:
+Heartbeats run only when config.toml includes heartbeat settings, for example:
 
-{
-  "heartbeat": {
-    "every": "15m",
-    "session": "sess-123",
-    "active_hours": {
-      "start": "09:00",
-      "end": "18:00",
-      "timezone": "America/New_York"
-    }
-  }
-}
+[heartbeat]
+every = "15m"
+session = "sess-123"
+
+[heartbeat.active_hours]
+start = "09:00"
+end = "18:00"
+timezone = "America/New_York"
 
 - heartbeat.session is optional; when set, heartbeat runs only target that session id.
 - heartbeat.active_hours is optional; when omitted there are no implicit quiet hours.
@@ -241,47 +238,43 @@ Delete this file. It is a one-time onboarding checklist.
 }
 
 func defaultConfigTemplate(agentID string) string {
-	return fmt.Sprintf(`{
-  "agent_id": %q,
-  "name": %q,
-  "role": "assistant",
-  "model_policy": %q,
-  "reasoning_level": "medium",
-  "enabled_tools": ["group:fs", "group:runtime", "group:collaboration"],
-  "max_context_messages": 40,
-  "context_management": {
-    "mode": "safeguard",
-    "enable_pruning": true,
-    "enable_compaction": true,
-    "enable_overflow_retry": true,
-    "overflow_retry_limit": 3,
-    "reserve_min_tokens": 20000,
-    "model_compaction_summary": true,
-    "compaction_summary_timeout_ms": 12000,
-    "compaction_chunk_token_target": 1800,
-    "tool_result_context_max_chars": 12000,
-    "tool_result_context_head_chars": 8000,
-    "tool_result_context_tail_chars": 3000,
-    "recent_tool_result_chars": 2400,
-    "historical_tool_result_chars": 240
-  }
-}
+	return fmt.Sprintf(`agent_id = %q
+name = %q
+role = "assistant"
+model_policy = %q
+reasoning_level = "medium"
+enabled_tools = ["group:fs", "group:runtime", "group:collaboration"]
+max_context_messages = 40
+
+[context_management]
+mode = "safeguard"
+enable_pruning = true
+enable_compaction = true
+enable_overflow_retry = true
+overflow_retry_limit = 3
+reserve_min_tokens = 20000
+model_compaction_summary = true
+compaction_summary_timeout_ms = 12000
+compaction_chunk_token_target = 1800
+tool_result_context_max_chars = 12000
+tool_result_context_head_chars = 8000
+tool_result_context_tail_chars = 3000
+recent_tool_result_chars = 2400
+historical_tool_result_chars = 240
 `, agentID, agentID, defaultAgentModelPolicy)
 }
 
 func defaultPoliciesTemplate() string {
-	return `{
-  "fs_roots": ["./"],
-  "allow_cross_agent_fs": false,
-  "can_shell": true,
-  "shell_allowlist": [],
-  "network": {
-    "enabled": true,
-    "block_domains": []
-  },
-  "budget": {
-    "max_tokens_per_session": 200000
-  }
-}
+	return `fs_roots = ["./"]
+allow_cross_agent_fs = false
+can_shell = true
+shell_allowlist = []
+
+[network]
+enabled = true
+block_domains = []
+
+[budget]
+max_tokens_per_session = 200000
 `
 }

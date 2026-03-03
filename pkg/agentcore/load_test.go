@@ -12,20 +12,26 @@ import (
 )
 
 func TestLoadAgentMissingRequiredFiles(t *testing.T) {
-	required := []string{"config.json", "policies.json"}
-	for _, name := range required {
-		t.Run(name, func(t *testing.T) {
+	required := []struct {
+		name   string
+		needle string
+	}{
+		{name: "config.json", needle: "config"},
+		{name: "policies.json", needle: "policies"},
+	}
+	for _, tc := range required {
+		t.Run(tc.name, func(t *testing.T) {
 			workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
-			if err := os.Remove(filepath.Join(workspace, name)); err != nil {
-				t.Fatalf("remove %s: %v", name, err)
+			if err := os.Remove(filepath.Join(workspace, tc.name)); err != nil {
+				t.Fatalf("remove %s: %v", tc.name, err)
 			}
 
 			_, err := LoadAgent(workspace)
 			if err == nil {
-				t.Fatalf("expected error for missing %s", name)
+				t.Fatalf("expected error for missing %s", tc.name)
 			}
-			if !strings.Contains(err.Error(), name) {
-				t.Fatalf("expected error to mention %s, got: %v", name, err)
+			if !strings.Contains(err.Error(), tc.needle) {
+				t.Fatalf("expected error to mention %s, got: %v", tc.needle, err)
 			}
 		})
 	}

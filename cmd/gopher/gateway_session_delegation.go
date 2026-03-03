@@ -20,6 +20,7 @@ import (
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
+	"github.com/pelletier/go-toml/v2"
 )
 
 type gatewaySessionDelegationStore interface {
@@ -939,11 +940,11 @@ func (s *gatewaySessionDelegationToolService) spawnEphemeralWorker(_ context.Con
 	}
 	policies := sourceAgent.Policies
 
-	if err := writeAgentJSON(filepath.Join(workspace, "config.json"), cfg); err != nil {
+	if err := writeAgentConfig(filepath.Join(workspace, "config.toml"), cfg); err != nil {
 		_ = os.RemoveAll(workspace)
 		return nil, err
 	}
-	if err := writeAgentJSON(filepath.Join(workspace, "policies.json"), policies); err != nil {
+	if err := writeAgentConfig(filepath.Join(workspace, "policies.toml"), policies); err != nil {
 		_ = os.RemoveAll(workspace)
 		return nil, err
 	}
@@ -1194,8 +1195,19 @@ func copyDirectory(src, dst string) error {
 	})
 }
 
-func writeAgentJSON(path string, value any) error {
-	blob, err := json.MarshalIndent(value, "", "  ")
+func writeAgentConfig(path string, value any) error {
+	var (
+		blob []byte
+		err  error
+	)
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		blob, err = toml.Marshal(value)
+	case ".json":
+		blob, err = json.MarshalIndent(value, "", "  ")
+	default:
+		return fmt.Errorf("unsupported config format %q", filepath.Ext(path))
+	}
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", filepath.Base(path), err)
 	}

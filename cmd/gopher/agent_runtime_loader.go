@@ -143,17 +143,28 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 }
 
 func hasAgentWorkspaceFiles(workspace string) (bool, error) {
-	required := []string{"config.json", "policies.json"}
-	for _, name := range required {
-		path := filepath.Join(workspace, name)
-		info, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return false, nil
+	required := [][]string{
+		{"config.toml", "config.json"},
+		{"policies.toml", "policies.json"},
+	}
+	for _, candidates := range required {
+		found := false
+		for _, name := range candidates {
+			path := filepath.Join(workspace, name)
+			info, err := os.Stat(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return false, fmt.Errorf("stat %s: %w", path, err)
 			}
-			return false, fmt.Errorf("stat %s: %w", path, err)
+			if info.IsDir() {
+				continue
+			}
+			found = true
+			break
 		}
-		if info.IsDir() {
+		if !found {
 			return false, nil
 		}
 	}

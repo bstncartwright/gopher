@@ -15,6 +15,7 @@ import (
 	"github.com/bstncartwright/gopher/pkg/memory"
 	"github.com/bstncartwright/gopher/pkg/memory/retrieval"
 	memsqlite "github.com/bstncartwright/gopher/pkg/memory/store/sqlite"
+	"github.com/pelletier/go-toml/v2"
 )
 
 const (
@@ -36,21 +37,22 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	}
 	slog.Debug("load_agent: resolved workspace path", "workspace_path", workspacePath, "workspace_abs", workspaceAbs)
 
-	configPath := filepath.Join(workspaceAbs, "config.json")
-	policiesPath := filepath.Join(workspaceAbs, "policies.json")
-
-	for _, required := range []string{configPath, policiesPath} {
-		if err := requireFile(required); err != nil {
-			slog.Error("load_agent: required file missing", "file", required, "error", err)
-			return nil, err
-		}
+	configPath, err := resolveAgentFile(workspaceAbs, "config")
+	if err != nil {
+		slog.Error("load_agent: required config file missing", "workspace", workspaceAbs, "error", err)
+		return nil, err
+	}
+	policiesPath, err := resolveAgentFile(workspaceAbs, "policies")
+	if err != nil {
+		slog.Error("load_agent: required policies file missing", "workspace", workspaceAbs, "error", err)
+		return nil, err
 	}
 	slog.Debug("load_agent: required files verified", "config_path", configPath, "policies_path", policiesPath)
 
 	config := AgentConfig{}
-	if err := decodeJSONFile(configPath, &config); err != nil {
-		slog.Error("load_agent: failed to read config.json", "config_path", configPath, "error", err)
-		return nil, fmt.Errorf("read config.json: %w", err)
+	if err := decodeAgentDocument(configPath, &config); err != nil {
+		slog.Error("load_agent: failed to read config", "config_path", configPath, "error", err)
+		return nil, fmt.Errorf("read %s: %w", filepath.Base(configPath), err)
 	}
 	applyDefaultEnabledTools(&config)
 	slog.Info("load_agent: loaded config",
@@ -90,8 +92,8 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 
 	policies := AgentPolicies{}
 	if err := decodePoliciesFile(policiesPath, &policies); err != nil {
-		slog.Error("load_agent: failed to read policies.json", "policies_path", policiesPath, "error", err)
-		return nil, fmt.Errorf("read policies.json: %w", err)
+		slog.Error("load_agent: failed to read policies", "policies_path", policiesPath, "error", err)
+		return nil, fmt.Errorf("read %s: %w", filepath.Base(policiesPath), err)
 	}
 	slog.Info("load_agent: loaded policies",
 		"can_shell", policies.CanShell,
@@ -231,15 +233,32 @@ func requireFile(path string) error {
 	return nil
 }
 
-func decodeJSONFile(path string, out any) error {
+func resolveAgentFile(workspace, baseName string) (string, error) {
+	candidates := []string{
+		filepath.Join(workspace, baseName+".toml"),
+		filepath.Join(workspace, baseName+".json"),
+	}
+	for _, path := range candidates {
+		if err := requireFile(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("required file missing: %s.{toml,json}", baseName)
+}
+
+func decodeAgentDocument(path string, out any) error {
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(blob, out); err != nil {
-		return err
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		return toml.Unmarshal(blob, out)
+	case ".json":
+		return json.Unmarshal(blob, out)
+	default:
+		return fmt.Errorf("unsupported config format %q", filepath.Ext(path))
 	}
-	return nil
 }
 
 func decodePoliciesFile(path string, out *AgentPolicies) error {
@@ -250,60 +269,104 @@ func decodePoliciesFile(path string, out *AgentPolicies) error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(blob, out); err != nil {
+	if err := decodeAgentDocument(path, out); err != nil {
 		return err
 	}
-	applyDefaultPolicies(blob, out)
+	applyDefaultPolicies(path, blob, out)
 	return nil
 }
 
-func applyDefaultPolicies(raw []byte, policies *AgentPolicies) {
+func applyDefaultPolicies(path string, raw []byte, policies *AgentPolicies) {
 	if policies == nil {
 		return
 	}
 
-	var rawPolicies struct {
-		CanShell       *bool           `json:"can_shell"`
-		ShellAllowlist *[]string       `json:"shell_allowlist"`
-		Network        json.RawMessage `json:"network"`
-	}
-	if err := json.Unmarshal(raw, &rawPolicies); err != nil {
+	rawPolicies := map[string]any{}
+	if err := decodeRawWithFormat(path, raw, &rawPolicies); err != nil {
 		return
 	}
-	if rawPolicies.CanShell != nil && !*rawPolicies.CanShell && shellAllowlistIsUnspecifiedOrDefault(rawPolicies.ShellAllowlist) {
+	canShell := readBoolField(rawPolicies, "can_shell")
+	shellAllowlist := readStringSliceField(rawPolicies, "shell_allowlist")
+	if canShell != nil && !*canShell && shellAllowlistIsUnspecifiedOrDefault(shellAllowlist) {
 		policies.CanShell = true
 	}
-	if rawPolicies.CanShell == nil {
+	if canShell == nil {
 		policies.CanShell = true
 	}
 
-	if len(rawPolicies.Network) == 0 {
+	rawNetworkAny, hasNetwork := rawPolicies["network"]
+	rawNetwork, ok := rawNetworkAny.(map[string]any)
+	if !hasNetwork || !ok {
 		policies.Network.Enabled = true
 		policies.Network.AllowDomains = nil
 		policies.Network.BlockDomains = nil
 		return
 	}
 
-	var rawNetwork struct {
-		Enabled      *bool     `json:"enabled"`
-		AllowDomains *[]string `json:"allow_domains"`
-		BlockDomains *[]string `json:"block_domains"`
-	}
-	if err := json.Unmarshal(rawPolicies.Network, &rawNetwork); err != nil {
-		return
-	}
-	if rawNetwork.Enabled != nil && !*rawNetwork.Enabled && networkDomainsAreUnrestricted(rawNetwork.AllowDomains, rawNetwork.BlockDomains) {
+	rawNetworkEnabled := readBoolField(rawNetwork, "enabled")
+	rawNetworkAllowDomains := readStringSliceField(rawNetwork, "allow_domains")
+	rawNetworkBlockDomains := readStringSliceField(rawNetwork, "block_domains")
+
+	if rawNetworkEnabled != nil && !*rawNetworkEnabled && networkDomainsAreUnrestricted(rawNetworkAllowDomains, rawNetworkBlockDomains) {
 		policies.Network.Enabled = true
 		policies.Network.AllowDomains = nil
 		policies.Network.BlockDomains = nil
 		return
 	}
-	if rawNetwork.Enabled == nil {
+	if rawNetworkEnabled == nil {
 		policies.Network.Enabled = true
 	}
-	if rawNetwork.BlockDomains == nil && policies.Network.Enabled {
+	if rawNetworkBlockDomains == nil && policies.Network.Enabled {
 		policies.Network.BlockDomains = nil
 	}
+}
+
+func decodeRawWithFormat(path string, raw []byte, out any) error {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		return toml.Unmarshal(raw, out)
+	case ".json":
+		return json.Unmarshal(raw, out)
+	default:
+		return fmt.Errorf("unsupported config format %q", filepath.Ext(path))
+	}
+}
+
+func readBoolField(raw map[string]any, key string) *bool {
+	value, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	b, ok := value.(bool)
+	if !ok {
+		return nil
+	}
+	return &b
+}
+
+func readStringSliceField(raw map[string]any, key string) *[]string {
+	value, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	entries, ok := value.([]any)
+	if !ok {
+		stringsSlice, ok := value.([]string)
+		if !ok {
+			return nil
+		}
+		out := append([]string(nil), stringsSlice...)
+		return &out
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		text, ok := entry.(string)
+		if !ok {
+			continue
+		}
+		out = append(out, text)
+	}
+	return &out
 }
 
 func networkDomainsAreUnrestricted(allowDomains *[]string, blockDomains *[]string) bool {

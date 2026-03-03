@@ -307,8 +307,6 @@ func processTelegramInbound(
 	return pipeline.HandleInbound(ctx, inbound)
 }
 
-const telegramInboundErrorReply = "I ran into an error while processing that message. Please try again."
-
 func handleTelegramInboundWithErrorReply(
 	ctx context.Context,
 	inbound transport.InboundMessage,
@@ -329,28 +327,8 @@ func handleTelegramInboundWithErrorReply(
 		"event_id", inbound.EventID,
 		"error", err,
 	)
-	reply := telegramInboundErrorReply
-	if detail := strings.TrimSpace(err.Error()); detail != "" {
-		detail = strings.Join(strings.Fields(detail), " ")
-		detailRunes := []rune(detail)
-		if len(detailRunes) > 180 {
-			detail = strings.TrimSpace(string(detailRunes[:180])) + "..."
-		}
-		reply += "\n\nDetails: " + detail
-	}
-	if sendErr := bridge.SendMessage(context.Background(), transport.OutboundMessage{
-		ConversationID: inbound.ConversationID,
-		Text:           reply,
-	}); sendErr != nil {
-		slog.Error(
-			"telegram_gateway: failed to send inbound error reply",
-			"conversation_id", inbound.ConversationID,
-			"sender_id", inbound.SenderID,
-			"event_id", inbound.EventID,
-			"error", sendErr,
-		)
-	}
-	// Swallow the handler error after notifying the user so this update is not retried indefinitely.
+	// Swallow the handler error so this update is not retried indefinitely.
+	// User-facing error fallback messages are handled by dm_pipeline only for terminal session failures.
 	return nil
 }
 

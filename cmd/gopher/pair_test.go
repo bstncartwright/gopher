@@ -142,7 +142,7 @@ func TestProcessTelegramInboundOnlyPairedChatIsHandled(t *testing.T) {
 	}
 }
 
-func TestHandleTelegramInboundWithErrorReply(t *testing.T) {
+func TestHandleTelegramInboundWithErrorReplySuppressesUserMessage(t *testing.T) {
 	t.Parallel()
 
 	dataDir := t.TempDir()
@@ -176,17 +176,8 @@ func TestHandleTelegramInboundWithErrorReply(t *testing.T) {
 	if pipeline.calls != 1 {
 		t.Fatalf("pipeline calls = %d, want 1", pipeline.calls)
 	}
-	if len(bridge.messages) != 1 {
-		t.Fatalf("bridge send calls = %d, want 1", len(bridge.messages))
-	}
-	if got := bridge.messages[0].ConversationID; got != "telegram:777" {
-		t.Fatalf("bridge conversation id = %q, want telegram:777", got)
-	}
-	if got := bridge.messages[0].Text; !strings.Contains(got, "I ran into an error while processing that message") {
-		t.Fatalf("bridge reply = %q, want fallback error message", got)
-	}
-	if got := bridge.messages[0].Text; !strings.Contains(got, "create session: timeout") {
-		t.Fatalf("bridge reply = %q, want error details", got)
+	if len(bridge.messages) != 0 {
+		t.Fatalf("bridge send calls = %d, want 0", len(bridge.messages))
 	}
 }
 

@@ -585,7 +585,7 @@ func TestLoadAgentDisableDefaultSearchMCPSkipsImplicitTool(t *testing.T) {
 	}
 }
 
-func TestLoadAgentOmittedEnabledToolsBackfillsBaselineRuntimeTools(t *testing.T) {
+func TestLoadAgentOmittedEnabledToolsEnablesAllBuiltInTools(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = nil
 	workspace := createTestWorkspace(t, config, defaultPolicies())
@@ -600,11 +600,53 @@ func TestLoadAgentOmittedEnabledToolsBackfillsBaselineRuntimeTools(t *testing.T)
 	if _, ok := agent.Tools.Get("read"); !ok {
 		t.Fatalf("expected fs tools to be enabled for omitted enabled_tools")
 	}
+	if _, ok := agent.Tools.Get("delegate"); !ok {
+		t.Fatalf("expected collaboration tools to be enabled for omitted enabled_tools")
+	}
+	if _, ok := agent.Tools.Get("cron"); !ok {
+		t.Fatalf("expected cron tool to be enabled for omitted enabled_tools")
+	}
+	if _, ok := agent.Tools.Get("web_search"); !ok {
+		t.Fatalf("expected web_search tool to be enabled for omitted enabled_tools")
+	}
+	if _, ok := agent.Tools.Get("web_fetch"); !ok {
+		t.Fatalf("expected web_fetch tool to be enabled for omitted enabled_tools")
+	}
 	if !containsTool(agent.Config.EnabledTools, "group:runtime") {
 		t.Fatalf("expected group:runtime in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
 	}
 	if !containsTool(agent.Config.EnabledTools, "group:fs") {
 		t.Fatalf("expected group:fs in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+	if !containsTool(agent.Config.EnabledTools, "group:collaboration") {
+		t.Fatalf("expected group:collaboration in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+	if !containsTool(agent.Config.EnabledTools, "group:web") {
+		t.Fatalf("expected group:web in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+	if !containsTool(agent.Config.EnabledTools, "cron") {
+		t.Fatalf("expected cron in agent config enabled_tools, got: %#v", agent.Config.EnabledTools)
+	}
+}
+
+func TestLoadAgentOmittedEnabledToolsHonorsDisableDefaultSearchMCP(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = nil
+	config.DisableDefaultSearchMCP = true
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if _, ok := agent.Tools.Get("web_search"); ok {
+		t.Fatalf("did not expect web_search tool when disable_default_search_mcp=true and enabled_tools omitted")
+	}
+	if _, ok := agent.Tools.Get("web_fetch"); ok {
+		t.Fatalf("did not expect web_fetch tool when disable_default_search_mcp=true and enabled_tools omitted")
+	}
+	if containsTool(agent.Config.EnabledTools, "group:web") {
+		t.Fatalf("did not expect group:web selector when disable_default_search_mcp=true and enabled_tools omitted")
 	}
 }
 
@@ -623,6 +665,26 @@ func TestLoadAgentExplicitWebSearchStillWorksWhenDefaultDisabled(t *testing.T) {
 	}
 	if _, ok := agent.Tools.Get("web_fetch"); !ok {
 		t.Fatalf("expected explicit web_fetch tool to remain enabled")
+	}
+}
+
+func TestLoadAgentImplicitlyEnablesApplyPatchForOpenAICodexModels(t *testing.T) {
+	config := defaultConfig()
+	config.ModelPolicy = "openai:gpt-5.3-codex"
+	config.EnabledTools = []string{"group:fs"}
+	policies := defaultPolicies()
+	policies.ApplyPatchEnabled = false
+	workspace := createTestWorkspace(t, config, policies)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if !agent.Policies.ApplyPatchEnabled {
+		t.Fatalf("expected apply_patch to be implicitly enabled for openai+codex model_policy")
+	}
+	if _, ok := agent.Tools.Get("apply_patch"); !ok {
+		t.Fatalf("expected apply_patch tool to be enabled for openai+codex model_policy")
 	}
 }
 

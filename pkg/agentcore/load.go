@@ -108,6 +108,9 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		slog.Error("load_agent: failed to parse model_policy", "model_policy", config.ModelPolicy, "error", err)
 		return nil, err
 	}
+	if shouldEnableApplyPatchForModelPolicy(config.ModelPolicy) {
+		policies.ApplyPatchEnabled = true
+	}
 	slog.Debug("load_agent: parsed model policy", "provider_name", providerName, "model_id", modelID)
 	model, ok := ai.GetModel(providerName, modelID)
 	if !ok {
@@ -396,10 +399,16 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 	if cfg == nil {
 		return
 	}
-	// Backfill baseline tools for legacy configs that omit enabled_tools entirely.
 	if len(cfg.EnabledTools) == 0 {
+		// Unset enabled_tools means "all built-in tools".
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:fs")
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:runtime")
+		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
+		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "cron")
+		if !cfg.DisableDefaultSearchMCP {
+			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:web")
+		}
+		return
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:collaboration")
 	if cfg.DisableDefaultSearchMCP {
@@ -407,6 +416,11 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_search")
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_fetch")
+}
+
+func shouldEnableApplyPatchForModelPolicy(modelPolicy string) bool {
+	policy := strings.ToLower(strings.TrimSpace(modelPolicy))
+	return strings.Contains(policy, "openai") && strings.Contains(policy, "codex")
 }
 
 func applyDefaultContextManagement(cfg *AgentConfig) {

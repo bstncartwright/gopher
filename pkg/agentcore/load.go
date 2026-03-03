@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,14 @@ const (
 	defaultHeartbeatPrompt      = "Run heartbeat checks using HEARTBEAT.md when available. If no user-facing action is required, reply exactly HEARTBEAT_OK."
 	defaultHeartbeatAckMaxChars = 300
 )
+
+var removedContextManagementKeys = []string{
+	"tool_result_context_max_chars",
+	"tool_result_context_head_chars",
+	"tool_result_context_tail_chars",
+	"recent_tool_result_chars",
+	"historical_tool_result_chars",
+}
 
 func LoadAgent(workspacePath string) (*Agent, error) {
 	slog.Info("load_agent: starting agent load", "workspace_path", workspacePath)
@@ -50,6 +59,10 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	slog.Debug("load_agent: required files verified", "config_path", configPath, "policies_path", policiesPath)
 
 	config := AgentConfig{}
+	if err := validateConfigRemovedContextManagementKeys(configPath); err != nil {
+		slog.Error("load_agent: removed context_management keys found", "config_path", configPath, "error", err)
+		return nil, err
+	}
 	if err := decodeAgentDocument(configPath, &config); err != nil {
 		slog.Error("load_agent: failed to read config", "config_path", configPath, "error", err)
 		return nil, fmt.Errorf("read %s: %w", filepath.Base(configPath), err)
@@ -430,11 +443,37 @@ func applyDefaultContextManagement(cfg *AgentConfig) {
 	cfg.ContextManagement.ReserveMinTokens = cfg.ContextManagement.ReserveMinTokensValue()
 	cfg.ContextManagement.CompactionSummaryTimeoutMS = cfg.ContextManagement.CompactionSummaryTimeoutMSValue()
 	cfg.ContextManagement.CompactionChunkTokenTarget = cfg.ContextManagement.CompactionChunkTokenTargetValue()
-	cfg.ContextManagement.ToolResultContextMaxChars = cfg.ContextManagement.ToolResultContextMaxCharsValue()
-	cfg.ContextManagement.ToolResultContextHeadChars = cfg.ContextManagement.ToolResultContextHeadCharsValue()
-	cfg.ContextManagement.ToolResultContextTailChars = cfg.ContextManagement.ToolResultContextTailCharsValue()
-	cfg.ContextManagement.RecentToolResultChars = cfg.ContextManagement.RecentToolResultCharsValue()
-	cfg.ContextManagement.HistoricalToolResultChars = cfg.ContextManagement.HistoricalToolResultCharsValue()
+}
+
+func validateConfigRemovedContextManagementKeys(path string) error {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", filepath.Base(path), err)
+	}
+
+	raw := map[string]any{}
+	if err := decodeRawWithFormat(path, blob, &raw); err != nil {
+		return fmt.Errorf("parse %s for validation: %w", filepath.Base(path), err)
+	}
+	rawContextManagement, ok := raw["context_management"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	found := make([]string, 0, len(removedContextManagementKeys))
+	for _, key := range removedContextManagementKeys {
+		if _, exists := rawContextManagement[key]; exists {
+			found = append(found, key)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	sort.Strings(found)
+	return fmt.Errorf(
+		"config context_management contains removed settings (%s): these keys are no longer supported; use token-budget compaction and summarization controls instead",
+		strings.Join(found, ", "),
+	)
 }
 
 func boolPtr(value bool) *bool {

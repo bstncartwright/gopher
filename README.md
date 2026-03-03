@@ -307,15 +307,19 @@ example `agents/builder/config.json`:
     "reserve_min_tokens": 20000,
     "model_compaction_summary": true,
     "compaction_summary_timeout_ms": 12000,
-    "compaction_chunk_token_target": 1800,
-    "tool_result_context_max_chars": 12000,
-    "tool_result_context_head_chars": 8000,
-    "tool_result_context_tail_chars": 3000,
-    "recent_tool_result_chars": 2400,
-    "historical_tool_result_chars": 240
+    "compaction_chunk_token_target": 1800
   }
 }
 ```
+
+Migration note:
+- `context_management.tool_result_context_max_chars`
+- `context_management.tool_result_context_head_chars`
+- `context_management.tool_result_context_tail_chars`
+- `context_management.recent_tool_result_chars`
+- `context_management.historical_tool_result_chars`
+
+These keys are removed and now invalid. Gopher uses token-budget compaction/summarization for normal context management, with only an internal emergency payload cap.
 
 example `agents/builder/policies.json`:
 

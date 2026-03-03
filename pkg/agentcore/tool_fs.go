@@ -227,18 +227,25 @@ func formatToolResultText(output ToolOutput) string {
 	return string(blob)
 }
 
-func formatToolResultTextForContext(output ToolOutput, cfg ContextManagementConfig) (string, bool) {
+const (
+	// Emergency-only fail-safe for pathological tool payloads in context.
+	// Normal context management should rely on token-budget pruning/compaction.
+	toolResultEmergencyMaxTokens = 64000
+	toolResultEmergencyMaxChars  = toolResultEmergencyMaxTokens * 4
+)
+
+func formatToolResultTextForContext(output ToolOutput) (string, bool) {
 	text := formatToolResultText(output)
 	if text == "" {
 		return "", false
 	}
 
-	maxChars := cfg.ToolResultContextMaxCharsValue()
-	headChars := cfg.ToolResultContextHeadCharsValue()
-	tailChars := cfg.ToolResultContextTailCharsValue()
+	maxChars := toolResultEmergencyMaxChars
 	if maxChars <= 0 || len(text) <= maxChars {
 		return text, false
 	}
+	headChars := (maxChars * 3) / 4
+	tailChars := maxChars - headChars
 	if headChars+tailChars > maxChars {
 		headChars = maxChars / 2
 		tailChars = maxChars - headChars
@@ -259,10 +266,13 @@ func formatToolResultTextForContext(output ToolOutput, cfg ContextManagementConf
 	head := text[:headChars]
 	tail := text[len(text)-tailChars:]
 	envelope := map[string]any{
-		"truncated":      true,
-		"original_chars": len(text),
-		"head":           head,
-		"tail":           tail,
+		"truncated":            true,
+		"reason":               "emergency_context_cap",
+		"original_chars":       len(text),
+		"max_chars":            maxChars,
+		"token_equivalent_cap": toolResultEmergencyMaxTokens,
+		"head":                 head,
+		"tail":                 tail,
 	}
 	blob, err := marshalStableJSON(envelope)
 	if err != nil {

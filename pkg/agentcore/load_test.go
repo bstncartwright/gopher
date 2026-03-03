@@ -80,6 +80,65 @@ func TestLoadAgentAppliesSafeguardContextManagementDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadAgentRejectsRemovedContextManagementKeysJSON(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "config.json"), `{
+  "agent_id": "agent-test",
+  "name": "Test Agent",
+  "role": "coder",
+  "model_policy": "openai:gpt-4o-mini",
+  "enabled_tools": ["group:fs", "group:runtime"],
+  "context_management": {
+    "mode": "safeguard",
+    "tool_result_context_max_chars": 12000,
+    "recent_tool_result_chars": 2400
+  }
+}`)
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected config validation error for removed context_management keys")
+	}
+	if !strings.Contains(err.Error(), "tool_result_context_max_chars") {
+		t.Fatalf("expected error to list removed key, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "recent_tool_result_chars") {
+		t.Fatalf("expected error to list removed key, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "token-budget compaction") {
+		t.Fatalf("expected migration guidance in error, got: %v", err)
+	}
+}
+
+func TestLoadAgentRejectsRemovedContextManagementKeysTOML(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	if err := os.Remove(filepath.Join(workspace, "config.json")); err != nil {
+		t.Fatalf("remove config.json: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(workspace, "config.toml"), `agent_id = "agent-test"
+name = "Test Agent"
+role = "coder"
+model_policy = "openai:gpt-4o-mini"
+enabled_tools = ["group:fs", "group:runtime"]
+
+[context_management]
+mode = "safeguard"
+tool_result_context_head_chars = 8000
+historical_tool_result_chars = 240
+`)
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected config validation error for removed context_management keys")
+	}
+	if !strings.Contains(err.Error(), "tool_result_context_head_chars") {
+		t.Fatalf("expected error to list removed key, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "historical_tool_result_chars") {
+		t.Fatalf("expected error to list removed key, got: %v", err)
+	}
+}
+
 func TestLoadAgentDefaultsLegacyMissingShellPolicy(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{

@@ -42,29 +42,17 @@ type ContextManagementConfig struct {
 	ModelCompactionSummary     *bool  `json:"model_compaction_summary,omitempty"`
 	CompactionSummaryTimeoutMS int    `json:"compaction_summary_timeout_ms,omitempty"`
 	CompactionChunkTokenTarget int    `json:"compaction_chunk_token_target,omitempty"`
-	ToolResultContextMaxChars  int    `json:"tool_result_context_max_chars,omitempty"`
-	ToolResultContextHeadChars int    `json:"tool_result_context_head_chars,omitempty"`
-	ToolResultContextTailChars int    `json:"tool_result_context_tail_chars,omitempty"`
-	RecentToolResultChars      int    `json:"recent_tool_result_chars,omitempty"`
-	HistoricalToolResultChars  int    `json:"historical_tool_result_chars,omitempty"`
 }
 
 const (
-	defaultContextMode                    = "safeguard"
-	defaultOverflowRetryLimit             = 3
-	defaultReserveMinTokens               = 20000
-	defaultCompactionSummaryTimeoutMS     = 12000
-	defaultCompactionChunkTokenTarget     = 1800
-	defaultToolResultContextMaxChars      = 12000
-	defaultToolResultContextHeadChars     = 8000
-	defaultToolResultContextTailChars     = 3000
-	defaultRecentToolResultChars          = 2400
-	defaultHistoricalToolResultChars      = 240
-	maxAllowedOverflowRetryLimit          = 6
-	maxAllowedCompactionSummaryTimeoutMS  = 120000
-	maxAllowedCompactionChunkTokenTarget  = 12000
-	maxAllowedToolResultContextMaxChars   = 200000
-	maxAllowedToolResultContextSliceChars = 120000
+	defaultContextMode                   = "safeguard"
+	defaultOverflowRetryLimit            = 3
+	defaultReserveMinTokens              = 20000
+	defaultCompactionSummaryTimeoutMS    = 12000
+	defaultCompactionChunkTokenTarget    = 1800
+	maxAllowedOverflowRetryLimit         = 6
+	maxAllowedCompactionSummaryTimeoutMS = 120000
+	maxAllowedCompactionChunkTokenTarget = 12000
 )
 
 func (c ContextManagementConfig) PruningEnabled() bool {
@@ -134,55 +122,6 @@ func (c ContextManagementConfig) CompactionChunkTokenTargetValue() int {
 		chunkTokens = maxAllowedCompactionChunkTokenTarget
 	}
 	return chunkTokens
-}
-
-func (c ContextManagementConfig) ToolResultContextMaxCharsValue() int {
-	maxChars := c.ToolResultContextMaxChars
-	if maxChars <= 0 {
-		maxChars = defaultToolResultContextMaxChars
-	}
-	if maxChars > maxAllowedToolResultContextMaxChars {
-		maxChars = maxAllowedToolResultContextMaxChars
-	}
-	return maxChars
-}
-
-func (c ContextManagementConfig) ToolResultContextHeadCharsValue() int {
-	headChars := c.ToolResultContextHeadChars
-	if headChars <= 0 {
-		headChars = defaultToolResultContextHeadChars
-	}
-	if headChars > maxAllowedToolResultContextSliceChars {
-		headChars = maxAllowedToolResultContextSliceChars
-	}
-	return headChars
-}
-
-func (c ContextManagementConfig) ToolResultContextTailCharsValue() int {
-	tailChars := c.ToolResultContextTailChars
-	if tailChars <= 0 {
-		tailChars = defaultToolResultContextTailChars
-	}
-	if tailChars > maxAllowedToolResultContextSliceChars {
-		tailChars = maxAllowedToolResultContextSliceChars
-	}
-	return tailChars
-}
-
-func (c ContextManagementConfig) RecentToolResultCharsValue() int {
-	recentChars := c.RecentToolResultChars
-	if recentChars <= 0 {
-		recentChars = defaultRecentToolResultChars
-	}
-	return recentChars
-}
-
-func (c ContextManagementConfig) HistoricalToolResultCharsValue() int {
-	historicalChars := c.HistoricalToolResultChars
-	if historicalChars <= 0 {
-		historicalChars = defaultHistoricalToolResultChars
-	}
-	return historicalChars
 }
 
 func (c AgentConfig) ReasoningLevelValue() ai.ThinkingLevel {

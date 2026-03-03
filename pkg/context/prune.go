@@ -2,16 +2,11 @@ package context
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
 )
 
-type PruneOptions struct {
-	MaxHistoricalToolResultChars int
-	MaxRecentToolResultChars     int
-	RecentWindowMessages         int
-}
+type PruneOptions struct{}
 
 func PruneMessages(messages []ai.Message, opts PruneOptions) ([]ai.Message, []string) {
 	result := PruneMessagesDetailed(messages, opts)
@@ -24,21 +19,9 @@ type PruneResult struct {
 	ToolResultTruncations int
 }
 
-func PruneMessagesDetailed(messages []ai.Message, opts PruneOptions) PruneResult {
+func PruneMessagesDetailed(messages []ai.Message, _ PruneOptions) PruneResult {
 	if len(messages) == 0 {
 		return PruneResult{}
-	}
-	maxHistoricalToolChars := opts.MaxHistoricalToolResultChars
-	if maxHistoricalToolChars <= 0 {
-		maxHistoricalToolChars = 240
-	}
-	maxRecentToolChars := opts.MaxRecentToolResultChars
-	if maxRecentToolChars <= 0 {
-		maxRecentToolChars = 2400
-	}
-	recentWindowMessages := opts.RecentWindowMessages
-	if recentWindowMessages <= 0 {
-		recentWindowMessages = 4
 	}
 
 	out := make([]ai.Message, 0, len(messages))
@@ -65,36 +48,6 @@ func PruneMessagesDetailed(messages []ai.Message, opts PruneOptions) PruneResult
 					}
 					pruned.Content = kept
 					actions = append(actions, fmt.Sprintf("removed thinking blocks from assistant message at index %d", idx))
-				}
-			}
-		}
-
-		// Truncate older tool payloads to keep tool state but reduce noisy text.
-		if pruned.Role == ai.RoleToolResult {
-			if blocks, ok := pruned.ContentBlocks(); ok && len(blocks) > 0 {
-				changed := false
-				isHistorical := idx < len(messages)-recentWindowMessages
-				maxChars := maxRecentToolChars
-				actionPrefix := "truncated recent tool result payload"
-				if isHistorical {
-					maxChars = maxHistoricalToolChars
-					actionPrefix = "truncated historical tool result payload"
-				}
-				for blockIdx := range blocks {
-					if blocks[blockIdx].Type != ai.ContentTypeText {
-						continue
-					}
-					text := strings.TrimSpace(blocks[blockIdx].Text)
-					if len(text) <= maxChars {
-						continue
-					}
-					blocks[blockIdx].Text = text[:maxChars] + "... (truncated)"
-					changed = true
-				}
-				if changed {
-					pruned.Content = blocks
-					toolResultTruncations++
-					actions = append(actions, fmt.Sprintf("%s at index %d", actionPrefix, idx))
 				}
 			}
 		}

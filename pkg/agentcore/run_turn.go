@@ -433,7 +433,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			if toolCallID == "" {
 				toolCallID = toolCall.Name
 			}
-			toolText, wasTruncated := formatToolResultTextForContext(output, a.Config.ContextManagement)
+			toolText, wasTruncated := formatToolResultTextForContext(output)
 			if toolText == "" && runErr != nil {
 				toolText = runErr.Error()
 			}
@@ -510,10 +510,7 @@ func (a *Agent) recoverFromContextOverflow(ctx context.Context, s *Session, in T
 	}
 
 	if a.Config.ContextManagement.PruningEnabled() {
-		pruned := ctxbundle.PruneMessagesDetailed(s.Messages, ctxbundle.PruneOptions{
-			MaxHistoricalToolResultChars: a.Config.ContextManagement.HistoricalToolResultCharsValue(),
-			MaxRecentToolResultChars:     a.Config.ContextManagement.RecentToolResultCharsValue(),
-		})
+		pruned := ctxbundle.PruneMessagesDetailed(s.Messages, ctxbundle.PruneOptions{})
 		s.Messages = pruned.Messages
 		s.LastContextDiagnostics.PruneActions = append(s.LastContextDiagnostics.PruneActions, pruned.Actions...)
 		s.LastContextDiagnostics.ToolResultTruncation += pruned.ToolResultTruncations

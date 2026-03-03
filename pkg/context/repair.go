@@ -27,9 +27,7 @@ func RepairMessages(messages []ai.Message, opts RepairOptions) ([]ai.Message, []
 			continue
 		}
 		id := strings.TrimSpace(msg.ToolCallID)
-		if id != "" {
-			toolResultByID[id] = struct{}{}
-		}
+		addToolCallIDVariants(toolResultByID, id)
 		name := normalizeToolName(msg.ToolName)
 		if name != "" {
 			toolResultByName[name]++
@@ -84,7 +82,7 @@ func RepairMessages(messages []ai.Message, opts RepairOptions) ([]ai.Message, []
 				continue
 			}
 			if id := strings.TrimSpace(block.ID); id != "" {
-				toolCallByID[id] = struct{}{}
+				addToolCallIDVariants(toolCallByID, id)
 			}
 			if name := normalizeToolName(block.Name); name != "" {
 				toolCallByName[name] = struct{}{}
@@ -102,9 +100,8 @@ func RepairMessages(messages []ai.Message, opts RepairOptions) ([]ai.Message, []
 		name := normalizeToolName(msg.ToolName)
 		matched := false
 		if id != "" {
-			_, matched = toolCallByID[id]
-		}
-		if !matched && name != "" {
+			matched = hasAnyToolCallID(toolCallByID, id)
+		} else if name != "" {
 			_, matched = toolCallByName[name]
 		}
 		if matched {
@@ -120,15 +117,43 @@ func RepairMessages(messages []ai.Message, opts RepairOptions) ([]ai.Message, []
 func toolCallHasResult(block ai.ContentBlock, toolResultByID map[string]struct{}, toolResultByName map[string]int) bool {
 	id := strings.TrimSpace(block.ID)
 	if id != "" {
-		if _, exists := toolResultByID[id]; exists {
-			return true
-		}
+		return hasAnyToolCallID(toolResultByID, id)
 	}
 	name := normalizeToolName(block.Name)
 	if name != "" && toolResultByName[name] > 0 {
 		return true
 	}
 	return false
+}
+
+func addToolCallIDVariants(set map[string]struct{}, id string) {
+	for _, candidate := range toolCallIDVariants(id) {
+		set[candidate] = struct{}{}
+	}
+}
+
+func hasAnyToolCallID(set map[string]struct{}, id string) bool {
+	for _, candidate := range toolCallIDVariants(id) {
+		if _, exists := set[candidate]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+func toolCallIDVariants(id string) []string {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return nil
+	}
+	variants := []string{trimmed}
+	if strings.Contains(trimmed, "|") {
+		callID := strings.TrimSpace(strings.SplitN(trimmed, "|", 2)[0])
+		if callID != "" && callID != trimmed {
+			variants = append(variants, callID)
+		}
+	}
+	return variants
 }
 
 func normalizeToolName(name string) string {

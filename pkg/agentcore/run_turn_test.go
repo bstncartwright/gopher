@@ -170,6 +170,80 @@ func TestRunTurnUsesConfiguredReasoningLevel(t *testing.T) {
 	}
 }
 
+func TestRunTurnReturnsErrorOnProviderErrorStopReason(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonError
+	assistant.ErrorMessage = "No tool call found for function call output with call_id call_abc."
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{{assistant: assistant}},
+	}
+
+	result, runErr := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "trigger error"})
+	if runErr == nil {
+		t.Fatalf("expected RunTurn() to return an error")
+	}
+	if !strings.Contains(runErr.Error(), "No tool call found") {
+		t.Fatalf("expected provider error to be surfaced, got %v", runErr)
+	}
+	for _, event := range result.Events {
+		if event.Type == EventTypeAgentMsg {
+			t.Fatalf("did not expect final agent.message on provider error")
+		}
+	}
+	hasErrorEvent := false
+	for _, event := range result.Events {
+		if event.Type == EventTypeError {
+			hasErrorEvent = true
+			break
+		}
+	}
+	if !hasErrorEvent {
+		t.Fatalf("expected error event to be emitted")
+	}
+}
+
+func TestRunTurnUsesStreamErrorWhenProviderErrorMessageEmpty(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	streamErr := ai.NewAssistantMessage(agent.model)
+	streamErr.StopReason = ai.StopReasonError
+	streamErr.ErrorMessage = "No tool call found for function call output with call_id call_stream."
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonError
+	assistant.ErrorMessage = ""
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{
+				assistant: assistant,
+				events: []ai.AssistantMessageEvent{
+					{Type: ai.EventError, Reason: ai.StopReasonError, Error: &streamErr},
+				},
+			},
+		},
+	}
+
+	_, runErr := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "trigger stream error"})
+	if runErr == nil {
+		t.Fatalf("expected RunTurn() to return an error")
+	}
+	if !strings.Contains(runErr.Error(), "No tool call found") {
+		t.Fatalf("expected stream error fallback message, got %v", runErr)
+	}
+}
+
 func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"fs"}

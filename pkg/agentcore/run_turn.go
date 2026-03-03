@@ -296,7 +296,10 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			}
 		}
 
-		if len(streamErrors) > 0 && strings.TrimSpace(assistant.ErrorMessage) == "" {
+		if len(streamErrors) > 0 &&
+			strings.TrimSpace(assistant.ErrorMessage) == "" &&
+			assistant.StopReason != ai.StopReasonError &&
+			assistant.StopReason != ai.StopReasonAborted {
 			streamErr := streamErrors[0]
 			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": streamErr}); emitErr != nil {
 				turnErr = emitErr
@@ -318,6 +321,34 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				turnErr = err
 				return TurnResult{Events: emitter.Events()}, err
 			}
+		}
+		if assistant.StopReason == ai.StopReasonError || assistant.StopReason == ai.StopReasonAborted {
+			providerErr := strings.TrimSpace(assistant.ErrorMessage)
+			if providerErr == "" && len(streamErrors) > 0 {
+				providerErr = strings.TrimSpace(streamErrors[0])
+			}
+			if providerErr == "" {
+				switch assistant.StopReason {
+				case ai.StopReasonAborted:
+					providerErr = "provider request aborted"
+				default:
+					providerErr = "provider returned error stop reason"
+				}
+			}
+			err := fmt.Errorf("%s", providerErr)
+			slog.Warn("run_turn: provider returned terminal error stop reason",
+				"agent_id", a.ID,
+				"session_id", s.ID,
+				"round", round,
+				"stop_reason", assistant.StopReason,
+				"error_message", providerErr,
+			)
+			if emitErr := emitter.Emit(EventTypeError, map[string]any{"message": err.Error()}); emitErr != nil {
+				turnErr = emitErr
+				return TurnResult{Events: emitter.Events()}, emitErr
+			}
+			turnErr = err
+			return TurnResult{Events: emitter.Events()}, err
 		}
 
 		conversation.Messages = append(conversation.Messages, assistant.ToMessage())

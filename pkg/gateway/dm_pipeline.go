@@ -1436,12 +1436,22 @@ func (p *DMPipeline) fireScheduledErrorFallback(conversationID string, seq uint6
 		}
 	}
 
-	p.finishProcessing(conversationID)
-	p.clearPendingAttachments(conversationID)
 	if p.shouldNotifyTerminalErrorFallback(conversationID, "") {
+		p.finishProcessing(conversationID)
+		p.clearPendingAttachments(conversationID)
 		p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), rawErr)
 		return
 	}
+	if p.isConversationSessionInFlight(conversationID, "") {
+		slog.Debug("dm_pipeline: deferring non-terminal error fallback while session is in-flight",
+			"conversation_id", conversationID,
+			"error_detail", fallbackErrorDetail(rawErr),
+		)
+		p.scheduleErrorFallback(conversationID, rawErr)
+		return
+	}
+	p.finishProcessing(conversationID)
+	p.clearPendingAttachments(conversationID)
 	slog.Info("dm_pipeline: suppressing non-terminal error fallback",
 		"conversation_id", conversationID,
 		"error_detail", fallbackErrorDetail(rawErr),
@@ -2632,6 +2642,40 @@ func (p *DMPipeline) shouldNotifyTerminalErrorFallback(conversationID string, se
 		return false
 	}
 	return loaded.Status == sessionrt.SessionFailed
+}
+
+func (p *DMPipeline) isConversationSessionInFlight(conversationID string, sessionID sessionrt.SessionID) bool {
+	if p == nil || p.manager == nil {
+		return false
+	}
+	manager, ok := p.manager.(sessionRecordReadWriter)
+	if !ok || manager == nil {
+		return false
+	}
+
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if sessionID == "" {
+		conversationID = strings.TrimSpace(conversationID)
+		if conversationID == "" {
+			return false
+		}
+		currentSessionID, exists := p.lookupConversationSession(conversationID)
+		if !exists {
+			return false
+		}
+		sessionID = currentSessionID
+	}
+	if strings.TrimSpace(string(sessionID)) == "" {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	record, err := manager.GetSessionRecord(ctx, sessionID)
+	if err != nil {
+		return false
+	}
+	return record.InFlight
 }
 
 func (p *DMPipeline) ensureTraceConversation(ctx context.Context, req TraceConversationRequest) {

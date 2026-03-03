@@ -264,6 +264,12 @@ type dmTransientRecoverExecutor struct {
 	recoveryMsg string
 }
 
+type dmDelayedRecoverStreamingExecutor struct {
+	delay     time.Duration
+	errorText string
+	replyText string
+}
+
 type dmStreamingExecutor struct {
 	deltas []string
 	final  string
@@ -343,6 +349,60 @@ func (e *dmTransientRecoverExecutor) callCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.calls
+}
+
+func (e *dmDelayedRecoverStreamingExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventError,
+				Payload: sessionrt.ErrorPayload{
+					Message: e.errorText,
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: e.replyText,
+				},
+			},
+		},
+	}, nil
+}
+
+func (e *dmDelayedRecoverStreamingExecutor) StepStream(ctx context.Context, input sessionrt.AgentInput, emit sessionrt.AgentEventEmitter) error {
+	if emit == nil {
+		return nil
+	}
+	if err := emit(sessionrt.Event{
+		From: input.ActorID,
+		Type: sessionrt.EventError,
+		Payload: sessionrt.ErrorPayload{
+			Message: e.errorText,
+		},
+	}); err != nil {
+		return err
+	}
+
+	timer := time.NewTimer(e.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+	}
+
+	return emit(sessionrt.Event{
+		From: input.ActorID,
+		Type: sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleAgent,
+			Content: e.replyText,
+		},
+	})
 }
 
 type dmRecoverableErrorExecutor struct {
@@ -2396,6 +2456,66 @@ func TestDMPipelineDoesNotSendFallbackWhenAgentRecoversAfterError(t *testing.T) 
 	if strings.Contains(messages[0].Text, "I ran into an upstream error while processing that message.") {
 		t.Fatalf("unexpected fallback reply in recovered response: %q", messages[0].Text)
 	}
+}
+
+func TestDMPipelineKeepsTypingWhenNonTerminalErrorOccursMidStream(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmDelayedRecoverStreamingExecutor{
+			delay:     dmErrorFallbackDelay + 800*time.Millisecond,
+			errorText: "open /tmp/MEMORY.md: no such file or directory",
+			replyText: "Recovered and completed.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:mid-stream-error",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fake.typingSignals()) >= 1
+	})
+	time.Sleep(dmErrorFallbackDelay + 200*time.Millisecond)
+	if fake.sentCount() != 0 {
+		t.Fatalf("sent message count = %d, want 0 before delayed final message", fake.sentCount())
+	}
+	signals := fake.typingSignals()
+	if len(signals) == 0 {
+		t.Fatalf("typing signal count = 0, want >= 1")
+	}
+	if !signals[len(signals)-1].Typing {
+		t.Fatalf("typing stopped before final message: %#v", signals)
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	if got := strings.TrimSpace(fake.lastSent().Text); got != "Recovered and completed." {
+		t.Fatalf("final response = %q, want recovered response", got)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		signals := fake.typingSignals()
+		return len(signals) >= 2 && !signals[len(signals)-1].Typing
+	})
 }
 
 func TestDMPipelineSuppressesFallbackWhenSendEventFailsNonTerminal(t *testing.T) {

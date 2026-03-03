@@ -39,6 +39,9 @@ func TestBuildToolUsageHintsDelegateMentionsOmittedTarget(t *testing.T) {
 	if !strings.Contains(hints, "returns after spawn") || !strings.Contains(hints, "delegation.completed") {
 		t.Fatalf("expected async delegation hint, got: %s", hints)
 	}
+	if !strings.Contains(hints, "do not `sleep`/busy-wait") {
+		t.Fatalf("expected non-blocking delegation hint, got: %s", hints)
+	}
 }
 
 func TestBuildCollaborationSectionMultiAgentMentionsAsyncDelegationCompletion(t *testing.T) {
@@ -59,6 +62,9 @@ func TestBuildCollaborationSectionMultiAgentMentionsAsyncDelegationCompletion(t 
 	}
 	if !strings.Contains(section, "delegation.completed") || !strings.Contains(section, "delegation.failed") {
 		t.Fatalf("expected async completion guidance, got: %s", section)
+	}
+	if !strings.Contains(section, "do not block this turn with `sleep`/poll loops") {
+		t.Fatalf("expected non-blocking completion guidance, got: %s", section)
 	}
 }
 

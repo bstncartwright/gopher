@@ -978,7 +978,14 @@ func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID,
 				"sender_id", senderID,
 				"error", err,
 			)
-			p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), err.Error())
+			if p.shouldNotifyTerminalErrorFallback(conversationID, event.SessionID) {
+				p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), err.Error())
+			} else {
+				slog.Info("dm_pipeline: suppressing non-terminal send-event fallback",
+					"conversation_id", conversationID,
+					"session_id", event.SessionID,
+				)
+			}
 			return
 		}
 		p.markInboundEventProcessed(conversationID, event.SessionID, inboundEventID)
@@ -1226,6 +1233,12 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				p.scheduleErrorFallback(conversationID, errorTextFromPayload(event.Payload))
 				continue
 			}
+			if event.Type == sessionrt.EventControl {
+				control, ok := controlPayloadFromAny(event.Payload)
+				if ok && strings.TrimSpace(control.Action) == sessionrt.ControlActionSessionFailed {
+					p.scheduleErrorFallback(conversationID, control.Reason)
+				}
+			}
 			if event.Type == sessionrt.EventToolResult {
 				p.captureAttachmentsFromEvent(conversationID, event)
 				p.captureMessageEchoFromEvent(conversationID, event)
@@ -1421,7 +1434,14 @@ func (p *DMPipeline) fireScheduledErrorFallback(conversationID string, seq uint6
 
 	p.finishProcessing(conversationID)
 	p.clearPendingAttachments(conversationID)
-	p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), rawErr)
+	if p.shouldNotifyTerminalErrorFallback(conversationID, "") {
+		p.sendErrorFallback(conversationID, p.recipientForConversation(conversationID), rawErr)
+		return
+	}
+	slog.Info("dm_pipeline: suppressing non-terminal error fallback",
+		"conversation_id", conversationID,
+		"error_detail", fallbackErrorDetail(rawErr),
+	)
 }
 
 func (p *DMPipeline) dispatchErrorRecoveryPrompt(conversationID, rawErr string) bool {
@@ -2451,6 +2471,26 @@ func errorTextFromPayload(payload any) string {
 	}
 }
 
+func controlPayloadFromAny(payload any) (sessionrt.ControlPayload, bool) {
+	switch value := payload.(type) {
+	case sessionrt.ControlPayload:
+		return value, true
+	case map[string]any:
+		actionRaw, _ := value["action"].(string)
+		reasonRaw, _ := value["reason"].(string)
+		action := strings.TrimSpace(actionRaw)
+		if action == "" {
+			return sessionrt.ControlPayload{}, false
+		}
+		return sessionrt.ControlPayload{
+			Action: action,
+			Reason: strings.TrimSpace(reasonRaw),
+		}, true
+	default:
+		return sessionrt.ControlPayload{}, false
+	}
+}
+
 func fallbackReplyForError(message string) string {
 	classification, detail := classifyDMError(message)
 	if classification == dmErrorClassRateLimit {
@@ -2565,6 +2605,29 @@ func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) 
 			"error", err,
 		)
 	}
+}
+
+func (p *DMPipeline) shouldNotifyTerminalErrorFallback(conversationID string, sessionID sessionrt.SessionID) bool {
+	if p == nil || p.manager == nil {
+		return false
+	}
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if sessionID == "" {
+		conversationID = strings.TrimSpace(conversationID)
+		if conversationID == "" {
+			return false
+		}
+		currentSessionID, ok := p.lookupConversationSession(conversationID)
+		if !ok {
+			return false
+		}
+		sessionID = currentSessionID
+	}
+	loaded, err := p.manager.GetSession(context.Background(), sessionID)
+	if err != nil || loaded == nil {
+		return false
+	}
+	return loaded.Status == sessionrt.SessionFailed
 }
 
 func (p *DMPipeline) ensureTraceConversation(ctx context.Context, req TraceConversationRequest) {

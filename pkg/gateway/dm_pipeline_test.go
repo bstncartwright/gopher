@@ -53,6 +53,18 @@ func (m *sendEventFailManager) SendEvent(context.Context, sessionrt.Event) error
 	return context.DeadlineExceeded
 }
 
+type listFailingStore struct {
+	sessionrt.EventStore
+	err error
+}
+
+func (s *listFailingStore) List(ctx context.Context, sessionID sessionrt.SessionID) ([]sessionrt.Event, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.EventStore.List(ctx, sessionID)
+}
+
 type fakeTransport struct {
 	mu                  sync.Mutex
 	handler             transport.InboundHandler
@@ -1802,9 +1814,13 @@ func TestDMPipelineKeepsConversationSessionAfterAgentStepError(t *testing.T) {
 		t.Fatalf("first HandleInbound() error: %v", err)
 	}
 	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() > 0
+		signals := fake.typingSignals()
+		return len(signals) >= 2 && !signals[len(signals)-1].Typing
 	})
 	beforeSecond := fake.sentCount()
+	if beforeSecond != 0 {
+		t.Fatalf("sent message count after first error = %d, want 0", beforeSecond)
+	}
 
 	waitFor(t, 2*time.Second, func() bool {
 		sessions, listErr := store.ListSessions(context.Background())
@@ -2160,7 +2176,7 @@ func TestDMPipelineReplacesActiveSessionWhenAgentRouteMismatches(t *testing.T) {
 	}
 }
 
-func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
+func TestDMPipelineSuppressesFallbackOnNonTerminalAgentErrorEvent(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:    store,
@@ -2190,17 +2206,10 @@ func TestDMPipelineSendsFallbackOnAgentErrorEvent(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() > 0
+		return len(fake.typingSignals()) >= 2
 	})
-	got := fake.lastSent()
-	if got.ConversationID != "!dm:error" {
-		t.Fatalf("conversation id = %q, want !dm:error", got.ConversationID)
-	}
-	if !strings.HasPrefix(got.Text, strings.TrimSuffix(dmRateLimitFallbackReply, ".")) {
-		t.Fatalf("fallback reply = %q, want prefix %q", got.Text, dmRateLimitFallbackReply)
-	}
-	if !strings.Contains(got.Text, "Details: rate limit (429).") {
-		t.Fatalf("fallback details = %q, want rate-limit details", got.Text)
+	if fake.sentCount() != 0 {
+		t.Fatalf("sent message count = %d, want 0 for non-terminal error", fake.sentCount())
 	}
 	signals := fake.typingSignals()
 	if len(signals) < 2 {
@@ -2290,18 +2299,17 @@ func TestDMPipelineDoesNotRetryNonRecoverableError(t *testing.T) {
 	}
 
 	waitFor(t, 3*time.Second, func() bool {
-		return fake.sentCount() > 0
+		return len(fake.typingSignals()) >= 2
 	})
-	got := fake.lastSent()
-	if !strings.Contains(got.Text, "Details: provider authentication failed (401).") {
-		t.Fatalf("fallback response = %q, want auth details", got.Text)
+	if fake.sentCount() != 0 {
+		t.Fatalf("sent message count = %d, want 0 for non-terminal error", fake.sentCount())
 	}
 	if calls := exec.callCount(); calls != 1 {
 		t.Fatalf("executor call count = %d, want 1", calls)
 	}
 }
 
-func TestDMPipelineRetriesRecoverableErrorOnlyOnceBeforeFallback(t *testing.T) {
+func TestDMPipelineRetriesRecoverableErrorOnlyOnceWithoutFallback(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	exec := &dmCountingErrorExecutor{message: "502 bad gateway"}
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
@@ -2332,11 +2340,10 @@ func TestDMPipelineRetriesRecoverableErrorOnlyOnceBeforeFallback(t *testing.T) {
 	}
 
 	waitFor(t, 3*time.Second, func() bool {
-		return fake.sentCount() > 0
+		return len(fake.typingSignals()) >= 2
 	})
-	got := fake.lastSent()
-	if !strings.Contains(got.Text, "Details: provider service unavailable.") {
-		t.Fatalf("fallback response = %q, want service unavailable details", got.Text)
+	if fake.sentCount() != 0 {
+		t.Fatalf("sent message count = %d, want 0 for non-terminal error", fake.sentCount())
 	}
 	if calls := exec.callCount(); calls != 2 {
 		t.Fatalf("executor call count = %d, want 2 (initial + one recovery attempt)", calls)
@@ -2391,7 +2398,7 @@ func TestDMPipelineDoesNotSendFallbackWhenAgentRecoversAfterError(t *testing.T) 
 	}
 }
 
-func TestDMPipelineSendsFallbackWhenSendEventFails(t *testing.T) {
+func TestDMPipelineSuppressesFallbackWhenSendEventFailsNonTerminal(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	baseManager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
 		Store:    store,
@@ -2425,17 +2432,10 @@ func TestDMPipelineSendsFallbackWhenSendEventFails(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		return fake.sentCount() > 0
+		return len(fake.typingSignals()) >= 2
 	})
-	got := fake.lastSent()
-	if got.ConversationID != "!dm:timeout" {
-		t.Fatalf("conversation id = %q, want !dm:timeout", got.ConversationID)
-	}
-	if !strings.HasPrefix(got.Text, strings.TrimSuffix(dmErrorFallbackReply, ".")) {
-		t.Fatalf("fallback reply = %q, want prefix %q", got.Text, dmErrorFallbackReply)
-	}
-	if !strings.Contains(got.Text, "Details: request timed out.") {
-		t.Fatalf("fallback details = %q, want timeout details", got.Text)
+	if fake.sentCount() != 0 {
+		t.Fatalf("sent message count = %d, want 0 for non-terminal send failure", fake.sentCount())
 	}
 	signals := fake.typingSignals()
 	if len(signals) < 2 {
@@ -2443,6 +2443,68 @@ func TestDMPipelineSendsFallbackWhenSendEventFails(t *testing.T) {
 	}
 	if !signals[0].Typing || signals[len(signals)-1].Typing {
 		t.Fatalf("typing lifecycle = %#v, want starts true and ends false", signals)
+	}
+}
+
+func TestDMPipelineSendsFallbackWhenSessionFails(t *testing.T) {
+	baseStore := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: &listFailingStore{
+			EventStore: baseStore,
+			err:        context.DeadlineExceeded,
+		},
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:terminal-fail",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	got := fake.lastSent()
+	if got.ConversationID != "!dm:terminal-fail" {
+		t.Fatalf("conversation id = %q, want !dm:terminal-fail", got.ConversationID)
+	}
+	if !strings.HasPrefix(got.Text, strings.TrimSuffix(dmErrorFallbackReply, ".")) {
+		t.Fatalf("fallback reply = %q, want prefix %q", got.Text, dmErrorFallbackReply)
+	}
+	if !strings.Contains(got.Text, "Details: request timed out.") {
+		t.Fatalf("fallback details = %q, want timeout details", got.Text)
+	}
+
+	sessionID, ok := pipeline.conversations.Get("!dm:terminal-fail")
+	if !ok {
+		t.Fatalf("expected session mapping")
+	}
+	session, err := manager.GetSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("GetSession() error: %v", err)
+	}
+	if session == nil {
+		t.Fatalf("expected session")
+	}
+	if session.Status != sessionrt.SessionFailed {
+		t.Fatalf("session status = %v, want failed", session.Status)
 	}
 }
 

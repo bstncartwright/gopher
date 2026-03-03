@@ -10,6 +10,7 @@ import (
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestDiscoverGatewayAgentWorkspacesFindsPerAgentDirectories(t *testing.T) {
@@ -96,6 +97,72 @@ func TestDiscoverGatewayAgentWorkspacesCreatesMainWorkspaceWhenMissing(t *testin
 	}
 	if !strings.Contains(string(configBlob), "allow_cross_agent_fs = true") {
 		t.Fatalf("expected main config to default allow_cross_agent_fs=true")
+	}
+}
+
+func TestLoadGatewayAgentRuntimeRecoversBlankMainAgentConfig(t *testing.T) {
+	workspace := t.TempDir()
+	mainPath := filepath.Join(workspace, "agents", "main")
+	mustWriteFile(t, filepath.Join(mainPath, "AGENTS.md"), "# AGENTS\n")
+	mustWriteFile(t, filepath.Join(mainPath, "SOUL.md"), "# SOUL\n")
+	mustWriteFile(t, filepath.Join(mainPath, "config.toml"), `name = "main"
+role = "assistant"
+model_policy = ""
+enabled_tools = ["group:fs", "group:runtime", "group:collaboration", "cron", "group:web"]
+max_context_messages = 0
+
+[policies]
+can_shell = false
+shell_allowlist = []
+fs_roots = []
+allow_cross_agent_fs = false
+apply_patch_enabled = false
+`)
+
+	runtime, err := loadGatewayAgentRuntime(workspace)
+	if err != nil {
+		t.Fatalf("loadGatewayAgentRuntime() error: %v", err)
+	}
+	if runtime.DefaultActorID != sessionrt.ActorID("main") {
+		t.Fatalf("default actor = %q, want main", runtime.DefaultActorID)
+	}
+	if _, ok := runtime.Agents[sessionrt.ActorID("main")]; !ok {
+		t.Fatalf("expected recovered main agent to be loaded")
+	}
+
+	configBlob, err := os.ReadFile(filepath.Join(mainPath, "config.toml"))
+	if err != nil {
+		t.Fatalf("read repaired config.toml: %v", err)
+	}
+	var config map[string]any
+	if err := toml.Unmarshal(configBlob, &config); err != nil {
+		t.Fatalf("repaired config.toml should be valid TOML: %v", err)
+	}
+	if got, _ := config["agent_id"].(string); got != "main" {
+		t.Fatalf("repaired config agent_id=%q, want main", got)
+	}
+	if got, _ := config["model_policy"].(string); got != defaultAgentModelPolicy {
+		t.Fatalf("repaired config model_policy=%q, want %q", got, defaultAgentModelPolicy)
+	}
+}
+
+func TestLoadGatewayAgentRuntimeDoesNotRecoverNonBlankModelPolicy(t *testing.T) {
+	workspace := t.TempDir()
+	mainPath := filepath.Join(workspace, "agents", "main")
+	mustWriteFile(t, filepath.Join(mainPath, "AGENTS.md"), "# AGENTS\n")
+	mustWriteFile(t, filepath.Join(mainPath, "SOUL.md"), "# SOUL\n")
+	mustWriteFile(t, filepath.Join(mainPath, "config.toml"), `agent_id = "main"
+name = "main"
+role = "assistant"
+model_policy = "openai"
+`)
+
+	_, err := loadGatewayAgentRuntime(workspace)
+	if err == nil {
+		t.Fatalf("expected invalid model policy error")
+	}
+	if !strings.Contains(err.Error(), `invalid model_policy "openai"`) {
+		t.Fatalf("expected invalid model_policy error, got: %v", err)
 	}
 }
 

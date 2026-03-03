@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
+	"github.com/pelletier/go-toml/v2"
 )
 
 const defaultAgentWorkspaceID = "main"
@@ -40,6 +42,15 @@ func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*a
 
 	for _, candidate := range workspaces {
 		agent, err := agentcore.LoadAgent(candidate)
+		if err != nil {
+			recovered, recoverErr := tryRecoverDefaultMainAgentWorkspace(workspace, workspaces, candidate, err)
+			if recoverErr != nil {
+				return nil, recoverErr
+			}
+			if recovered {
+				agent, err = agentcore.LoadAgent(candidate)
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("load agent workspace %s: %w", candidate, err)
 		}
@@ -88,6 +99,126 @@ func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*a
 		DefaultActorID: defaultActorID,
 		Agents:         agents,
 	}, nil
+}
+
+type runtimeConfigProbe struct {
+	AgentID     string `json:"agent_id"`
+	ModelPolicy string `json:"model_policy"`
+}
+
+func tryRecoverDefaultMainAgentWorkspace(root string, workspaces []string, candidate string, loadErr error) (bool, error) {
+	if len(workspaces) != 1 {
+		return false, nil
+	}
+	workspaceAbs, err := filepath.Abs(strings.TrimSpace(root))
+	if err != nil {
+		return false, fmt.Errorf("resolve workspace for recovery: %w", err)
+	}
+	expected := filepath.Join(filepath.Clean(workspaceAbs), "agents", defaultAgentWorkspaceID)
+	if filepath.Clean(candidate) != expected {
+		return false, nil
+	}
+
+	probe, probeErr := readRuntimeConfigProbe(candidate)
+	if probeErr != nil {
+		return false, nil
+	}
+	if strings.TrimSpace(probe.AgentID) != "" || strings.TrimSpace(probe.ModelPolicy) != "" {
+		return false, nil
+	}
+
+	if err := ensureAgentWorkspace(defaultAgentWorkspaceID, candidate); err != nil {
+		return false, fmt.Errorf("recover main agent workspace %s after load error %v: %w", candidate, loadErr, err)
+	}
+	configPath := filepath.Join(candidate, "config.toml")
+	if err := os.WriteFile(configPath, []byte(defaultConfigTemplate(defaultAgentWorkspaceID)), 0o644); err != nil {
+		return false, fmt.Errorf("recover main agent config %s after load error %v: %w", configPath, loadErr, err)
+	}
+	return true, nil
+}
+
+func readRuntimeConfigProbe(workspace string) (runtimeConfigProbe, error) {
+	var probe runtimeConfigProbe
+	path, err := resolveRuntimeConfigPath(workspace)
+	if err != nil {
+		return probe, err
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return probe, err
+	}
+
+	raw := map[string]any{}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".toml":
+		if err := toml.Unmarshal(blob, &raw); err != nil {
+			return probe, err
+		}
+	case ".json":
+		if err := json.Unmarshal(blob, &raw); err != nil {
+			return probe, err
+		}
+	default:
+		return probe, fmt.Errorf("unsupported config format %q", filepath.Ext(path))
+	}
+	probe.AgentID = readRuntimeStringField(raw, "agent_id")
+	probe.ModelPolicy = readRuntimeStringField(raw, "model_policy")
+	return probe, nil
+}
+
+func readRuntimeStringField(raw map[string]any, key string) string {
+	if raw == nil {
+		return ""
+	}
+	if value, ok := raw[key]; ok {
+		if text, ok := value.(string); ok {
+			return text
+		}
+	}
+	normalizedTarget := normalizeRuntimeKey(key)
+	for candidateKey, value := range raw {
+		if normalizeRuntimeKey(candidateKey) != normalizedTarget {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+func normalizeRuntimeKey(key string) string {
+	trimmed := strings.TrimSpace(key)
+	var b strings.Builder
+	b.Grow(len(trimmed))
+	for _, r := range trimmed {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			b.WriteRune(r + ('a' - 'A'))
+		}
+	}
+	return b.String()
+}
+
+func resolveRuntimeConfigPath(workspace string) (string, error) {
+	for _, name := range []string{"config.toml", "config.json"} {
+		path := filepath.Join(workspace, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		if info.IsDir() {
+			continue
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("required file missing: config.{toml,json}")
 }
 
 func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) {

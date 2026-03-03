@@ -7,11 +7,11 @@ import (
 )
 
 type LoopDetectionConfig struct {
-	Enabled                       bool `json:"enabled"`
-	WarningThreshold              int  `json:"warning_threshold"`
-	CriticalThreshold             int  `json:"critical_threshold"`
-	GlobalCircuitBreakerThreshold int  `json:"global_circuit_breaker_threshold"`
-	HistorySize                   int  `json:"history_size"`
+	Enabled                       bool `json:"enabled" toml:"enabled"`
+	WarningThreshold              int  `json:"warning_threshold" toml:"warning_threshold"`
+	CriticalThreshold             int  `json:"critical_threshold" toml:"critical_threshold"`
+	GlobalCircuitBreakerThreshold int  `json:"global_circuit_breaker_threshold" toml:"global_circuit_breaker_threshold"`
+	HistorySize                   int  `json:"history_size" toml:"history_size"`
 }
 
 type LoopDetectLevel int

@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -525,7 +526,7 @@ func TestRunTurnCompactionSummaryFallsBackWhenModelSummaryFails(t *testing.T) {
 	}
 }
 
-func TestRunTurnCapsToolResultContextPayloadButKeepsEmittedResult(t *testing.T) {
+func TestRunTurnKeepsNormalToolResultContextPayloadAndEmittedResult(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"group:fs"}
 	workspace := createTestWorkspace(t, config, defaultPolicies())
@@ -563,6 +564,7 @@ func TestRunTurnCapsToolResultContextPayloadButKeepsEmittedResult(t *testing.T) 
 	}
 
 	var emittedToolResultContentLen int
+	var contextToolResultPayload string
 	for _, event := range result.Events {
 		if event.Type != EventTypeToolResult {
 			continue
@@ -578,11 +580,7 @@ func TestRunTurnCapsToolResultContextPayloadButKeepsEmittedResult(t *testing.T) 
 		content, _ := resultMap["content"].(string)
 		emittedToolResultContentLen = len(content)
 	}
-	if emittedToolResultContentLen <= agent.Config.ContextManagement.ToolResultContextMaxCharsValue() {
-		t.Fatalf("expected emitted tool.result payload to keep full content, len=%d", emittedToolResultContentLen)
-	}
 
-	foundContextTruncated := false
 	for _, msg := range session.Messages {
 		if msg.Role != ai.RoleToolResult {
 			continue
@@ -591,14 +589,104 @@ func TestRunTurnCapsToolResultContextPayloadButKeepsEmittedResult(t *testing.T) 
 		if !ok || len(blocks) == 0 {
 			continue
 		}
-		if len(blocks[0].Text) > agent.Config.ContextManagement.ToolResultContextMaxCharsValue()+200 {
-			t.Fatalf("expected context toolResult text to be capped, len=%d", len(blocks[0].Text))
-		}
-		if strings.Contains(blocks[0].Text, "\"truncated\": true") {
-			foundContextTruncated = true
-		}
+		contextToolResultPayload = blocks[0].Text
 	}
-	if !foundContextTruncated {
-		t.Fatalf("expected context payload truncation envelope in toolResult message")
+	if emittedToolResultContentLen == 0 {
+		t.Fatalf("expected emitted tool.result payload content")
+	}
+	if contextToolResultPayload == "" {
+		t.Fatalf("expected tool result payload in session context")
+	}
+	if strings.Contains(contextToolResultPayload, "emergency_context_cap") {
+		t.Fatalf("normal tool payload should not trigger emergency cap")
+	}
+	if session.LastContextDiagnostics.ToolResultTruncation != 0 {
+		t.Fatalf("tool_result_truncation_count = %d, want 0", session.LastContextDiagnostics.ToolResultTruncation)
+	}
+}
+
+func TestRunTurnAppliesEmergencyToolResultCapForPathologicalPayload(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:fs"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	hugeContent := strings.Repeat("abcdefghijklmnopqrstuvwxyz0123456789", 12000)
+	mustWriteFile(t, filepath.Join(workspace, "huge.txt"), hugeContent)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	roundOne := ai.NewAssistantMessage(agent.model)
+	roundOne.StopReason = ai.StopReasonToolUse
+	roundOne.Content = []ai.ContentBlock{
+		{Type: ai.ContentTypeToolCall, ID: "read_huge", Name: "read", Arguments: map[string]any{"path": "huge.txt"}},
+	}
+	roundTwo := ai.NewAssistantMessage(agent.model)
+	roundTwo.StopReason = ai.StopReasonStop
+	roundTwo.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{
+			{assistant: roundOne},
+			{assistant: roundTwo},
+		},
+	}
+
+	session := agent.NewSession()
+	result, err := agent.RunTurn(context.Background(), session, TurnInput{UserMessage: "read huge file"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if result.FinalText != "done" {
+		t.Fatalf("final text = %q, want done", result.FinalText)
+	}
+
+	var emittedToolResultContentLen int
+	for _, event := range result.Events {
+		if event.Type != EventTypeToolResult {
+			continue
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok {
+			continue
+		}
+		resultMap, ok := payload["result"].(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := resultMap["content"].(string)
+		emittedToolResultContentLen = len(content)
+	}
+	if emittedToolResultContentLen <= toolResultEmergencyMaxChars {
+		t.Fatalf("expected emitted tool result content to exceed emergency cap, len=%d", emittedToolResultContentLen)
+	}
+
+	foundEmergencyEnvelope := false
+	for _, msg := range session.Messages {
+		if msg.Role != ai.RoleToolResult {
+			continue
+		}
+		blocks, ok := msg.ContentBlocks()
+		if !ok || len(blocks) == 0 {
+			continue
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(blocks[0].Text), &envelope); err != nil {
+			t.Fatalf("expected JSON envelope for emergency cap payload: %v", err)
+		}
+		if truncated, _ := envelope["truncated"].(bool); !truncated {
+			continue
+		}
+		if reason, _ := envelope["reason"].(string); reason != "emergency_context_cap" {
+			t.Fatalf("reason = %q, want emergency_context_cap", reason)
+		}
+		foundEmergencyEnvelope = true
+	}
+	if !foundEmergencyEnvelope {
+		t.Fatalf("expected emergency cap envelope in context tool result")
+	}
+	if session.LastContextDiagnostics.ToolResultTruncation != 1 {
+		t.Fatalf("tool_result_truncation_count = %d, want 1", session.LastContextDiagnostics.ToolResultTruncation)
 	}
 }

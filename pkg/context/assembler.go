@@ -335,14 +335,7 @@ func SelectMessagesForBudget(messages []ai.Message, availableTokens int) ([]ai.M
 		return nil, nil, 0
 	}
 	if availableTokens <= 0 {
-		// Keep the latest user message even when budget collapses.
-		idx := lastUserMessageIndex(messages)
-		if idx < 0 {
-			idx = len(messages) - 1
-		}
-		selected := cloneMessages(messages[idx:])
-		dropped := cloneMessages(messages[:idx])
-		return selected, dropped, EstimateMessagesTokens(selected)
+		return selectLastMessageFallback(messages)
 	}
 
 	start := len(messages)
@@ -361,18 +354,26 @@ func SelectMessagesForBudget(messages []ai.Message, availableTokens int) ([]ai.M
 		start = chunkStart
 	}
 	if start == len(messages) {
-		idx := lastUserMessageIndex(messages)
-		if idx < 0 {
-			idx = len(messages) - 1
-		}
-		selected := cloneMessages(messages[idx:])
-		dropped := cloneMessages(messages[:idx])
-		return selected, dropped, EstimateMessagesTokens(selected)
+		return selectLastMessageFallback(messages)
 	}
 
 	selected := cloneMessages(messages[start:])
 	dropped := cloneMessages(messages[:start])
 	return selected, dropped, used
+}
+
+func selectLastMessageFallback(messages []ai.Message) ([]ai.Message, []ai.Message, int) {
+	idx := lastUserMessageIndex(messages)
+	if idx < 0 {
+		idx = len(messages) - 1
+	}
+	selected := []ai.Message{messages[idx].Clone()}
+	dropped := make([]ai.Message, 0, len(messages)-1)
+	dropped = append(dropped, cloneMessages(messages[:idx])...)
+	if idx+1 < len(messages) {
+		dropped = append(dropped, cloneMessages(messages[idx+1:])...)
+	}
+	return selected, dropped, EstimateMessagesTokens(selected)
 }
 
 func assistantHasToolCalls(msg ai.Message) bool {

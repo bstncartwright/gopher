@@ -28,7 +28,7 @@ func TestComputeReserveTokensUsesFloorAndHalfWindowCap(t *testing.T) {
 	}
 }
 
-func TestPruneMessagesDetailedAppliesHistoricalAndRecentCaps(t *testing.T) {
+func TestPruneMessagesDetailedRemovesThinkingButPreservesToolPayloads(t *testing.T) {
 	oldPayload := strings.Repeat("x", 600)
 	recentPayload := strings.Repeat("y", 3200)
 	messages := []ai.Message{
@@ -42,25 +42,21 @@ func TestPruneMessagesDetailedAppliesHistoricalAndRecentCaps(t *testing.T) {
 		ai.NewToolResultMessage("recent", "exec", []ai.ContentBlock{{Type: ai.ContentTypeText, Text: recentPayload}}, false),
 	}
 
-	result := PruneMessagesDetailed(messages, PruneOptions{
-		MaxHistoricalToolResultChars: 240,
-		MaxRecentToolResultChars:     2400,
-		RecentWindowMessages:         4,
-	})
-	if result.ToolResultTruncations != 2 {
-		t.Fatalf("ToolResultTruncations = %d, want 2", result.ToolResultTruncations)
+	result := PruneMessagesDetailed(messages, PruneOptions{})
+	if result.ToolResultTruncations != 0 {
+		t.Fatalf("ToolResultTruncations = %d, want 0", result.ToolResultTruncations)
 	}
-	if len(result.Actions) < 2 {
-		t.Fatalf("expected at least 2 prune actions, got %#v", result.Actions)
+	if len(result.Actions) != 0 {
+		t.Fatalf("expected no prune actions for thinking-free messages, got %#v", result.Actions)
 	}
 
 	oldBlocks, _ := result.Messages[1].ContentBlocks()
-	if len(oldBlocks) == 0 || len(oldBlocks[0].Text) > 260 {
-		t.Fatalf("historical tool result not truncated as expected")
+	if len(oldBlocks) == 0 || oldBlocks[0].Text != oldPayload {
+		t.Fatalf("historical tool result payload was unexpectedly changed")
 	}
 	recentBlocks, _ := result.Messages[7].ContentBlocks()
-	if len(recentBlocks) == 0 || len(recentBlocks[0].Text) > 2420 {
-		t.Fatalf("recent tool result not truncated as expected")
+	if len(recentBlocks) == 0 || recentBlocks[0].Text != recentPayload {
+		t.Fatalf("recent tool result payload was unexpectedly changed")
 	}
 }
 
@@ -115,5 +111,33 @@ func TestSelectMessagesBudgetWithRepairLeavesNoOrphanToolResults(t *testing.T) {
 		if msg.Role == ai.RoleToolResult {
 			t.Fatalf("expected no toolResult messages after repair in orphan-only selection")
 		}
+	}
+}
+
+func TestSelectMessagesForBudgetDropsOversizedTrailingChunkAndKeepsLastUser(t *testing.T) {
+	messages := []ai.Message{
+		{Role: ai.RoleUser, Content: "keep this user message", Timestamp: 1},
+		{
+			Role: ai.RoleAssistant,
+			Content: []ai.ContentBlock{
+				{Type: ai.ContentTypeToolCall, ID: "call-1", Name: "read", Arguments: map[string]any{"path": "huge.txt"}},
+			},
+			Timestamp: 2,
+		},
+		ai.NewToolResultMessage("call-1", "read", []ai.ContentBlock{{Type: ai.ContentTypeText, Text: strings.Repeat("z", 5000)}}, false),
+	}
+
+	selected, dropped, _ := SelectMessagesForBudget(messages, 12)
+	if len(selected) != 1 {
+		t.Fatalf("selected length = %d, want 1", len(selected))
+	}
+	if selected[0].Role != ai.RoleUser {
+		t.Fatalf("selected role = %s, want user", selected[0].Role)
+	}
+	if len(dropped) != 2 {
+		t.Fatalf("dropped length = %d, want 2", len(dropped))
+	}
+	if dropped[0].Role != ai.RoleAssistant || dropped[1].Role != ai.RoleToolResult {
+		t.Fatalf("expected oversized assistant/tool_result chunk to be dropped")
 	}
 }

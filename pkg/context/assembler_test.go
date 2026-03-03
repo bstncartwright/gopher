@@ -80,3 +80,39 @@ func TestAssemblerDiagnosticsDeterministic(t *testing.T) {
 		t.Fatalf("expected recent messages lane usage to be populated")
 	}
 }
+
+func TestAssemblerCompactsDroppedOversizedHistoryFromBudgetFallback(t *testing.T) {
+	assembler := NewAssembler(AssemblerOptions{DefaultMaxTokens: 160, SafetyMargin: 16, MaxMemoryRecords: 2})
+	bundle, err := assembler.Build(context.Background(), ContextRequest{
+		BaseSystemPrompt: "system",
+		Messages: []ai.Message{
+			{Role: ai.RoleUser, Content: "keep latest user context", Timestamp: 1},
+			{
+				Role: ai.RoleAssistant,
+				Content: []ai.ContentBlock{
+					{Type: ai.ContentTypeToolCall, ID: "call-1", Name: "read", Arguments: map[string]any{"path": "huge.txt"}},
+				},
+				Timestamp: 2,
+			},
+			ai.NewToolResultMessage("call-1", "read", []ai.ContentBlock{{Type: ai.ContentTypeText, Text: strings.Repeat("z", 5000)}}, false),
+		},
+		MaxTokens:        160,
+		ReserveMinTokens: 0,
+		EnableCompaction: true,
+	})
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+	if len(bundle.Messages) != 1 || bundle.Messages[0].Role != ai.RoleUser {
+		t.Fatalf("expected fallback to keep only the latest user message")
+	}
+	if strings.TrimSpace(bundle.NewCompactionSummary) == "" {
+		t.Fatalf("expected compaction summary for dropped oversized history")
+	}
+	if !strings.Contains(bundle.NewCompactionSummary, "Compacted") {
+		t.Fatalf("unexpected compaction summary: %q", bundle.NewCompactionSummary)
+	}
+	if len(bundle.Diagnostics.CompactionActions) == 0 {
+		t.Fatalf("expected compaction action diagnostics for dropped history")
+	}
+}

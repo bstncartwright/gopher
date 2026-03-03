@@ -255,11 +255,6 @@ reserve_min_tokens = 20000
 model_compaction_summary = true
 compaction_summary_timeout_ms = 12000
 compaction_chunk_token_target = 1800
-tool_result_context_max_chars = 12000
-tool_result_context_head_chars = 8000
-tool_result_context_tail_chars = 3000
-recent_tool_result_chars = 2400
-historical_tool_result_chars = 240
 
 [policies]
 allow_cross_agent_fs = true

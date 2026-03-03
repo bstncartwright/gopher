@@ -54,37 +54,55 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 		"tool_id", call.ID,
 		"session_id", s.ID,
 	)
+	resolvedToolName := canonicalToolName(call.Name)
+	if resolvedToolName == "" {
+		err := fmt.Errorf("tool name is required")
+		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+	}
+
 	activeTools := activeToolRegistry(r.agent.Tools, ToolInput{
 		Agent:   r.agent,
 		Session: s,
 		Args:    call.Arguments,
 	})
-	tool, ok := activeTools.Get(call.Name)
+	tool, ok := activeTools.Get(resolvedToolName)
 	if !ok {
 		err := fmt.Errorf("tool %q is not registered", call.Name)
+		if resolvedToolName != strings.TrimSpace(call.Name) {
+			err = fmt.Errorf("tool %q is not registered (resolved to %q)", call.Name, resolvedToolName)
+		}
 		slog.Error("tool_runner: tool not registered",
 			"tool_name", call.Name,
+			"resolved_tool_name", resolvedToolName,
 			"session_id", s.ID,
 			"available_tools", r.getToolNames(activeTools),
 		)
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
 	}
 
-	validatedArgs, err := ai.ValidateToolCall(toolSchemasToAITools(activeTools), call)
+	validatedCall := call.Clone()
+	validatedCall.Name = resolvedToolName
+	validatedArgs, err := ai.ValidateToolCall(toolSchemasToAITools(activeTools), validatedCall)
 	if err != nil {
 		slog.Error("tool_runner: tool call validation failed",
 			"tool_name", call.Name,
+			"resolved_tool_name", resolvedToolName,
 			"session_id", s.ID,
 			"error", err,
 		)
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
 	}
-	slog.Debug("tool_runner: args validated", "tool_name", call.Name, "session_id", s.ID)
+	slog.Debug("tool_runner: args validated",
+		"tool_name", call.Name,
+		"resolved_tool_name", resolvedToolName,
+		"session_id", s.ID,
+	)
 
-	loopResult := r.loopDetector.Check(call.Name, validatedArgs)
+	loopResult := r.loopDetector.Check(resolvedToolName, validatedArgs)
 	if loopResult.Level == LoopLevelCircuitBreaker {
 		slog.Warn("tool_runner: circuit breaker triggered",
 			"tool_name", call.Name,
+			"resolved_tool_name", resolvedToolName,
 			"session_id", s.ID,
 			"message", loopResult.Message,
 		)
@@ -96,6 +114,7 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 	if loopResult.Level == LoopLevelCritical {
 		slog.Warn("tool_runner: critical loop detected",
 			"tool_name", call.Name,
+			"resolved_tool_name", resolvedToolName,
 			"session_id", s.ID,
 			"message", loopResult.Message,
 		)
@@ -105,17 +124,22 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 		}, fmt.Errorf("%s", loopResult.Message)
 	}
 
-	sanitizedArgs, err := r.enforcePolicy(call.Name, validatedArgs)
+	sanitizedArgs, err := r.enforcePolicy(resolvedToolName, validatedArgs)
 	if err != nil {
 		slog.Warn("tool_runner: policy enforcement denied tool",
 			"tool_name", call.Name,
+			"resolved_tool_name", resolvedToolName,
 			"session_id", s.ID,
 			"error", err,
 			"is_policy_error", IsPolicyError(err),
 		)
 		return ToolOutput{Status: ToolStatusDenied, Result: map[string]any{"error": err.Error()}}, err
 	}
-	slog.Debug("tool_runner: policy enforced", "tool_name", call.Name, "session_id", s.ID)
+	slog.Debug("tool_runner: policy enforced",
+		"tool_name", call.Name,
+		"resolved_tool_name", resolvedToolName,
+		"session_id", s.ID,
+	)
 
 	output, runErr := tool.Run(ctx, ToolInput{
 		Agent:   r.agent,
@@ -135,16 +159,18 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 
 	slog.Info("tool_runner: tool execution complete",
 		"tool_name", call.Name,
+		"resolved_tool_name", resolvedToolName,
 		"session_id", s.ID,
 		"status", output.Status,
 		"has_error", runErr != nil,
 	)
 
-	r.loopDetector.Record(call.Name, validatedArgs, output.Result)
+	r.loopDetector.Record(resolvedToolName, validatedArgs, output.Result)
 
 	if loopResult.Level == LoopLevelWarning {
 		slog.Warn("tool_runner: loop warning",
 			"tool_name", call.Name,
+			"resolved_tool_name", resolvedToolName,
 			"session_id", s.ID,
 			"message", loopResult.Message,
 		)
@@ -154,6 +180,18 @@ func (r *ToolRunner) Run(ctx context.Context, s *Session, call ai.ContentBlock) 
 	}
 
 	return output, runErr
+}
+
+func canonicalToolName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "web_search", "search_mcp", "search":
+		return "web_search"
+	case "web_fetch", "fetch_mcp", "fetch", "fetch_content":
+		return "web_fetch"
+	default:
+		return strings.TrimSpace(name)
+	}
 }
 
 func (r *ToolRunner) getToolNames(registry ToolRegistry) []string {

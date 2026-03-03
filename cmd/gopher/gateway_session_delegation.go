@@ -137,7 +137,11 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	if resolvedTargetAgentID != sourceAgentID {
 		participants = append(participants, sessionrt.Participant{ID: resolvedTargetAgentID, Type: sessionrt.ActorAgent})
 	}
-	createdSession, err := s.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{Participants: participants})
+	createOpts := sessionrt.CreateSessionOptions{Participants: participants}
+	if title := strings.TrimSpace(req.Title); title != "" {
+		createOpts.DisplayName = title
+	}
+	createdSession, err := s.manager.CreateSession(ctx, createOpts)
 	if err != nil {
 		if createdEphemeral != nil {
 			s.teardownEphemeralWorker(*createdEphemeral)

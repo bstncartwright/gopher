@@ -222,3 +222,61 @@ func TestManagerSessionRecordAccessorsWithoutRegistry(t *testing.T) {
 		t.Fatalf("expected UpsertSessionRecord to fail without registry")
 	}
 }
+
+func TestManagerCreateSessionAssignsDefaultDisplayName(t *testing.T) {
+	now := time.Date(2026, time.March, 3, 12, 34, 56, 0, time.UTC)
+	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
+	manager, err := NewManager(ManagerOptions{
+		Store: store,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), CreateSessionOptions{
+		Participants: []Participant{
+			{ID: "agent:writer", Type: ActorAgent},
+			{ID: "user:me", Type: ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	want := "Session with writer and me (2026-03-03 12:34 UTC)"
+	if created.DisplayName != want {
+		t.Fatalf("display name = %q, want %q", created.DisplayName, want)
+	}
+
+	record, err := manager.GetSessionRecord(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	if record.DisplayName != want {
+		t.Fatalf("record display name = %q, want %q", record.DisplayName, want)
+	}
+}
+
+func TestManagerCreateSessionUsesProvidedDisplayName(t *testing.T) {
+	store := NewInMemoryEventStore(InMemoryEventStoreOptions{})
+	manager, err := NewManager(ManagerOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), CreateSessionOptions{
+		Participants: []Participant{
+			{ID: "agent:writer", Type: ActorAgent},
+			{ID: "user:me", Type: ActorHuman},
+		},
+		DisplayName: "  Writer Room  ",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if created.DisplayName != "Writer Room" {
+		t.Fatalf("display name = %q, want Writer Room", created.DisplayName)
+	}
+}

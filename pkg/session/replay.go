@@ -50,6 +50,9 @@ func Replay(events []Event) (*Session, error) {
 						}
 					}
 				}
+				if displayName, ok := displayNameFromControlMetadata(control); ok {
+					session.DisplayName = displayName
+				}
 				session.Status = SessionActive
 			case ControlActionSessionCancelled:
 				session.Status = SessionPaused
@@ -59,6 +62,9 @@ func Replay(events []Event) (*Session, error) {
 				session.Status = SessionFailed
 			}
 		}
+	}
+	if session.DisplayName == "" {
+		session.DisplayName = defaultSessionDisplayName(session.CreatedAt, session.Participants)
 	}
 
 	return session, nil

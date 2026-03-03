@@ -124,6 +124,9 @@ func (s *EventStore) Append(ctx context.Context, event sessionrt.Event) error {
 		}
 		record = sessionrt.SessionRecord{SessionID: event.SessionID}
 	}
+	if displayName, ok := displayNameFromSessionCreatedEvent(event); ok {
+		record.DisplayName = displayName
+	}
 
 	if record.LastSeq > 0 {
 		switch {
@@ -314,6 +317,9 @@ func (s *EventStore) UpsertSession(ctx context.Context, record sessionrt.Session
 		return err
 	}
 	if err == nil {
+		if strings.TrimSpace(record.DisplayName) == "" {
+			record.DisplayName = existing.DisplayName
+		}
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = existing.CreatedAt
 		}
@@ -367,7 +373,7 @@ func (s *EventStore) ListSessions(ctx context.Context) ([]sessionrt.SessionRecor
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, status, created_at, updated_at, last_seq, in_flight
+		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight
 		FROM sessions
 		ORDER BY session_id ASC
 	`)
@@ -410,6 +416,7 @@ func (s *EventStore) initSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS sessions (
 			session_id TEXT PRIMARY KEY,
+			display_name TEXT NOT NULL DEFAULT '',
 			status INTEGER NOT NULL,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
@@ -419,6 +426,12 @@ func (s *EventStore) initSchema(ctx context.Context) error {
 	`); err != nil {
 		slog.Error("sqlite_store: failed to create sessions table", "error", err)
 		return fmt.Errorf("create sessions table: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE sessions ADD COLUMN display_name TEXT NOT NULL DEFAULT ''
+	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
+		slog.Error("sqlite_store: failed to migrate sessions table", "error", err)
+		return fmt.Errorf("migrate sessions table display_name: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq)
@@ -446,7 +459,7 @@ func (s *EventStore) notifySubscribers(event sessionrt.Event) {
 
 func loadSessionRecord(ctx context.Context, db *sql.DB, sessionID sessionrt.SessionID) (sessionrt.SessionRecord, error) {
 	row := db.QueryRowContext(ctx, `
-		SELECT session_id, status, created_at, updated_at, last_seq, in_flight
+		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight
 		FROM sessions
 		WHERE session_id = ?
 	`, string(sessionID))
@@ -455,7 +468,7 @@ func loadSessionRecord(ctx context.Context, db *sql.DB, sessionID sessionrt.Sess
 
 func loadSessionRecordTx(ctx context.Context, tx *sql.Tx, sessionID sessionrt.SessionID) (sessionrt.SessionRecord, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT session_id, status, created_at, updated_at, last_seq, in_flight
+		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight
 		FROM sessions
 		WHERE session_id = ?
 	`, string(sessionID))
@@ -464,10 +477,11 @@ func loadSessionRecordTx(ctx context.Context, tx *sql.Tx, sessionID sessionrt.Se
 
 func upsertSessionTx(ctx context.Context, tx *sql.Tx, record sessionrt.SessionRecord) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (session_id, status, created_at, updated_at, last_seq, in_flight)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (session_id, display_name, status, created_at, updated_at, last_seq, in_flight)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id)
 		DO UPDATE SET
+			display_name = excluded.display_name,
 			status = excluded.status,
 			created_at = excluded.created_at,
 			updated_at = excluded.updated_at,
@@ -475,6 +489,7 @@ func upsertSessionTx(ctx context.Context, tx *sql.Tx, record sessionrt.SessionRe
 			in_flight = excluded.in_flight
 	`,
 		string(record.SessionID),
+		strings.TrimSpace(record.DisplayName),
 		int(record.Status),
 		record.CreatedAt.UTC().UnixMilli(),
 		record.UpdatedAt.UTC().UnixMilli(),
@@ -489,44 +504,48 @@ func upsertSessionTx(ctx context.Context, tx *sql.Tx, record sessionrt.SessionRe
 
 func scanSessionRecord(rows *sql.Rows) (sessionrt.SessionRecord, error) {
 	var sessionID string
+	var displayName string
 	var status int
 	var createdAtMillis int64
 	var updatedAtMillis int64
 	var lastSeq int64
 	var inFlight int
-	if err := rows.Scan(&sessionID, &status, &createdAtMillis, &updatedAtMillis, &lastSeq, &inFlight); err != nil {
+	if err := rows.Scan(&sessionID, &displayName, &status, &createdAtMillis, &updatedAtMillis, &lastSeq, &inFlight); err != nil {
 		return sessionrt.SessionRecord{}, fmt.Errorf("scan session row: %w", err)
 	}
 	return sessionrt.SessionRecord{
-		SessionID: sessionrt.SessionID(sessionID),
-		Status:    sessionrt.SessionStatus(status),
-		CreatedAt: fromMillis(createdAtMillis),
-		UpdatedAt: fromMillis(updatedAtMillis),
-		LastSeq:   uint64(lastSeq),
-		InFlight:  inFlight != 0,
+		SessionID:   sessionrt.SessionID(sessionID),
+		DisplayName: strings.TrimSpace(displayName),
+		Status:      sessionrt.SessionStatus(status),
+		CreatedAt:   fromMillis(createdAtMillis),
+		UpdatedAt:   fromMillis(updatedAtMillis),
+		LastSeq:     uint64(lastSeq),
+		InFlight:    inFlight != 0,
 	}, nil
 }
 
 func scanSessionRecordFromRow(row *sql.Row) (sessionrt.SessionRecord, error) {
 	var sessionID string
+	var displayName string
 	var status int
 	var createdAtMillis int64
 	var updatedAtMillis int64
 	var lastSeq int64
 	var inFlight int
-	if err := row.Scan(&sessionID, &status, &createdAtMillis, &updatedAtMillis, &lastSeq, &inFlight); err != nil {
+	if err := row.Scan(&sessionID, &displayName, &status, &createdAtMillis, &updatedAtMillis, &lastSeq, &inFlight); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return sessionrt.SessionRecord{}, sessionrt.ErrSessionNotFound
 		}
 		return sessionrt.SessionRecord{}, fmt.Errorf("scan session row: %w", err)
 	}
 	return sessionrt.SessionRecord{
-		SessionID: sessionrt.SessionID(sessionID),
-		Status:    sessionrt.SessionStatus(status),
-		CreatedAt: fromMillis(createdAtMillis),
-		UpdatedAt: fromMillis(updatedAtMillis),
-		LastSeq:   uint64(lastSeq),
-		InFlight:  inFlight != 0,
+		SessionID:   sessionrt.SessionID(sessionID),
+		DisplayName: strings.TrimSpace(displayName),
+		Status:      sessionrt.SessionStatus(status),
+		CreatedAt:   fromMillis(createdAtMillis),
+		UpdatedAt:   fromMillis(updatedAtMillis),
+		LastSeq:     uint64(lastSeq),
+		InFlight:    inFlight != 0,
 	}, nil
 }
 
@@ -571,7 +590,13 @@ func payloadToControl(payload any) (sessionrt.ControlPayload, bool) {
 	case map[string]any:
 		action, _ := value["action"].(string)
 		reason, _ := value["reason"].(string)
-		return sessionrt.ControlPayload{Action: action, Reason: reason}, action != ""
+		out := sessionrt.ControlPayload{Action: action, Reason: reason}
+		if metadataAny, ok := value["metadata"]; ok && metadataAny != nil {
+			if metadata, ok := metadataAny.(map[string]any); ok {
+				out.Metadata = metadata
+			}
+		}
+		return out, action != ""
 	default:
 		blob, err := json.Marshal(payload)
 		if err != nil {
@@ -608,4 +633,25 @@ func isSQLitePrimaryKeyViolation(err error) bool {
 	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "unique") || strings.Contains(message, "constraint")
+}
+
+func isSQLiteDuplicateColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "duplicate column")
+}
+
+func displayNameFromSessionCreatedEvent(event sessionrt.Event) (string, bool) {
+	if event.Type != sessionrt.EventControl {
+		return "", false
+	}
+	ctrl, ok := payloadToControl(event.Payload)
+	if !ok || strings.TrimSpace(ctrl.Action) != sessionrt.ControlActionSessionCreated {
+		return "", false
+	}
+	raw, _ := ctrl.Metadata["display_name"].(string)
+	name := strings.TrimSpace(raw)
+	return name, name != ""
 }

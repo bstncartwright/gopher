@@ -197,3 +197,38 @@ func TestEventStoreStreamAndSessionUpsert(t *testing.T) {
 		t.Fatalf("expected ErrSessionNotFound for missing session, got %v", err)
 	}
 }
+
+func TestEventStoreExtractsDisplayNameFromCreatedEvent(t *testing.T) {
+	store, err := NewEventStore(EventStoreOptions{Path: filepath.Join(t.TempDir(), "events.db")})
+	if err != nil {
+		t.Fatalf("NewEventStore() error: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	err = store.Append(context.Background(), sessionrt.Event{
+		ID:        "s2-000001",
+		SessionID: "s2",
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventControl,
+		Payload: sessionrt.ControlPayload{
+			Action: sessionrt.ControlActionSessionCreated,
+			Metadata: map[string]any{
+				"display_name": "Ops Room",
+			},
+		},
+		Timestamp: now,
+		Seq:       1,
+	})
+	if err != nil {
+		t.Fatalf("Append(created) error: %v", err)
+	}
+
+	record, err := store.GetSessionRecord(context.Background(), "s2")
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	if record.DisplayName != "Ops Room" {
+		t.Fatalf("display_name = %q, want Ops Room", record.DisplayName)
+	}
+}

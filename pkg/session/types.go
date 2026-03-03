@@ -12,6 +12,7 @@ const SystemActorID ActorID = "system"
 
 type Session struct {
 	ID           SessionID               `json:"id"`
+	DisplayName  string                  `json:"display_name,omitempty"`
 	Participants map[ActorID]Participant `json:"participants"`
 	CreatedAt    time.Time               `json:"created_at"`
 	Status       SessionStatus           `json:"status"`
@@ -89,4 +90,5 @@ const (
 
 type CreateSessionOptions struct {
 	Participants []Participant
+	DisplayName  string
 }

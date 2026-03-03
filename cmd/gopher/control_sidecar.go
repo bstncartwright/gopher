@@ -155,6 +155,7 @@ func (a *controlActionApplier) applyAction(ctx context.Context, action controlAc
 		}
 		created, err := a.manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
 			Participants: participants,
+			DisplayName:  strings.TrimSpace(source.DisplayName),
 		})
 		if err != nil {
 			return err
@@ -272,6 +273,7 @@ func (w *controlSessionWatcher) rebuildIndex(ctx context.Context) error {
 		}
 		item := map[string]any{
 			"session_id":        strings.TrimSpace(string(record.SessionID)),
+			"display_name":      strings.TrimSpace(record.DisplayName),
 			"status":            statusText,
 			"updated_at":        record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 			"last_seq":          record.LastSeq,

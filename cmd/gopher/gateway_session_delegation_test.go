@@ -602,3 +602,15 @@ func TestGatewaySessionDelegationCompletedAnnouncesToSourceSession(t *testing.T)
 			strings.Contains(msg.Content, created.SessionID)
 	})
 }
+
+func TestDelegationTerminalStatusFromEventIgnoresEventError(t *testing.T) {
+	status, reason, ok := delegationTerminalStatusFromEvent(sessionrt.Event{
+		Type: sessionrt.EventError,
+		Payload: sessionrt.ErrorPayload{
+			Message: "exa: status=429: rate limit exceeded",
+		},
+	})
+	if ok {
+		t.Fatalf("expected EventError to be non-terminal, got status=%q reason=%q", status, reason)
+	}
+}

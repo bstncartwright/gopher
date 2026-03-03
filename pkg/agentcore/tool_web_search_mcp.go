@@ -254,7 +254,7 @@ func (t *webSearchMCPTool) Run(ctx context.Context, input ToolInput) (ToolOutput
 		return t.success(query, primaryResult, false, ""), nil
 	}
 
-	if req.Provider == "exa" || req.NoFallback {
+	if req.NoFallback {
 		return t.fail(query, primaryErr)
 	}
 

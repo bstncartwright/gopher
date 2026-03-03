@@ -90,3 +90,32 @@ func TestBuildAgentSystemPromptIncludesConcreteDateAndTime(t *testing.T) {
 		t.Fatalf("did not expect current timestamp line, got: %s", prompt)
 	}
 }
+
+func TestBuildAgentSystemPromptMessageKickoffPreferenceOnlyWhenMessageToolEnabled(t *testing.T) {
+	withMessage, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:  "/tmp/workspace",
+		PromptMode: PromptModeMinimal,
+		Tools:      NewToolRegistry([]Tool{&messageTool{}}),
+	})
+	if err != nil {
+		t.Fatalf("buildAgentSystemPrompt() with message tool error: %v", err)
+	}
+	if !strings.Contains(withMessage, "prefer using `message` for the kickoff acknowledgement") {
+		t.Fatalf("expected message kickoff preference, got: %s", withMessage)
+	}
+	if !strings.Contains(withMessage, "This is encouraged, not required") {
+		t.Fatalf("expected non-mandatory wording, got: %s", withMessage)
+	}
+
+	withoutMessage, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:  "/tmp/workspace",
+		PromptMode: PromptModeMinimal,
+		Tools:      NewToolRegistry(nil),
+	})
+	if err != nil {
+		t.Fatalf("buildAgentSystemPrompt() without message tool error: %v", err)
+	}
+	if strings.Contains(withoutMessage, "prefer using `message` for the kickoff acknowledgement") {
+		t.Fatalf("did not expect message kickoff preference without message tool, got: %s", withoutMessage)
+	}
+}

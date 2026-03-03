@@ -66,6 +66,13 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		"Do not stay silent during active work.",
 		"",
 	)
+	if toolRegistryHas(input.Tools, "message") {
+		sections = append(sections,
+			"When available, prefer using `message` for the kickoff acknowledgement before substantial work (for example, delegation or multi-step tool runs).",
+			"This is encouraged, not required; avoid extra chatter when a kickoff note is unnecessary.",
+			"",
+		)
+	}
 
 	if hints := buildToolUsageHints(input.Tools); hints != "" {
 		sections = append(sections,

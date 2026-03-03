@@ -57,6 +57,8 @@ type fakeTransport struct {
 	mu                  sync.Mutex
 	handler             transport.InboundHandler
 	sent                []transport.OutboundMessage
+	drafts              []draftSignal
+	draftFailFirst      bool
 	typing              []typingSignal
 	managed             map[string][]string
 	traceInboundIgnored int
@@ -66,6 +68,12 @@ type typingSignal struct {
 	ConversationID string
 	SenderID       string
 	Typing         bool
+}
+
+type draftSignal struct {
+	ConversationID string
+	DraftID        int64
+	Text           string
 }
 
 func (f *fakeTransport) Start(context.Context) error { return nil }
@@ -79,6 +87,23 @@ func (f *fakeTransport) SendMessage(_ context.Context, message transport.Outboun
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, message)
+	return nil
+}
+func (f *fakeTransport) SendMessageDraft(_ context.Context, conversationID string, draftID int64, text string) error {
+	f.mu.Lock()
+	f.drafts = append(f.drafts, draftSignal{
+		ConversationID: conversationID,
+		DraftID:        draftID,
+		Text:           text,
+	})
+	shouldFail := f.draftFailFirst
+	if shouldFail {
+		f.draftFailFirst = false
+	}
+	f.mu.Unlock()
+	if shouldFail {
+		return fmt.Errorf("draft failed")
+	}
 	return nil
 }
 func (f *fakeTransport) SendTyping(_ context.Context, conversationID string, typing bool) error {
@@ -119,6 +144,14 @@ func (f *fakeTransport) typingSignals() []typingSignal {
 	defer f.mu.Unlock()
 	out := make([]typingSignal, len(f.typing))
 	copy(out, f.typing)
+	return out
+}
+
+func (f *fakeTransport) draftSignals() []draftSignal {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]draftSignal, len(f.drafts))
+	copy(out, f.drafts)
 	return out
 }
 
@@ -217,6 +250,49 @@ type dmTransientRecoverExecutor struct {
 	calls       int
 	errorText   string
 	recoveryMsg string
+}
+
+type dmStreamingExecutor struct {
+	deltas []string
+	final  string
+}
+
+func (e *dmStreamingExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	events := make([]sessionrt.Event, 0, len(e.deltas)+1)
+	for _, delta := range e.deltas {
+		events = append(events, sessionrt.Event{
+			From: input.ActorID,
+			Type: sessionrt.EventAgentDelta,
+			Payload: map[string]any{
+				"delta": delta,
+			},
+		})
+	}
+	events = append(events, sessionrt.Event{
+		From: input.ActorID,
+		Type: sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleAgent,
+			Content: e.final,
+		},
+	})
+	return sessionrt.AgentOutput{Events: events}, nil
+}
+
+func (e *dmStreamingExecutor) StepStream(ctx context.Context, input sessionrt.AgentInput, emit sessionrt.AgentEventEmitter) error {
+	if emit == nil {
+		return nil
+	}
+	out, err := e.Step(ctx, input)
+	if err != nil {
+		return err
+	}
+	for _, event := range out.Events {
+		if err := emit(event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *dmTransientRecoverExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
@@ -3456,6 +3532,96 @@ func TestDMPipelineTraceOffStopsPublishAndTraceOnResumes(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		return tracePublisher.publishedCount() > initialPublished
 	})
+}
+
+func TestDMPipelineStreamsDraftDeltasToSupportingTransport(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmStreamingExecutor{
+			deltas: []string{strings.Repeat("a", 80)},
+			final:  "final reply",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fake.draftSignals()) > 0
+	})
+
+	drafts := fake.draftSignals()
+	if drafts[0].ConversationID != "telegram:777" {
+		t.Fatalf("draft conversation id = %q, want telegram:777", drafts[0].ConversationID)
+	}
+	if drafts[0].DraftID <= 0 {
+		t.Fatalf("draft id = %d, want > 0", drafts[0].DraftID)
+	}
+	if got := fake.lastSent().Text; got != "final reply" {
+		t.Fatalf("final outbound text = %q, want final reply", got)
+	}
+}
+
+func TestDMPipelineDisablesDraftStreamingAfterDraftError(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmStreamingExecutor{
+			deltas: []string{strings.Repeat("x", 80), strings.Repeat("y", 80)},
+			final:  "done",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{draftFailFirst: true}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	drafts := fake.draftSignals()
+	if len(drafts) != 1 {
+		t.Fatalf("draft call count = %d, want 1 after first failure", len(drafts))
+	}
 }
 
 func TestFallbackReplyForErrorSanitizesSensitiveDetails(t *testing.T) {

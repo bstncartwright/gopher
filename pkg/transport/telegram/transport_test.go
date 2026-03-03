@@ -24,6 +24,20 @@ func TestParseConversationChatID(t *testing.T) {
 	if _, err := parseConversationChatID("!trace:one"); err == nil {
 		t.Fatalf("expected error for non-telegram conversation id")
 	}
+	threaded, err := parseConversationChatID("telegram:12345:9")
+	if err != nil {
+		t.Fatalf("parseConversationChatID(threaded) error: %v", err)
+	}
+	if threaded != "12345" {
+		t.Fatalf("threaded chat id = %q, want 12345", threaded)
+	}
+	target, err := parseConversationTarget("telegram:12345:9")
+	if err != nil {
+		t.Fatalf("parseConversationTarget() error: %v", err)
+	}
+	if target.ChatID != "12345" || target.MessageThreadID != 9 {
+		t.Fatalf("parsed target = %#v, want chat 12345 thread 9", target)
+	}
 }
 
 func TestOffsetRoundTrip(t *testing.T) {
@@ -137,6 +151,34 @@ func TestDispatchEventMapsInboundFields(t *testing.T) {
 	}
 }
 
+func TestDispatchEventMapsInboundFieldsWithMessageThread(t *testing.T) {
+	tr, err := New(Options{BotToken: "token"})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	var got transport.InboundMessage
+	tr.SetInboundHandler(func(_ context.Context, inbound transport.InboundMessage) error {
+		got = inbound
+		return nil
+	})
+	event := telegramEvent{
+		UpdateID: 34,
+		Message: &telegramMessage{
+			MessageID:       734,
+			MessageThreadID: 11,
+			From:            &telegramUser{ID: 501, Username: "boss"},
+			Chat:            &telegramChat{ID: 777},
+			Text:            "status?",
+		},
+	}
+	if err := tr.dispatchEvent(context.Background(), event); err != nil {
+		t.Fatalf("dispatchEvent() error: %v", err)
+	}
+	if got.ConversationID != "telegram:777:11" {
+		t.Fatalf("conversation id = %q, want telegram:777:11", got.ConversationID)
+	}
+}
+
 func TestRenderTelegramMessageTextConvertsMarkdown(t *testing.T) {
 	text := "Hey **Boston**\nUse `gopher` and [docs](https://example.com)\n\n```bash\necho hi\n```"
 	rendered, parseMode := renderTelegramMessageText(text)
@@ -215,6 +257,97 @@ func TestSendMessageRetriesWithoutParseModeWhenTelegramRejectsEntities(t *testin
 	fallbackText, _ := requests[1]["text"].(string)
 	if strings.Contains(fallbackText, "**") {
 		t.Fatalf("fallback text still includes markdown delimiters: %q", fallbackText)
+	}
+}
+
+func TestSendMessageIncludesMessageThreadID(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/sendMessage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode sendMessage payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777:8",
+		Text:           "threaded reply",
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if gotThread, _ := payload["message_thread_id"].(float64); gotThread != 8 {
+		t.Fatalf("message_thread_id = %v, want 8", payload["message_thread_id"])
+	}
+}
+
+func TestSendMessageDraftCallsTelegramAPI(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/sendMessageDraft" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode sendMessageDraft payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessageDraft(context.Background(), "telegram:777:8", 42, "building response"); err != nil {
+		t.Fatalf("SendMessageDraft() error: %v", err)
+	}
+	if gotDraftID, _ := payload["draft_id"].(float64); gotDraftID != 42 {
+		t.Fatalf("draft_id = %v, want 42", payload["draft_id"])
+	}
+	if gotThread, _ := payload["message_thread_id"].(float64); gotThread != 8 {
+		t.Fatalf("message_thread_id = %v, want 8", payload["message_thread_id"])
+	}
+}
+
+func TestSendMessageDraftDisablesOnUnknownMethod(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":404,"description":"Bad Request: method not found"}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendMessageDraft(context.Background(), "telegram:777", 1, "one"); err != nil {
+		t.Fatalf("SendMessageDraft(first) error: %v", err)
+	}
+	if err := tr.SendMessageDraft(context.Background(), "telegram:777", 2, "two"); err != nil {
+		t.Fatalf("SendMessageDraft(second) error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("request count = %d, want 1", requests)
 	}
 }
 

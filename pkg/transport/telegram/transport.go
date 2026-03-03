@@ -54,6 +54,9 @@ type Transport struct {
 	handlerMu sync.RWMutex
 	handler   transport.InboundHandler
 
+	draftStreamingMu       sync.Mutex
+	draftStreamingDisabled bool
+
 	runMu     sync.Mutex
 	runCancel context.CancelFunc
 }
@@ -69,11 +72,12 @@ type telegramEvent struct {
 }
 
 type telegramMessage struct {
-	MessageID int64         `json:"message_id"`
-	From      *telegramUser `json:"from"`
-	Chat      *telegramChat `json:"chat"`
-	Date      int64         `json:"date"`
-	Text      string        `json:"text"`
+	MessageID       int64         `json:"message_id"`
+	MessageThreadID int64         `json:"message_thread_id"`
+	From            *telegramUser `json:"from"`
+	Chat            *telegramChat `json:"chat"`
+	Date            int64         `json:"date"`
+	Text            string        `json:"text"`
 }
 
 type telegramUser struct {
@@ -242,7 +246,7 @@ func (t *Transport) SetInboundHandler(handler transport.InboundHandler) {
 }
 
 func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundMessage) error {
-	chatID, err := parseConversationChatID(message.ConversationID)
+	target, err := parseConversationTarget(message.ConversationID)
 	if err != nil {
 		return err
 	}
@@ -254,8 +258,8 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 
 	if text != "" {
 		renderedText, parseMode := renderTelegramMessageText(text)
-		payload := buildSendMessagePayload(chatID, renderedText, parseMode)
-		slog.Info("telegram transport: sending message", "conversation_id", message.ConversationID, "chat_id", chatID, "attachment_count", len(message.Attachments))
+		payload := buildSendMessagePayload(target.ChatID, target.MessageThreadID, renderedText, parseMode)
+		slog.Info("telegram transport: sending message", "conversation_id", message.ConversationID, "chat_id", target.ChatID, "attachment_count", len(message.Attachments))
 		if err := t.sendAPI(ctx, "sendMessage", payload); err != nil {
 			if parseMode == "" || !isTelegramEntityParseError(err) {
 				return err
@@ -267,17 +271,17 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 			slog.Warn(
 				"telegram transport: parse-mode render rejected by telegram, retrying plain text",
 				"conversation_id", message.ConversationID,
-				"chat_id", chatID,
+				"chat_id", target.ChatID,
 				"error", err,
 			)
-			if err := t.sendAPI(ctx, "sendMessage", buildSendMessagePayload(chatID, fallbackText, "")); err != nil {
+			if err := t.sendAPI(ctx, "sendMessage", buildSendMessagePayload(target.ChatID, target.MessageThreadID, fallbackText, "")); err != nil {
 				return err
 			}
 		}
 	}
 
 	for _, attachment := range message.Attachments {
-		if err := t.sendAttachment(ctx, message.ConversationID, chatID, attachment); err != nil {
+		if err := t.sendAttachment(ctx, message.ConversationID, target, attachment); err != nil {
 			return err
 		}
 	}
@@ -288,16 +292,57 @@ func (t *Transport) SendTyping(ctx context.Context, conversationID string, typin
 	if !typing {
 		return nil
 	}
-	chatID, err := parseConversationChatID(conversationID)
+	target, err := parseConversationTarget(conversationID)
 	if err != nil {
 		return err
 	}
 	payload := map[string]any{
-		"chat_id": chatID,
+		"chat_id": target.ChatID,
 		"action":  "typing",
 	}
-	slog.Debug("telegram transport: sending typing indicator", "conversation_id", conversationID, "chat_id", chatID)
+	if target.MessageThreadID > 0 {
+		payload["message_thread_id"] = target.MessageThreadID
+	}
+	slog.Debug("telegram transport: sending typing indicator", "conversation_id", conversationID, "chat_id", target.ChatID)
 	return t.sendAPI(ctx, "sendChatAction", payload)
+}
+
+func (t *Transport) SendMessageDraft(ctx context.Context, conversationID string, draftID int64, text string) error {
+	if draftID <= 0 {
+		return fmt.Errorf("draft id must be > 0")
+	}
+	if t.isDraftStreamingDisabled() {
+		return nil
+	}
+	target, err := parseConversationTarget(conversationID)
+	if err != nil {
+		return err
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	runes := []rune(text)
+	if len(runes) > 4096 {
+		text = strings.TrimSpace(string(runes[:4095])) + "…"
+	}
+	payload := map[string]any{
+		"chat_id":  target.ChatID,
+		"draft_id": draftID,
+		"text":     text,
+	}
+	if target.MessageThreadID > 0 {
+		payload["message_thread_id"] = target.MessageThreadID
+	}
+	if err := t.sendAPI(ctx, "sendMessageDraft", payload); err != nil {
+		if isTelegramUnknownMethodError(err) {
+			t.setDraftStreamingDisabled(true)
+			slog.Warn("telegram transport: sendMessageDraft unsupported; disabling draft streaming", "error", err)
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (t *Transport) SendReaction(ctx context.Context, reaction transport.OutboundReaction) error {
@@ -468,16 +513,17 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 	if conversationName == "" {
 		conversationName = "telegram-chat-" + chatID
 	}
+	conversationID := formatConversationID(chatID, event.Message.MessageThreadID)
 	slog.Info(
 		"telegram transport: dispatching inbound message",
 		"update_id", event.UpdateID,
-		"conversation_id", "telegram:"+chatID,
+		"conversation_id", conversationID,
 		"sender_id", "telegram-user:"+userID,
 		"conversation_name", conversationName,
 		"text_length", len(messageText),
 	)
 	return handler(ctx, transport.InboundMessage{
-		ConversationID:   "telegram:" + chatID,
+		ConversationID:   conversationID,
 		ConversationName: conversationName,
 		SenderID:         "telegram-user:" + userID,
 		RecipientID:      "telegram-bot",
@@ -564,7 +610,7 @@ func (t *Transport) sendMultipartAPI(ctx context.Context, method string, body *b
 	return nil
 }
 
-func (t *Transport) sendAttachment(ctx context.Context, conversationID, chatID string, attachment transport.OutboundAttachment) error {
+func (t *Transport) sendAttachment(ctx context.Context, conversationID string, target telegramConversationTarget, attachment transport.OutboundAttachment) error {
 	pathValue := strings.TrimSpace(attachment.Path)
 	if pathValue == "" {
 		return fmt.Errorf("attachment path is required")
@@ -591,9 +637,15 @@ func (t *Transport) sendAttachment(ctx context.Context, conversationID, chatID s
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("chat_id", strings.TrimSpace(chatID)); err != nil {
+	if err := writer.WriteField("chat_id", strings.TrimSpace(target.ChatID)); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("build telegram %s payload: %w", method, err)
+	}
+	if target.MessageThreadID > 0 {
+		if err := writer.WriteField("message_thread_id", strconv.FormatInt(target.MessageThreadID, 10)); err != nil {
+			_ = writer.Close()
+			return fmt.Errorf("build telegram %s payload: %w", method, err)
+		}
 	}
 	part, err := writer.CreateFormFile(field, filename)
 	if err != nil {
@@ -611,7 +663,7 @@ func (t *Transport) sendAttachment(ctx context.Context, conversationID, chatID s
 	slog.Info(
 		"telegram transport: sending attachment",
 		"conversation_id", conversationID,
-		"chat_id", chatID,
+		"chat_id", target.ChatID,
 		"path", pathValue,
 		"filename", filename,
 		"method", method,
@@ -707,19 +759,57 @@ func mapKeys(payload map[string]any) []string {
 	return keys
 }
 
+type telegramConversationTarget struct {
+	ChatID          string
+	MessageThreadID int64
+}
+
 func parseConversationChatID(conversationID string) (string, error) {
+	target, err := parseConversationTarget(conversationID)
+	if err != nil {
+		return "", err
+	}
+	return target.ChatID, nil
+}
+
+func parseConversationTarget(conversationID string) (telegramConversationTarget, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
-		return "", fmt.Errorf("conversation id is required")
+		return telegramConversationTarget{}, fmt.Errorf("conversation id is required")
 	}
 	if !strings.HasPrefix(conversationID, "telegram:") {
-		return "", fmt.Errorf("unsupported telegram conversation id %q", conversationID)
+		return telegramConversationTarget{}, fmt.Errorf("unsupported telegram conversation id %q", conversationID)
 	}
-	chatID := strings.TrimSpace(strings.TrimPrefix(conversationID, "telegram:"))
+	raw := strings.TrimSpace(strings.TrimPrefix(conversationID, "telegram:"))
+	parts := strings.SplitN(raw, ":", 2)
+	chatID := strings.TrimSpace(parts[0])
 	if chatID == "" {
-		return "", fmt.Errorf("telegram chat id is required")
+		return telegramConversationTarget{}, fmt.Errorf("telegram chat id is required")
 	}
-	return chatID, nil
+	target := telegramConversationTarget{ChatID: chatID}
+	if len(parts) == 2 {
+		threadRaw := strings.TrimSpace(parts[1])
+		if threadRaw == "" {
+			return telegramConversationTarget{}, fmt.Errorf("telegram message thread id is required")
+		}
+		threadID, err := strconv.ParseInt(threadRaw, 10, 64)
+		if err != nil || threadID <= 0 {
+			return telegramConversationTarget{}, fmt.Errorf("invalid telegram message thread id %q", threadRaw)
+		}
+		target.MessageThreadID = threadID
+	}
+	return target, nil
+}
+
+func formatConversationID(chatID string, messageThreadID int64) string {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return "telegram:"
+	}
+	if messageThreadID > 0 {
+		return fmt.Sprintf("telegram:%s:%d", chatID, messageThreadID)
+	}
+	return "telegram:" + chatID
 }
 
 func parseTelegramMessageID(eventID string) (int64, error) {
@@ -808,15 +898,30 @@ func telegramAttachmentField(method string) string {
 	}
 }
 
-func buildSendMessagePayload(chatID, text, parseMode string) map[string]any {
+func buildSendMessagePayload(chatID string, messageThreadID int64, text, parseMode string) map[string]any {
 	payload := map[string]any{
 		"chat_id": strings.TrimSpace(chatID),
 		"text":    strings.TrimSpace(text),
+	}
+	if messageThreadID > 0 {
+		payload["message_thread_id"] = messageThreadID
 	}
 	if mode := strings.TrimSpace(parseMode); mode != "" {
 		payload["parse_mode"] = mode
 	}
 	return payload
+}
+
+func (t *Transport) setDraftStreamingDisabled(disabled bool) {
+	t.draftStreamingMu.Lock()
+	t.draftStreamingDisabled = disabled
+	t.draftStreamingMu.Unlock()
+}
+
+func (t *Transport) isDraftStreamingDisabled() bool {
+	t.draftStreamingMu.Lock()
+	defer t.draftStreamingMu.Unlock()
+	return t.draftStreamingDisabled
 }
 
 func isTelegramEntityParseError(err error) bool {
@@ -829,6 +934,18 @@ func isTelegramEntityParseError(err error) bool {
 		return false
 	}
 	return strings.Contains(detail, "can't parse entities") || strings.Contains(detail, "parse entities")
+}
+
+func isTelegramUnknownMethodError(err error) bool {
+	var apiErr *telegramAPIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	detail := strings.ToLower(strings.TrimSpace(apiErr.Description))
+	if detail == "" {
+		return false
+	}
+	return strings.Contains(detail, "method not found") || strings.Contains(detail, "unknown method")
 }
 
 func renderTelegramMessageText(text string) (string, string) {

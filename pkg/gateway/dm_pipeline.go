@@ -88,6 +88,9 @@ type DMPipeline struct {
 	errorRecoveryCount map[string]int
 	processingMu       sync.Mutex
 	processing         map[string]int
+	draftMu            sync.Mutex
+	draftSeq           uint64
+	draftState         map[string]draftStreamState
 	typingMu           sync.Mutex
 	typingCancel       map[string]context.CancelFunc
 	attachmentMu       sync.Mutex
@@ -136,6 +139,14 @@ type pendingErrorFallback struct {
 	timer  *time.Timer
 }
 
+type draftStreamState struct {
+	DraftID    int64
+	Text       string
+	LastSentAt time.Time
+	LastSentN  int
+	Disabled   bool
+}
+
 type dmErrorClass int
 
 const (
@@ -160,6 +171,9 @@ const (
 	dmErrorRecoveryMaxTries  = 1
 	dmTypingTimeout          = 3 * time.Second
 	dmTypingKeepaliveDefault = 5 * time.Second
+	dmDraftMaxChars          = 4096
+	dmDraftMinSendChars      = 48
+	dmDraftMinSendInterval   = 900 * time.Millisecond
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	noReplyToken             = "NO_REPLY"
 	heartbeatAckDefaultChars = 300
@@ -187,6 +201,10 @@ type typingTransport interface {
 
 type typingSenderTransport interface {
 	SendTypingAs(ctx context.Context, conversationID, senderID string, typing bool) error
+}
+
+type draftStreamingTransport interface {
+	SendMessageDraft(ctx context.Context, conversationID string, draftID int64, text string) error
 }
 
 type managedConversationUsersReader interface {
@@ -245,6 +263,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		errorFallbacks:     map[string]pendingErrorFallback{},
 		errorRecoveryCount: map[string]int{},
 		processing:         map[string]int{},
+		draftState:         map[string]draftStreamState{},
 		typingCancel:       map[string]context.CancelFunc{},
 		pendingFiles:       map[string][]transport.OutboundAttachment{},
 		pendingMessageText: map[string][]string{},
@@ -1211,6 +1230,10 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				p.captureAttachmentsFromEvent(conversationID, event)
 				p.captureMessageEchoFromEvent(conversationID, event)
 			}
+			if event.Type == sessionrt.EventAgentDelta {
+				p.sendDraftDelta(conversationID, event)
+				continue
+			}
 
 			if event.Type != sessionrt.EventMessage {
 				continue
@@ -1296,6 +1319,7 @@ func (p *DMPipeline) startProcessing(conversationID string) {
 		p.resetErrorRecoveryState(conversationID)
 		p.clearPendingAttachments(conversationID)
 		p.clearPendingMessageDedupe(conversationID)
+		p.clearDraftState(conversationID)
 		p.sendTyping(conversationID, true)
 		p.startTypingKeepalive(conversationID)
 	}
@@ -1324,6 +1348,7 @@ func (p *DMPipeline) finishProcessing(conversationID string) {
 
 	if shouldDisable {
 		p.clearErrorRecoveryState(conversationID)
+		p.clearDraftState(conversationID)
 		p.stopTypingKeepalive(conversationID)
 		p.sendTyping(conversationID, false)
 	}
@@ -1755,6 +1780,107 @@ func (p *DMPipeline) sendTyping(conversationID string, typing bool) {
 			"error", err,
 		)
 	}
+}
+
+func (p *DMPipeline) sendDraftDelta(conversationID string, event sessionrt.Event) {
+	streamer, ok := p.transport.(draftStreamingTransport)
+	if !ok {
+		return
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	delta := strings.TrimSpace(deltaTextFromPayload(event.Payload))
+	if delta == "" {
+		return
+	}
+
+	now := p.now()
+	var draftID int64
+	var draftText string
+
+	p.draftMu.Lock()
+	state := p.draftState[conversationID]
+	if state.Disabled {
+		p.draftMu.Unlock()
+		return
+	}
+	if state.DraftID <= 0 {
+		p.draftSeq++
+		state.DraftID = int64((p.draftSeq % (1<<31 - 1)) + 1)
+	}
+	state.Text += delta
+	draftText = trimDraftText(state.Text)
+	if draftText == "" {
+		p.draftState[conversationID] = state
+		p.draftMu.Unlock()
+		return
+	}
+	if !state.LastSentAt.IsZero() {
+		charDelta := runeLen(draftText) - state.LastSentN
+		if charDelta < dmDraftMinSendChars && now.Sub(state.LastSentAt) < dmDraftMinSendInterval {
+			p.draftState[conversationID] = state
+			p.draftMu.Unlock()
+			return
+		}
+	}
+	state.LastSentAt = now
+	state.LastSentN = runeLen(draftText)
+	p.draftState[conversationID] = state
+	draftID = state.DraftID
+	p.draftMu.Unlock()
+
+	if err := streamer.SendMessageDraft(context.Background(), conversationID, draftID, draftText); err != nil {
+		slog.Warn("dm_pipeline: send dm draft delta failed",
+			"conversation_id", conversationID,
+			"session_id", event.SessionID,
+			"error", err,
+		)
+		p.draftMu.Lock()
+		state := p.draftState[conversationID]
+		state.Disabled = true
+		p.draftState[conversationID] = state
+		p.draftMu.Unlock()
+	}
+}
+
+func (p *DMPipeline) clearDraftState(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.draftMu.Lock()
+	delete(p.draftState, conversationID)
+	p.draftMu.Unlock()
+}
+
+func deltaTextFromPayload(payload any) string {
+	value, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	delta, _ := value["delta"].(string)
+	return delta
+}
+
+func trimDraftText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= dmDraftMaxChars {
+		return trimmed
+	}
+	if dmDraftMaxChars <= 1 {
+		return string(runes[:1])
+	}
+	return string(runes[:dmDraftMaxChars-1]) + "…"
+}
+
+func runeLen(text string) int {
+	return len([]rune(text))
 }
 
 func (p *DMPipeline) isCurrentConversationSession(conversationID string, sessionID sessionrt.SessionID) bool {

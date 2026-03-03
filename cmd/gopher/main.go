@@ -14,7 +14,16 @@ func main() {
 	}
 }
 
-func run(args []string, stdout, stderr io.Writer) error {
+func run(args []string, stdout, stderr io.Writer) (err error) {
+	cleanupLogs := setupCLIProcessLogging(stderr)
+	if cleanupLogs != nil {
+		defer cleanupLogs()
+	}
+	finishLog := startCommandLog("gopher", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if len(args) == 0 {
 		printRootUsage(stdout)
 		return nil

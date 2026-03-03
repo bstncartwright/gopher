@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,15 +33,23 @@ func loadAgentRuntime(workspace string) (*agentRuntime, error) {
 }
 
 func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*agentRuntime, error) {
+	slog.Debug(
+		"agent_runtime_loader: loading runtime",
+		"workspace", strings.TrimSpace(workspace),
+		"capture_deltas", opts.CaptureDeltas,
+		"capture_thinking", opts.CaptureThinking,
+	)
 	workspaces, err := discoverAgentWorkspaces(workspace)
 	if err != nil {
 		return nil, err
 	}
+	slog.Info("agent_runtime_loader: discovered workspaces", "count", len(workspaces), "workspaces", strings.Join(workspaces, ","))
 
 	agents := make(map[sessionrt.ActorID]*agentcore.Agent, len(workspaces))
 	executors := make(map[sessionrt.ActorID]sessionrt.AgentExecutor, len(workspaces))
 
 	for _, candidate := range workspaces {
+		slog.Debug("agent_runtime_loader: loading workspace", "workspace", candidate)
 		agent, err := agentcore.LoadAgent(candidate)
 		if err != nil {
 			recovered, recoverErr := tryRecoverDefaultMainAgentWorkspace(workspace, workspaces, candidate, err)
@@ -48,6 +57,7 @@ func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*a
 				return nil, recoverErr
 			}
 			if recovered {
+				slog.Warn("agent_runtime_loader: recovered default main workspace after load failure", "workspace", candidate)
 				agent, err = agentcore.LoadAgent(candidate)
 			}
 		}
@@ -68,6 +78,7 @@ func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*a
 			CaptureDeltas:   opts.CaptureDeltas,
 			CaptureThinking: opts.CaptureThinking,
 		})
+		slog.Debug("agent_runtime_loader: registered agent executor", "actor_id", actorID, "workspace", candidate)
 	}
 
 	actorIDs := make([]string, 0, len(agents))
@@ -93,6 +104,7 @@ func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*a
 	if err != nil {
 		return nil, err
 	}
+	slog.Info("agent_runtime_loader: runtime loaded", "default_actor_id", defaultActorID, "agents_count", len(agents))
 	return &agentRuntime{
 		Executor:       router,
 		Router:         router,
@@ -134,6 +146,7 @@ func tryRecoverDefaultMainAgentWorkspace(root string, workspaces []string, candi
 	if err := os.WriteFile(configPath, []byte(defaultConfigTemplate(defaultAgentWorkspaceID)), 0o644); err != nil {
 		return false, fmt.Errorf("recover main agent config %s after load error %v: %w", configPath, loadErr, err)
 	}
+	slog.Warn("agent_runtime_loader: rewrote empty default workspace config during recovery", "workspace", candidate, "config_path", configPath)
 	return true, nil
 }
 
@@ -227,6 +240,7 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 		return nil, fmt.Errorf("resolve workspace: %w", err)
 	}
 	workspaceAbs = filepath.Clean(workspaceAbs)
+	slog.Debug("agent_runtime_loader: discovering workspaces", "workspace", workspaceAbs)
 
 	out := make([]string, 0, 8)
 	seen := map[string]struct{}{}
@@ -268,8 +282,10 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 			return nil, fmt.Errorf("create main agent workspace %s: %w", defaultWorkspace, err)
 		}
 		addCandidate(defaultWorkspace)
+		slog.Info("agent_runtime_loader: created default main workspace", "workspace", defaultWorkspace)
 	}
 	sort.Strings(out)
+	slog.Debug("agent_runtime_loader: workspace discovery complete", "count", len(out))
 	return out, nil
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,19 +10,25 @@ import (
 func resolveGatewayDataDir(workspace string) string {
 	workspace = filepath.Clean(strings.TrimSpace(workspace))
 	if workspace == "" {
+		slog.Debug("gateway_storage: workspace empty, using default relative data directory")
 		return ".gopher"
 	}
 	if filepath.Base(workspace) != ".gopher" {
-		return filepath.Join(workspace, ".gopher")
+		dataDir := filepath.Join(workspace, ".gopher")
+		slog.Debug("gateway_storage: resolved data directory from workspace", "workspace", workspace, "data_dir", dataDir)
+		return dataDir
 	}
 	canonical := workspace
 	legacy := filepath.Join(workspace, ".gopher")
 	if hasGatewayData(canonical) {
+		slog.Debug("gateway_storage: using canonical .gopher path with existing data", "data_dir", canonical)
 		return canonical
 	}
 	if hasGatewayData(legacy) {
+		slog.Debug("gateway_storage: using legacy nested .gopher path with existing data", "data_dir", legacy)
 		return legacy
 	}
+	slog.Debug("gateway_storage: no existing data found, using canonical .gopher path", "data_dir", canonical)
 	return canonical
 }
 

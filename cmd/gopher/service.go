@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,7 +75,12 @@ var retryWithSudoForService = rerunServiceWithSudo
 var envLookupForService = os.Getenv
 var serviceGetEUID = os.Geteuid
 
-func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
+func runServiceSubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("service", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if len(args) == 0 || wantsHelp(args) {
 		printServiceUsage(stdout)
 		return nil
@@ -118,6 +124,13 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		if normalizedRole != "gateway" && normalizedRole != "node" {
 			return fmt.Errorf("invalid --role value: %s (expected gateway or node)", strings.TrimSpace(*role))
 		}
+		slog.Info(
+			"service: install requested",
+			"role", normalizedRole,
+			"config_path", strings.TrimSpace(*configPath),
+			"env_path", strings.TrimSpace(*envPath),
+			"binary_path", strings.TrimSpace(*binaryPath),
+		)
 		if err := runtimeImpl.Install(ctx, serviceInstallOptions{
 			ConfigPath: strings.TrimSpace(*configPath),
 			EnvPath:    strings.TrimSpace(*envPath),
@@ -128,6 +141,7 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	case "uninstall":
+		slog.Info("service: uninstall requested")
 		if err := runtimeImpl.Uninstall(ctx); err != nil {
 			return runWithSudoRetry(err)
 		}
@@ -146,16 +160,19 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		slog.Debug("service: status requested", "target", target)
 		if err := runtimeImpl.Status(ctx, serviceStatusOptions{Target: target}); err != nil {
 			return runWithSudoRetry(err)
 		}
 		return nil
 	case "start":
+		slog.Info("service: start requested")
 		if err := runtimeImpl.Start(ctx); err != nil {
 			return runWithSudoRetry(err)
 		}
 		return nil
 	case "stop":
+		slog.Info("service: stop requested")
 		if err := runtimeImpl.Stop(ctx); err != nil {
 			return runWithSudoRetry(err)
 		}
@@ -174,6 +191,7 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		slog.Info("service: restart requested", "target", target)
 		if err := runtimeImpl.Restart(ctx, serviceTargetOptions{Target: target}); err != nil {
 			return runWithSudoRetry(err)
 		}
@@ -195,6 +213,13 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		slog.Info(
+			"service: logs requested",
+			"target", target,
+			"unit", strings.TrimSpace(*unit),
+			"lines", *lines,
+			"follow", *follow,
+		)
 		if err := runtimeImpl.Logs(ctx, serviceLogsOptions{
 			Unit:   strings.TrimSpace(*unit),
 			Lines:  *lines,
@@ -205,6 +230,7 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	case "update":
+		slog.Info("service: update requested")
 		if err := runServiceUpdateSubcommand(ctx, args[1:], stdout, stderr); err != nil {
 			return runWithSudoRetry(err)
 		}
@@ -262,6 +288,12 @@ func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stde
 	if len(flags.Args()) > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
+	slog.Info(
+		"service: update invocation resolved",
+		"config_path", strings.TrimSpace(*configPath),
+		"binary_path", strings.TrimSpace(*binaryPath),
+		"service_name", strings.TrimSpace(*serviceName),
+	)
 
 	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{
 		ConfigPath: strings.TrimSpace(*configPath),

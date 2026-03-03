@@ -4,12 +4,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func runPairSubcommand(args []string, stdout, stderr io.Writer) error {
+func runPairSubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("pair", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if len(args) == 0 {
 		printPairUsage(stdout)
 		return nil
@@ -45,10 +51,16 @@ func runPairStatusSubcommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("pair: resolved data directory for status", "data_dir", dataDir)
 	state, err := readTelegramPairingState(dataDir)
 	if err != nil {
 		return err
 	}
+	slog.Debug(
+		"pair: loaded pairing state",
+		"paired_chat_id_set", strings.TrimSpace(state.PairedChatID) != "",
+		"has_pending_request", state.Pending != nil,
+	)
 
 	if state.PairedChatID != "" {
 		fmt.Fprintf(stdout, "paired chat id: %s\n", state.PairedChatID)
@@ -84,6 +96,7 @@ func runPairApproveSubcommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("pair: resolved data directory for approve", "data_dir", dataDir)
 	state, err := readTelegramPairingState(dataDir)
 	if err != nil {
 		return err
@@ -98,6 +111,7 @@ func runPairApproveSubcommand(args []string, stdout, stderr io.Writer) error {
 	if err := writeTelegramPairingState(dataDir, state); err != nil {
 		return err
 	}
+	slog.Info("pair: approved pending telegram pairing", "chat_id", state.PairedChatID, "user_id", state.PairedUserID)
 	fmt.Fprintf(stdout, "approved telegram pairing to chat id %s\n", state.PairedChatID)
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -45,6 +46,14 @@ func ApplyRelease(ctx context.Context, opts ApplyOptions) error {
 	if runner == nil {
 		return fmt.Errorf("command runner is required")
 	}
+	slog.Info(
+		"update_apply: starting release apply",
+		"binary_path", binaryPath,
+		"asset_url", strings.TrimSpace(opts.AssetURL),
+		"asset_name", assetName,
+		"has_checksums", strings.TrimSpace(opts.ChecksumsURL) != "",
+		"service_name", strings.TrimSpace(opts.ServiceName),
+	)
 
 	blob, err := DownloadWithToken(ctx, opts.HTTPClient, opts.AssetURL, opts.Token)
 	if err != nil {
@@ -61,6 +70,7 @@ func ApplyRelease(ctx context.Context, opts ApplyOptions) error {
 		if err := verifyChecksums(checksumBlob, assetName, blob); err != nil {
 			return err
 		}
+		slog.Debug("update_apply: checksums verified", "asset_name", assetName)
 	}
 
 	dir := filepath.Dir(binaryPath)
@@ -69,6 +79,7 @@ func ApplyRelease(ctx context.Context, opts ApplyOptions) error {
 	if err := os.WriteFile(tmpPath, blob, 0o755); err != nil {
 		return fmt.Errorf("write temporary update binary: %w", err)
 	}
+	slog.Debug("update_apply: wrote temp binary", "temp_path", tmpPath, "bytes", len(blob))
 
 	if _, err := os.Stat(binaryPath); err == nil {
 		if err := os.Rename(binaryPath, backupPath); err != nil {
@@ -81,9 +92,11 @@ func ApplyRelease(ctx context.Context, opts ApplyOptions) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("swap updated binary: %w", err)
 	}
+	slog.Info("update_apply: swapped binary", "binary_path", binaryPath, "backup_path", backupPath)
 
 	serviceName := strings.TrimSpace(opts.ServiceName)
 	if serviceName != "" {
+		slog.Info("update_apply: restarting service after binary swap", "service_name", serviceName)
 		if err := runner.Run(ctx, "systemctl", "restart", serviceName); err != nil {
 			_ = rollbackBinary(binaryPath, backupPath)
 			return fmt.Errorf("restart service after update: %w", err)
@@ -92,7 +105,9 @@ func ApplyRelease(ctx context.Context, opts ApplyOptions) error {
 			_ = rollbackBinary(binaryPath, backupPath)
 			return fmt.Errorf("service health check failed after update: %w", err)
 		}
+		slog.Info("update_apply: service restarted and healthy", "service_name", serviceName)
 	}
+	slog.Info("update_apply: apply completed", "binary_path", binaryPath)
 	return nil
 }
 
@@ -123,6 +138,7 @@ func verifyChecksums(checksumBlob []byte, assetName string, blob []byte) error {
 }
 
 func rollbackBinary(binaryPath, backupPath string) error {
+	slog.Warn("update_apply: rolling back binary", "binary_path", binaryPath, "backup_path", backupPath)
 	_ = os.Remove(binaryPath)
 	if _, err := os.Stat(backupPath); err == nil {
 		if err := os.Rename(backupPath, binaryPath); err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 )
@@ -17,7 +18,9 @@ func resolveRuntimeWorkspace(workingDir, primaryConfigPath, localConfigPath stri
 		if err != nil {
 			return "", fmt.Errorf("resolve workspace directory from config %q: %w", candidate, err)
 		}
-		return filepath.Clean(abs), nil
+		workspace := filepath.Clean(abs)
+		slog.Debug("runtime_workspace: resolved from config file location", "config_path", candidate, "workspace", workspace)
+		return workspace, nil
 	}
 
 	base := strings.TrimSpace(workingDir)
@@ -28,5 +31,7 @@ func resolveRuntimeWorkspace(workingDir, primaryConfigPath, localConfigPath stri
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace directory: %w", err)
 	}
-	return filepath.Clean(abs), nil
+	workspace := filepath.Clean(abs)
+	slog.Debug("runtime_workspace: resolved from working directory fallback", "working_dir", base, "workspace", workspace)
+	return workspace, nil
 }

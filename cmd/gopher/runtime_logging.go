@@ -35,7 +35,11 @@ func setupProcessLogging(workingDir string, component string, stderr io.Writer) 
 	}
 
 	prevSlog := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(dest, nil)))
+	handler := slog.NewTextHandler(dest, &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true,
+	})
+	slog.SetDefault(slog.New(handler).With("component", name))
 	cleanup := func() {
 		slog.SetDefault(prevSlog)
 		_ = file.Close()

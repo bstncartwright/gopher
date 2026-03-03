@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,7 +63,12 @@ func (r scopedSystemctlRunner) Run(ctx context.Context, command string, args ...
 	return systemctlRunner{}.Run(ctx, command, args...)
 }
 
-func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
+func runUpdateSubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("update", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	if wantsHelp(args) {
 		printUpdateUsage(stdout)
 		return nil
@@ -94,11 +100,19 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 	if ghToken == "" {
 		return fmt.Errorf("github token is required via --github-token, GOPHER_GITHUB_TOKEN, or GOPHER_GITHUB_UPDATE_TOKEN")
 	}
+	slog.Info(
+		"update: checking latest release",
+		"owner", strings.TrimSpace(*owner),
+		"repo", strings.TrimSpace(*repo),
+		"current_version", currentVersion,
+		"check_only", *checkOnly,
+	)
 
 	release, err := latestReleaseForUpdate(ctx, strings.TrimSpace(*owner), strings.TrimSpace(*repo), ghToken)
 	if err != nil {
 		return err
 	}
+	slog.Info("update: latest release resolved", "latest_tag", release.TagName, "assets_count", len(release.Assets))
 	cmp, err := update.CompareVersions(currentVersion, release.TagName)
 	if err != nil {
 		return err
@@ -138,6 +152,13 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	checksumsAsset, _ := selectChecksumsAssetForUpdate(release)
+	slog.Info(
+		"update: applying release",
+		"target_binary_path", targetBinaryPath,
+		"asset_name", asset.Name,
+		"service_restart", resolvedServiceName != "",
+		"service_name", resolvedServiceName,
+	)
 
 	runner := update.CommandRunner(noopRunner{})
 	if resolvedServiceName != "" {
@@ -175,6 +196,7 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	slog.Info("update: release applied successfully", "updated_tag", release.TagName, "target_binary_path", targetBinaryPath)
 	fmt.Fprintf(stdout, "updated binary to %s\n", release.TagName)
 	if resolvedServiceName != "" {
 		fmt.Fprintf(stdout, "restarted service %s\n", resolvedServiceName)

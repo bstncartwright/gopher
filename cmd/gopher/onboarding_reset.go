@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,12 @@ const (
 	telegramBotTokenEnvKey = "GOPHER_TELEGRAM_BOT_TOKEN"
 )
 
-func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writer) error {
+func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("onboard", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	flags := flag.NewFlagSet("onboard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
@@ -59,6 +65,14 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 
 	fmt.Fprintf(stdout, "gateway config ready: %s\n", gatewayPath)
 	fmt.Fprintf(stdout, "node config ready: %s\n", nodePath)
+	slog.Info(
+		"onboard: base config files ready",
+		"gateway_config_path", gatewayPath,
+		"node_config_path", nodePath,
+		"env_file", envPath,
+		"force", *force,
+		"non_interactive", *nonInteractive,
+	)
 
 	envValues, err := readEnvFileMap(envPath)
 	if err != nil {
@@ -96,6 +110,7 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 				if err := upsertEnvKey(envPath, spec.EnvKeys[0], strings.TrimSpace(apiKeyValue)); err != nil {
 					return err
 				}
+				slog.Info("onboard: provider auth configured", "provider", spec.Provider, "env_file", envPath, "key", spec.EnvKeys[0])
 				fmt.Fprintf(stdout, "configured auth provider %s in %s\n", spec.Provider, envPath)
 			}
 		} else if *nonInteractive {
@@ -123,12 +138,14 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 		if err := upsertEnvKey(envPath, telegramBotTokenEnvKey, telegramTokenValue); err != nil {
 			return err
 		}
+		slog.Info("onboard: telegram bot token configured", "env_file", envPath, "key", telegramBotTokenEnvKey)
 		fmt.Fprintf(stdout, "configured %s in %s\n", telegramBotTokenEnvKey, envPath)
 		enabled, err := setGatewayTelegramEnabled(gatewayPath, true)
 		if err != nil {
 			return fmt.Errorf("enable gateway telegram in %s: %w", gatewayPath, err)
 		}
 		if enabled {
+			slog.Info("onboard: enabled telegram gateway integration", "gateway_config_path", gatewayPath)
 			fmt.Fprintf(stdout, "enabled gateway telegram in %s\n", gatewayPath)
 		}
 	}
@@ -139,7 +156,12 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 	return nil
 }
 
-func runFactoryResetSubcommand(args []string, stdout, stderr io.Writer) error {
+func runFactoryResetSubcommand(args []string, stdout, stderr io.Writer) (err error) {
+	finishLog := startCommandLog("reset", args)
+	defer func() {
+		finishLog(err)
+	}()
+
 	flags := flag.NewFlagSet("reset", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
@@ -165,7 +187,7 @@ func runFactoryResetSubcommand(args []string, stdout, stderr io.Writer) error {
 		}
 		workspacePath = cwd
 	}
-	workspacePath, err := resolveAbsolutePath(workspacePath)
+	workspacePath, err = resolveAbsolutePath(workspacePath)
 	if err != nil {
 		return fmt.Errorf("resolve workspace path: %w", err)
 	}
@@ -188,6 +210,7 @@ func runFactoryResetSubcommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	slog.Info("reset: removing workspace and global state", "workspace", workspacePath, "paths_count", len(pathsToRemove), "auth_path", authPath)
 
 	removed := make([]string, 0, len(pathsToRemove))
 	skipped := make([]string, 0)
@@ -231,6 +254,7 @@ func runFactoryResetSubcommand(args []string, stdout, stderr io.Writer) error {
 	for _, item := range skipped {
 		fmt.Fprintf(stderr, "skipped %s\n", item)
 	}
+	slog.Info("reset: completed", "removed_count", len(removed), "skipped_count", len(skipped), "auth_path", authPath)
 	fmt.Fprintf(stdout, "reset complete (auth preserved at %s)\n", authPath)
 	return nil
 }

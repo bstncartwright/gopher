@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -56,6 +57,7 @@ func (c GitHubReleasesClient) LatestRelease(ctx context.Context) (Release, error
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	slog.Info("update_github: fetching latest release", "owner", owner, "repo", repo, "base_url", baseURL)
 
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/releases/latest", strings.TrimRight(baseURL, "/"), owner, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -67,11 +69,13 @@ func (c GitHubReleasesClient) LatestRelease(ctx context.Context) (Release, error
 
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Error("update_github: latest release request failed", "owner", owner, "repo", repo, "error", err)
 		return Release{}, fmt.Errorf("request latest github release: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		slog.Error("update_github: latest release request returned non-2xx", "owner", owner, "repo", repo, "status", resp.Status)
 		return Release{}, fmt.Errorf("github latest release status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
@@ -82,6 +86,7 @@ func (c GitHubReleasesClient) LatestRelease(ctx context.Context) (Release, error
 	if strings.TrimSpace(out.TagName) == "" {
 		return Release{}, fmt.Errorf("github latest release missing tag_name")
 	}
+	slog.Info("update_github: latest release fetched", "owner", owner, "repo", repo, "tag", out.TagName, "assets_count", len(out.Assets))
 	return out, nil
 }
 
@@ -129,6 +134,7 @@ func DownloadWithToken(ctx context.Context, httpClient *http.Client, url, token 
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}
 	}
+	slog.Debug("update_github: downloading release asset", "url", strings.TrimSpace(url))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create download request: %w", err)
@@ -137,16 +143,19 @@ func DownloadWithToken(ctx context.Context, httpClient *http.Client, url, token 
 	req.Header.Set("authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err != nil {
+		slog.Error("update_github: asset download request failed", "url", strings.TrimSpace(url), "error", err)
 		return nil, fmt.Errorf("download release asset: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		slog.Error("update_github: asset download returned non-2xx", "url", strings.TrimSpace(url), "status", resp.Status)
 		return nil, fmt.Errorf("asset download status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	blob, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read asset body: %w", err)
 	}
+	slog.Debug("update_github: downloaded release asset", "url", strings.TrimSpace(url), "bytes", len(blob))
 	return blob, nil
 }

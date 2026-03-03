@@ -48,8 +48,8 @@ func TestLoadAgentDefaultsLegacyMissingNetworkPolicy(t *testing.T) {
 	if !agent.Policies.Network.Enabled {
 		t.Fatalf("expected network to default enabled for legacy policies without network stanza")
 	}
-	if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"*"}) {
-		t.Fatalf("allow_domains = %#v, want [\"*\"]", agent.Policies.Network.AllowDomains)
+	if len(agent.Policies.Network.AllowDomains) != 0 {
+		t.Fatalf("allow_domains = %#v, want empty/unset allowlist", agent.Policies.Network.AllowDomains)
 	}
 }
 
@@ -90,8 +90,8 @@ func TestLoadAgentDefaultsLegacyMissingShellPolicy(t *testing.T) {
 	if !agent.Policies.CanShell {
 		t.Fatalf("expected shell to default enabled when can_shell is omitted")
 	}
-	if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash", "gopher"}) {
-		t.Fatalf("shell_allowlist = %#v, want default allowlist", agent.Policies.ShellAllowlist)
+	if len(agent.Policies.ShellAllowlist) != 0 {
+		t.Fatalf("shell_allowlist = %#v, want empty/unset allowlist", agent.Policies.ShellAllowlist)
 	}
 }
 
@@ -110,8 +110,8 @@ func TestLoadAgentDefaultsNetworkAllowDomainsWhenEnabledOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent() error: %v", err)
 	}
-	if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"*"}) {
-		t.Fatalf("allow_domains = %#v, want [\"*\"]", agent.Policies.Network.AllowDomains)
+	if len(agent.Policies.Network.AllowDomains) != 0 {
+		t.Fatalf("allow_domains = %#v, want empty/unset allowlist", agent.Policies.Network.AllowDomains)
 	}
 }
 
@@ -149,8 +149,8 @@ func TestLoadAgentDefaultsLegacyDisabledNetworkWithoutDomainRestrictions(t *test
 			if !agent.Policies.Network.Enabled {
 				t.Fatalf("expected legacy unrestricted network policy to default enabled")
 			}
-			if !reflect.DeepEqual(agent.Policies.Network.AllowDomains, []string{"*"}) {
-				t.Fatalf("allow_domains = %#v, want [\"*\"]", agent.Policies.Network.AllowDomains)
+			if len(agent.Policies.Network.AllowDomains) != 0 {
+				t.Fatalf("allow_domains = %#v, want empty/unset allowlist", agent.Policies.Network.AllowDomains)
 			}
 		})
 	}
@@ -190,7 +190,7 @@ func TestLoadAgentDefaultsLegacyDisabledShellWithoutRestrictions(t *testing.T) {
 		},
 		{
 			name:        "can_shell false with default shell_allowlist",
-			shellPolicy: `"can_shell": false, "shell_allowlist": ["echo", "git", "go", "bun", "node", "bash", "gopher"]`,
+			shellPolicy: `"can_shell": false, "shell_allowlist": []`,
 		},
 	}
 
@@ -212,8 +212,8 @@ func TestLoadAgentDefaultsLegacyDisabledShellWithoutRestrictions(t *testing.T) {
 			if !agent.Policies.CanShell {
 				t.Fatalf("expected legacy unrestricted shell policy to default enabled")
 			}
-			if !reflect.DeepEqual(agent.Policies.ShellAllowlist, []string{"echo", "git", "go", "bun", "node", "bash", "gopher"}) {
-				t.Fatalf("shell_allowlist = %#v, want default allowlist", agent.Policies.ShellAllowlist)
+			if len(agent.Policies.ShellAllowlist) != 0 {
+				t.Fatalf("shell_allowlist = %#v, want empty/unset allowlist", agent.Policies.ShellAllowlist)
 			}
 		})
 	}

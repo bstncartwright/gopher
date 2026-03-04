@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -36,6 +37,8 @@ func (lb *limitedBuffer) String() string {
 }
 
 type execTool struct{}
+
+var execGatewayRestartPattern = regexp.MustCompile(`(?i)(^|[;&|]\s*|\s)(?:\S*/)?gopher\s+(?:node\s+restart|restart)\b`)
 
 func (t *execTool) Name() string {
 	return "exec"
@@ -93,6 +96,21 @@ func (t *execTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error)
 		if b, ok := raw.(bool); ok {
 			background = b
 		}
+	}
+
+	if isGatewayRestartCommand(command) {
+		slog.Warn("exec_tool: deferring gateway restart command during active turn", "command", command)
+		return ToolOutput{
+			Status: ToolStatusOK,
+			Result: map[string]any{
+				"command":   command,
+				"stdout":    "",
+				"stderr":    "",
+				"exit_code": 0,
+				"deferred":  true,
+				"note":      "Gateway restart command was deferred to avoid interrupting this reply. Restart manually after confirmation.",
+			},
+		}, nil
 	}
 
 	slog.Debug("exec_tool: preparing execution",
@@ -229,4 +247,12 @@ func appendOpencodeTroubleshooting(result map[string]any, command string) {
 			"Verify model/provider settings (for example `opencode models`) and retry.",
 		},
 	}
+}
+
+func isGatewayRestartCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	return execGatewayRestartPattern.MatchString(command)
 }

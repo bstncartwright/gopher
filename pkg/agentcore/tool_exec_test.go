@@ -54,3 +54,43 @@ func TestExecToolNonOpencodeFailureDoesNotAddTroubleshooting(t *testing.T) {
 		t.Fatalf("did not expect opencode troubleshooting for non-opencode command")
 	}
 }
+
+func TestExecToolDefersGatewayRestartCommands(t *testing.T) {
+	tool := &execTool{}
+	output, err := tool.Run(context.Background(), ToolInput{
+		Session: &Session{ID: "session-restart-defer"},
+		Args: map[string]any{
+			"command": "/home/exedev/.local/bin/gopher restart",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected deferred restart to succeed, got error: %v", err)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("expected ok status, got %q", output.Status)
+	}
+	result, ok := output.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured result map")
+	}
+	if deferred, _ := result["deferred"].(bool); !deferred {
+		t.Fatalf("expected deferred=true in result, got %#v", result)
+	}
+}
+
+func TestExecToolAllowsNonRestartGopherCommands(t *testing.T) {
+	tool := &execTool{}
+	output, err := tool.Run(context.Background(), ToolInput{
+		Session: &Session{ID: "session-gopher-help"},
+		Args: map[string]any{
+			"command": "gopher --help | head -n 1",
+			"timeout": 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected gopher help command to run, got error: %v", err)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("expected ok status, got %q", output.Status)
+	}
+}

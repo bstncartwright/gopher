@@ -359,32 +359,52 @@ func runInteractiveOnboardingWizard(in io.Reader, out io.Writer, defaults onboar
 	}
 
 	if values.TelegramMode == "webhook" {
+		useTailscaleFunnel := true
 		if err := runHuhForm(in, out, huh.NewGroup(
-			huh.NewInput().
-				Title("telegram webhook url (https)").
-				Placeholder("https://example.ts.net/_gopher/telegram/webhook").
-				Value(&values.TelegramWebhookURL).
-				Validate(func(v string) error {
-					if strings.TrimSpace(v) == "" {
-						return fmt.Errorf("webhook url is required")
-					}
-					if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(v)), "https://") {
-						return fmt.Errorf("webhook url must use https")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("telegram webhook secret").
-				Value(&values.TelegramWebhookSecret).
-				EchoMode(huh.EchoModePassword).
-				Validate(func(v string) error {
-					if strings.TrimSpace(v) == "" {
-						return fmt.Errorf("webhook secret is required")
-					}
-					return nil
-				}),
+			huh.NewConfirm().
+				Title("using tailscale funnel for telegram webhook?").
+				Description("if yes, onboarding will run tailscale commands to find or create a funnel and auto-generate a webhook secret.").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&useTailscaleFunnel),
 		)); err != nil {
 			return onboardingWizardValues{}, err
+		}
+		if useTailscaleFunnel {
+			webhookURL, webhookSecret, err := resolveTelegramWebhookViaTailscale(out, values.TelegramWebhookListenAddr, values.TelegramWebhookPath)
+			if err != nil {
+				return onboardingWizardValues{}, err
+			}
+			values.TelegramWebhookURL = webhookURL
+			values.TelegramWebhookSecret = webhookSecret
+		} else {
+			if err := runHuhForm(in, out, huh.NewGroup(
+				huh.NewInput().
+					Title("telegram webhook url (https)").
+					Placeholder("https://example.ts.net/_gopher/telegram/webhook").
+					Value(&values.TelegramWebhookURL).
+					Validate(func(v string) error {
+						if strings.TrimSpace(v) == "" {
+							return fmt.Errorf("webhook url is required")
+						}
+						if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(v)), "https://") {
+							return fmt.Errorf("webhook url must use https")
+						}
+						return nil
+					}),
+				huh.NewInput().
+					Title("telegram webhook secret").
+					Value(&values.TelegramWebhookSecret).
+					EchoMode(huh.EchoModePassword).
+					Validate(func(v string) error {
+						if strings.TrimSpace(v) == "" {
+							return fmt.Errorf("webhook secret is required")
+						}
+						return nil
+					}),
+			)); err != nil {
+				return onboardingWizardValues{}, err
+			}
 		}
 	}
 

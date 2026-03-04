@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
@@ -30,7 +31,22 @@ type DMPipelineOptions struct {
 	TracePublisher     TracePublisher
 	TraceProvisioner   TraceConversationProvisioner
 	AttachmentResolver func(conversationID string, agentID sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment
+	ModelPolicyCommand ModelPolicyCommandHandler
 }
+
+type ModelPolicyCommandRequest struct {
+	AgentID              sessionrt.ActorID
+	RequestedModelPolicy string
+}
+
+type ModelPolicyCommandResult struct {
+	CurrentModelPolicy string
+	PreviousModelPolicy string
+	Updated            bool
+	RestartScheduled   bool
+}
+
+type ModelPolicyCommandHandler func(context.Context, ModelPolicyCommandRequest) (ModelPolicyCommandResult, error)
 
 type conversationRoute struct {
 	AgentID     sessionrt.ActorID
@@ -109,6 +125,13 @@ type DMPipeline struct {
 	tracePublisher     TracePublisher
 	traceProvisioner   TraceConversationProvisioner
 	attachmentResolver func(conversationID string, agentID sessionrt.ActorID, event sessionrt.Event) []transport.OutboundAttachment
+	modelPolicyCommand ModelPolicyCommandHandler
+
+	laneMu             sync.Mutex
+	laneByConversation map[string]*sync.Mutex
+	outboundLaneMu     sync.Mutex
+	outboundLaneByConv map[string]*sync.Mutex
+	outboundPending    int64
 }
 
 type heartbeatState struct {
@@ -180,6 +203,8 @@ const (
 	heartbeatDedupeWindow    = 24 * time.Hour
 	heartbeatRestoreGrace    = 2 * time.Second
 	traceProvisionBackoff    = 30 * time.Second
+	dmModelCommandDisabled   = "Model switching is not available on this gateway."
+	dmModelCommandUsage      = "Usage: /model <provider:model> (or /model status)"
 )
 
 var dmTypingKeepaliveInterval = dmTypingKeepaliveDefault
@@ -275,6 +300,9 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		tracePublisher:     opts.TracePublisher,
 		traceProvisioner:   opts.TraceProvisioner,
 		attachmentResolver: opts.AttachmentResolver,
+		modelPolicyCommand: opts.ModelPolicyCommand,
+		laneByConversation: map[string]*sync.Mutex{},
+		outboundLaneByConv: map[string]*sync.Mutex{},
 	}
 	if pipeline.now == nil {
 		pipeline.now = time.Now
@@ -295,6 +323,16 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 }
 
 func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.InboundMessage) error {
+	conversationID := strings.TrimSpace(inbound.ConversationID)
+	if conversationID == "" {
+		return nil
+	}
+	return p.withConversationLane(conversationID, func() error {
+		return p.handleInboundUnlocked(ctx, inbound)
+	})
+}
+
+func (p *DMPipeline) handleInboundUnlocked(ctx context.Context, inbound transport.InboundMessage) error {
 	conversationID := strings.TrimSpace(inbound.ConversationID)
 	if conversationID == "" {
 		return nil
@@ -391,14 +429,25 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 			return true, err
 		}
 		return true, nil
+	case "model.status":
+		if err := p.handleModelPolicyStatusCommand(ctx, conversationID, recipientID, inbound.EventID, agentID); err != nil {
+			return true, err
+		}
+		return true, nil
+	case "model.set":
+		if err := p.handleModelPolicySetCommand(ctx, conversationID, recipientID, inbound.EventID, agentID, command.Value); err != nil {
+			return true, err
+		}
+		return true, nil
 	case "context.clear":
 		if err := p.resetConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
 			return true, err
 		}
-		if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
-			ConversationID: conversationID,
-			SenderID:       recipientID,
-			Text:           dmContextClearedReply,
+		if err := p.sendMessage(context.Background(), transport.OutboundMessage{
+			ConversationID:    conversationID,
+			SenderID:          recipientID,
+			Text:              dmContextClearedReply,
+			ThreadRootEventID: inbound.EventID,
 		}); err != nil {
 			slog.Error("dm_pipeline: failed to send context cleared acknowledgement",
 				"conversation_id", conversationID,
@@ -494,7 +543,8 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 }
 
 type dmCommand struct {
-	Kind string
+	Kind  string
+	Value string
 }
 
 func parseDMCommand(text string) (dmCommand, bool) {
@@ -517,6 +567,30 @@ func parseDMCommand(text string) (dmCommand, bool) {
 	switch command {
 	case "status":
 		return dmCommand{Kind: "status.show"}, true
+	case "model":
+		if len(fields) == 1 {
+			return dmCommand{Kind: "model.status"}, true
+		}
+		subcommand := strings.ToLower(strings.TrimSpace(fields[1]))
+		switch subcommand {
+		case "status":
+			return dmCommand{Kind: "model.status"}, true
+		case "set":
+			if len(fields) < 3 {
+				return dmCommand{}, false
+			}
+			value := strings.TrimSpace(fields[2])
+			if value == "" {
+				return dmCommand{}, false
+			}
+			return dmCommand{Kind: "model.set", Value: value}, true
+		default:
+			value := strings.TrimSpace(fields[1])
+			if value == "" {
+				return dmCommand{}, false
+			}
+			return dmCommand{Kind: "model.set", Value: value}, true
+		}
 	case "context":
 		if len(fields) < 2 {
 			return dmCommand{}, false
@@ -761,6 +835,73 @@ func (p *DMPipeline) sendStatusCommandReply(ctx context.Context, inbound transpo
 	}
 
 	p.sendCommandReply(conversationID, recipientID, inbound.EventID, strings.Join(lines, "\n"))
+	return nil
+}
+
+func (p *DMPipeline) handleModelPolicyStatusCommand(
+	ctx context.Context,
+	conversationID, recipientID, triggerEventID string,
+	agentID sessionrt.ActorID,
+) error {
+	if p.modelPolicyCommand == nil {
+		p.sendCommandReply(conversationID, recipientID, triggerEventID, dmModelCommandDisabled)
+		return nil
+	}
+	result, err := p.modelPolicyCommand(ctx, ModelPolicyCommandRequest{
+		AgentID: agentID,
+	})
+	if err != nil {
+		p.sendCommandReply(conversationID, recipientID, triggerEventID, fmt.Sprintf("Model status failed: %v", err))
+		return nil
+	}
+	current := strings.TrimSpace(result.CurrentModelPolicy)
+	if current == "" {
+		current = "(unset)"
+	}
+	p.sendCommandReply(conversationID, recipientID, triggerEventID, "Current model policy: "+current)
+	return nil
+}
+
+func (p *DMPipeline) handleModelPolicySetCommand(
+	ctx context.Context,
+	conversationID, recipientID, triggerEventID string,
+	agentID sessionrt.ActorID,
+	requestedPolicy string,
+) error {
+	requestedPolicy = strings.TrimSpace(requestedPolicy)
+	if requestedPolicy == "" {
+		p.sendCommandReply(conversationID, recipientID, triggerEventID, dmModelCommandUsage)
+		return nil
+	}
+	if p.modelPolicyCommand == nil {
+		p.sendCommandReply(conversationID, recipientID, triggerEventID, dmModelCommandDisabled)
+		return nil
+	}
+	result, err := p.modelPolicyCommand(ctx, ModelPolicyCommandRequest{
+		AgentID:              agentID,
+		RequestedModelPolicy: requestedPolicy,
+	})
+	if err != nil {
+		p.sendCommandReply(conversationID, recipientID, triggerEventID, fmt.Sprintf("Model update failed: %v", err))
+		return nil
+	}
+
+	current := strings.TrimSpace(result.CurrentModelPolicy)
+	if current == "" {
+		current = requestedPolicy
+	}
+	lines := []string{}
+	if result.Updated {
+		lines = append(lines, fmt.Sprintf("Model set to %s.", current))
+	} else {
+		lines = append(lines, fmt.Sprintf("Model already set to %s.", current))
+	}
+	if result.RestartScheduled {
+		lines = append(lines, "Restart scheduled. The new model will be active after the gateway comes back.")
+	} else {
+		lines = append(lines, "Restart required. Run `gopher restart` to apply it.")
+	}
+	p.sendCommandReply(conversationID, recipientID, triggerEventID, strings.Join(lines, " "))
 	return nil
 }
 
@@ -1297,12 +1438,12 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				"content_length", len(content),
 				"attachments", len(attachments),
 			)
-			if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
-				ConversationID: conversationID,
-				SenderID:       p.senderForConversationEvent(conversationID, event.From),
-				Text:           msg.Content,
-				Attachments:    attachments,
-			}); err != nil {
+				if err := p.sendMessage(context.Background(), transport.OutboundMessage{
+					ConversationID: conversationID,
+					SenderID:       p.senderForConversationEvent(conversationID, event.From),
+					Text:           msg.Content,
+					Attachments:    attachments,
+				}); err != nil {
 				slog.Error("dm_pipeline: send dm response failed",
 					"conversation_id", conversationID,
 					"error", err,
@@ -2609,7 +2750,7 @@ func (p *DMPipeline) sendErrorFallback(conversationID, senderID, rawErr string) 
 		"conversation_id", conversationID,
 		"error_message", rawErr,
 	)
-	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+	if err := p.sendMessage(context.Background(), transport.OutboundMessage{
 		ConversationID: conversationID,
 		SenderID:       strings.TrimSpace(senderID),
 		Text:           reply,
@@ -2939,7 +3080,7 @@ func (p *DMPipeline) sendTraceConversationReadyNotice(conversationID, traceConve
 	if strings.TrimSpace(message) == "" {
 		return
 	}
-	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+	if err := p.sendMessage(context.Background(), transport.OutboundMessage{
 		ConversationID:    conversationID,
 		SenderID:          senderID,
 		Text:              message,
@@ -2965,7 +3106,7 @@ func (p *DMPipeline) sendCommandReply(conversationID, senderID, triggerEventID, 
 	if conversationID == "" || text == "" || p == nil || p.transport == nil {
 		return
 	}
-	if err := p.transport.SendMessage(context.Background(), transport.OutboundMessage{
+	if err := p.sendMessage(context.Background(), transport.OutboundMessage{
 		ConversationID:    conversationID,
 		SenderID:          senderID,
 		Text:              text,
@@ -2975,6 +3116,95 @@ func (p *DMPipeline) sendCommandReply(conversationID, senderID, triggerEventID, 
 			"conversation_id", conversationID,
 			"error", err,
 		)
+	}
+}
+
+func (p *DMPipeline) withConversationLane(conversationID string, fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return fn()
+	}
+	lane := p.conversationLane(conversationID)
+	lane.Lock()
+	defer lane.Unlock()
+	return fn()
+}
+
+func (p *DMPipeline) conversationLane(conversationID string) *sync.Mutex {
+	p.laneMu.Lock()
+	defer p.laneMu.Unlock()
+	if p.laneByConversation == nil {
+		p.laneByConversation = map[string]*sync.Mutex{}
+	}
+	lane, ok := p.laneByConversation[conversationID]
+	if !ok {
+		lane = &sync.Mutex{}
+		p.laneByConversation[conversationID] = lane
+	}
+	return lane
+}
+
+func (p *DMPipeline) outboundLane(conversationID string) *sync.Mutex {
+	p.outboundLaneMu.Lock()
+	defer p.outboundLaneMu.Unlock()
+	if p.outboundLaneByConv == nil {
+		p.outboundLaneByConv = map[string]*sync.Mutex{}
+	}
+	lane, ok := p.outboundLaneByConv[conversationID]
+	if !ok {
+		lane = &sync.Mutex{}
+		p.outboundLaneByConv[conversationID] = lane
+	}
+	return lane
+}
+
+func (p *DMPipeline) sendMessage(ctx context.Context, message transport.OutboundMessage) error {
+	if p == nil || p.transport == nil {
+		return fmt.Errorf("transport is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	conversationID := strings.TrimSpace(message.ConversationID)
+	atomic.AddInt64(&p.outboundPending, 1)
+	defer atomic.AddInt64(&p.outboundPending, -1)
+	if conversationID == "" {
+		return p.transport.SendMessage(ctx, message)
+	}
+	lane := p.outboundLane(conversationID)
+	lane.Lock()
+	defer lane.Unlock()
+	return p.transport.SendMessage(ctx, message)
+}
+
+func (p *DMPipeline) PendingOutboundReplies() int64 {
+	if p == nil {
+		return 0
+	}
+	return atomic.LoadInt64(&p.outboundPending)
+}
+
+func (p *DMPipeline) WaitForOutboundIdle(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if p.PendingOutboundReplies() == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 

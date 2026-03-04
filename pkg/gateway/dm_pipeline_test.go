@@ -3515,6 +3515,9 @@ func TestParseDMCommandRecognizesTelegramSlashCommands(t *testing.T) {
 	}{
 		{input: "/status", kind: "status.show", ok: true},
 		{input: "/status@gopher_bot", kind: "status.show", ok: true},
+		{input: "/model", kind: "model.status", ok: true},
+		{input: "/model status", kind: "model.status", ok: true},
+		{input: "/model openai-codex:gpt-5.3-codex", kind: "model.set", ok: true},
 		{input: "/context clear", kind: "context.clear", ok: true},
 		{input: "/trace status", kind: "trace.status", ok: true},
 		{input: "status", ok: false},
@@ -3531,6 +3534,124 @@ func TestParseDMCommandRecognizesTelegramSlashCommands(t *testing.T) {
 				t.Fatalf("parseDMCommand(%q) kind = %q, want %q", tc.input, got.Kind, tc.kind)
 			}
 		})
+	}
+}
+
+func TestDMPipelineModelCommandUsesConfiguredHandler(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	var (
+		mu       sync.Mutex
+		requests []ModelPolicyCommandRequest
+	)
+	handler := func(_ context.Context, req ModelPolicyCommandRequest) (ModelPolicyCommandResult, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		if strings.TrimSpace(req.RequestedModelPolicy) == "" {
+			return ModelPolicyCommandResult{
+				CurrentModelPolicy: "openai-codex:gpt-5.3-codex",
+			}, nil
+		}
+		return ModelPolicyCommandResult{
+			CurrentModelPolicy: req.RequestedModelPolicy,
+			Updated:            true,
+			RestartScheduled:   true,
+		}, nil
+	}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:            manager,
+		Transport:          fake,
+		AgentID:            "agent:a",
+		ModelPolicyCommand: handler,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:model",
+		SenderID:       "@user:hs",
+		EventID:        "$evt-model-status",
+		Text:           "/model status",
+	}); err != nil {
+		t.Fatalf("HandleInbound(/model status) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+	if got := fake.lastSent().Text; !strings.Contains(got, "Current model policy: openai-codex:gpt-5.3-codex") {
+		t.Fatalf("status reply = %q", got)
+	}
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:model",
+		SenderID:       "@user:hs",
+		EventID:        "$evt-model-set",
+		Text:           "/model openai-codex:gpt-5.3-codex-spark",
+	}); err != nil {
+		t.Fatalf("HandleInbound(/model set) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 2
+	})
+	if got := fake.lastSent().Text; !strings.Contains(got, "Model set to openai-codex:gpt-5.3-codex-spark.") || !strings.Contains(got, "Restart scheduled.") {
+		t.Fatalf("set reply = %q", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("model handler calls = %d, want 2", len(requests))
+	}
+	if got := requests[1].RequestedModelPolicy; got != "openai-codex:gpt-5.3-codex-spark" {
+		t.Fatalf("second requested model = %q, want spark policy", got)
+	}
+}
+
+func TestDMPipelineModelCommandDisabledWithoutHandler(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:model-off",
+		SenderID:       "@user:hs",
+		EventID:        "$evt-model-off",
+		Text:           "/model",
+	}); err != nil {
+		t.Fatalf("HandleInbound(/model) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	if got := fake.lastSent().Text; got != dmModelCommandDisabled {
+		t.Fatalf("disabled reply = %q, want %q", got, dmModelCommandDisabled)
 	}
 }
 

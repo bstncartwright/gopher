@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	storepkg "github.com/bstncartwright/gopher/pkg/store"
 	"github.com/bstncartwright/gopher/pkg/transport"
 	telegramtransport "github.com/bstncartwright/gopher/pkg/transport/telegram"
+	"github.com/pelletier/go-toml/v2"
 )
 
 type telegramDMBridge struct {
@@ -165,23 +167,34 @@ func startTelegramDMBridgeWithRuntime(
 		return nil, fmt.Errorf("create telegram transport: %w", err)
 	}
 	slog.Info("telegram_gateway: telegram transport initialized", "offset_path", filepath.Join(dataDir, "telegram", "offset.json"))
+	var pipeline *gateway.DMPipeline
+	modelPolicyCommand := func(cmdCtx context.Context, req gateway.ModelPolicyCommandRequest) (gateway.ModelPolicyCommandResult, error) {
+		return handleTelegramModelPolicyCommand(cmdCtx, workspace, agentRuntime, req, func(waitCtx context.Context) error {
+			if pipeline == nil {
+				return nil
+			}
+			return pipeline.WaitForOutboundIdle(waitCtx)
+		}, logger)
+	}
 	registerCtx, registerCancel := context.WithTimeout(ctx, 5*time.Second)
 	if err := telegramBridge.SetCommands(registerCtx, []telegramtransport.BotCommand{
 		{Command: "status", Description: "Show session and context status"},
 		{Command: "context", Description: "Context commands: clear or summarize"},
 		{Command: "trace", Description: "Trace commands: on/off/status"},
+		{Command: "model", Description: "Model commands: status or set provider:model"},
 	}); err != nil {
 		slog.Warn("telegram_gateway: register telegram bot commands failed", "error", err)
 	}
 	registerCancel()
 
-	pipeline, err := gateway.NewDMPipeline(gateway.DMPipelineOptions{
-		Manager:       manager,
-		Transport:     telegramBridge,
-		EventStore:    store,
-		AgentID:       agentRuntime.DefaultActorID,
-		Conversations: gateway.NewConversationSessionMap(),
-		Bindings:      bindingStore,
+	pipeline, err = gateway.NewDMPipeline(gateway.DMPipelineOptions{
+		Manager:            manager,
+		Transport:          telegramBridge,
+		EventStore:         store,
+		AgentID:            agentRuntime.DefaultActorID,
+		Conversations:      gateway.NewConversationSessionMap(),
+		Bindings:           bindingStore,
+		ModelPolicyCommand: modelPolicyCommand,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create telegram dm pipeline: %w", err)
@@ -511,4 +524,234 @@ func recordTelegramInbound(dataDir string, inbound transport.InboundMessage) {
 	}
 	defer f.Close()
 	_, _ = f.Write(append(blob, '\n'))
+}
+
+func handleTelegramModelPolicyCommand(
+	ctx context.Context,
+	workspace string,
+	agentRuntime *gatewayAgentRuntime,
+	req gateway.ModelPolicyCommandRequest,
+	waitForOutbound func(context.Context) error,
+	logger *log.Logger,
+) (gateway.ModelPolicyCommandResult, error) {
+	agentID, configPath, err := resolveTelegramModelAgentConfigPath(workspace, agentRuntime, req.AgentID)
+	if err != nil {
+		return gateway.ModelPolicyCommandResult{}, err
+	}
+
+	requested := strings.TrimSpace(req.RequestedModelPolicy)
+	if requested == "" {
+		current, err := readAgentModelPolicy(configPath)
+		if err != nil {
+			return gateway.ModelPolicyCommandResult{}, err
+		}
+		return gateway.ModelPolicyCommandResult{
+			CurrentModelPolicy: current,
+		}, nil
+	}
+	if err := validateModelPolicy(requested); err != nil {
+		return gateway.ModelPolicyCommandResult{}, err
+	}
+
+	previous, changed, err := setAgentModelPolicy(configPath, requested)
+	if err != nil {
+		return gateway.ModelPolicyCommandResult{}, err
+	}
+
+	if agentRuntime != nil {
+		if agent, ok := agentRuntime.Agents[agentID]; ok && agent != nil {
+			agent.Config.ModelPolicy = requested
+		}
+	}
+
+	result := gateway.ModelPolicyCommandResult{
+		CurrentModelPolicy:  requested,
+		PreviousModelPolicy: previous,
+		Updated:             changed,
+	}
+	if changed {
+		result.RestartScheduled = scheduleGatewayRestartAfterOutbound(waitForOutbound, logger)
+	}
+	return result, nil
+}
+
+func resolveTelegramModelAgentConfigPath(workspace string, runtime *gatewayAgentRuntime, requestedAgentID sessionrt.ActorID) (sessionrt.ActorID, string, error) {
+	agentID := sessionrt.ActorID(strings.TrimSpace(string(requestedAgentID)))
+	if strings.TrimSpace(string(agentID)) == "" && runtime != nil {
+		agentID = runtime.DefaultActorID
+	}
+	if strings.TrimSpace(string(agentID)) == "" {
+		agentID = sessionrt.ActorID(defaultAgentWorkspaceID)
+	}
+
+	if runtime != nil {
+		if agent, ok := runtime.Agents[agentID]; ok && agent != nil {
+			path, err := resolveRuntimeConfigPath(agent.Workspace)
+			if err == nil {
+				return agentID, path, nil
+			}
+		}
+	}
+
+	workspace = filepath.Clean(strings.TrimSpace(workspace))
+	if workspace == "" {
+		return "", "", fmt.Errorf("workspace is required")
+	}
+	candidate := filepath.Join(workspace, "agents", strings.TrimSpace(string(agentID)))
+	path, err := resolveRuntimeConfigPath(candidate)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve config path for agent %q: %w", agentID, err)
+	}
+	return agentID, path, nil
+}
+
+func validateModelPolicy(raw string) error {
+	raw = strings.TrimSpace(raw)
+	parts := strings.SplitN(raw, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid model policy %q: expected provider:model", raw)
+	}
+	if strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return fmt.Errorf("invalid model policy %q: provider and model are required", raw)
+	}
+	return nil
+}
+
+func readAgentModelPolicy(configPath string) (string, error) {
+	doc, err := readAgentConfigDoc(configPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(readRuntimeStringField(doc, "model_policy")), nil
+}
+
+func setAgentModelPolicy(configPath, modelPolicy string) (previous string, changed bool, err error) {
+	doc, err := readAgentConfigDoc(configPath)
+	if err != nil {
+		return "", false, err
+	}
+	previous = strings.TrimSpace(readRuntimeStringField(doc, "model_policy"))
+	modelPolicy = strings.TrimSpace(modelPolicy)
+	if previous == modelPolicy {
+		return previous, false, nil
+	}
+	doc["model_policy"] = modelPolicy
+	updated, err := encodeAgentConfigDoc(configPath, doc)
+	if err != nil {
+		return "", false, err
+	}
+	if err := writeConfigFileWithBackup(configPath, updated); err != nil {
+		return "", false, err
+	}
+	return previous, true, nil
+}
+
+func readAgentConfigDoc(configPath string) (map[string]any, error) {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return nil, fmt.Errorf("config path is required")
+	}
+	blob, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read agent config %s: %w", configPath, err)
+	}
+	doc := map[string]any{}
+	switch strings.ToLower(filepath.Ext(configPath)) {
+	case ".toml":
+		if err := toml.Unmarshal(blob, &doc); err != nil {
+			return nil, fmt.Errorf("parse agent config %s: %w", configPath, err)
+		}
+	case ".json":
+		if err := json.Unmarshal(blob, &doc); err != nil {
+			return nil, fmt.Errorf("parse agent config %s: %w", configPath, err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported agent config format %q", filepath.Ext(configPath))
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	return doc, nil
+}
+
+func encodeAgentConfigDoc(configPath string, doc map[string]any) ([]byte, error) {
+	switch strings.ToLower(filepath.Ext(configPath)) {
+	case ".toml":
+		updated, err := toml.Marshal(doc)
+		if err != nil {
+			return nil, fmt.Errorf("serialize agent config %s: %w", configPath, err)
+		}
+		return updated, nil
+	case ".json":
+		updated, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("serialize agent config %s: %w", configPath, err)
+		}
+		return append(updated, '\n'), nil
+	default:
+		return nil, fmt.Errorf("unsupported agent config format %q", filepath.Ext(configPath))
+	}
+}
+
+func scheduleGatewayRestartAfterOutbound(waitForOutbound func(context.Context) error, logger *log.Logger) bool {
+	go func() {
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), 12*time.Second)
+		if waitForOutbound != nil {
+			if err := waitForOutbound(waitCtx); err != nil && waitCtx.Err() == nil {
+				slog.Warn("telegram_gateway: outbound idle wait before restart failed", "error", err)
+			}
+		}
+		cancelWait()
+
+		time.Sleep(250 * time.Millisecond)
+
+		restartCtx, cancelRestart := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelRestart()
+		if err := triggerGatewayRestartCommand(restartCtx); err != nil {
+			slog.Warn("telegram_gateway: scheduled restart command failed", "error", err)
+			if logger != nil {
+				logger.Printf("scheduled restart command failed err=%v", err)
+			}
+		}
+	}()
+	return true
+}
+
+func triggerGatewayRestartCommand(ctx context.Context) error {
+	candidates := []string{}
+	if executablePath, err := os.Executable(); err == nil {
+		executablePath = strings.TrimSpace(executablePath)
+		if executablePath != "" {
+			candidates = append(candidates, executablePath)
+		}
+	}
+	candidates = append(candidates, "gopher")
+
+	var failures []string
+	seen := map[string]struct{}{}
+	for _, bin := range candidates {
+		bin = strings.TrimSpace(bin)
+		if bin == "" {
+			continue
+		}
+		if _, ok := seen[bin]; ok {
+			continue
+		}
+		seen[bin] = struct{}{}
+		cmd := exec.CommandContext(ctx, bin, "restart")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		trimmedOutput := strings.TrimSpace(string(output))
+		if trimmedOutput != "" {
+			failures = append(failures, fmt.Sprintf("%s: %v (%s)", bin, err, trimmedOutput))
+		} else {
+			failures = append(failures, fmt.Sprintf("%s: %v", bin, err))
+		}
+	}
+	if len(failures) == 0 {
+		return fmt.Errorf("no restart command candidates available")
+	}
+	return fmt.Errorf("restart failed: %s", strings.Join(failures, "; "))
 }

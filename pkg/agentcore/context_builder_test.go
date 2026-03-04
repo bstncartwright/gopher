@@ -115,7 +115,7 @@ func TestContextBuilderPromptModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProviderContext(none) error: %v", err)
 	}
-	if strings.TrimSpace(noneCtx.SystemPrompt) != "You are a personal assistant running inside gopher." {
+	if strings.TrimSpace(noneCtx.SystemPrompt) != "You are a practical collaborator running inside gopher." {
 		t.Fatalf("unexpected none-mode system prompt: %s", noneCtx.SystemPrompt)
 	}
 }

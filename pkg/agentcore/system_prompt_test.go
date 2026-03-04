@@ -97,6 +97,29 @@ func TestBuildAgentSystemPromptIncludesConcreteDateAndTime(t *testing.T) {
 	}
 }
 
+func TestBuildAgentSystemPromptIncludesPeerStyleGuardrails(t *testing.T) {
+	prompt, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:  "/tmp/workspace",
+		PromptMode: PromptModeMinimal,
+	})
+	if err != nil {
+		t.Fatalf("buildAgentSystemPrompt() error: %v", err)
+	}
+
+	required := []string{
+		"You are a practical collaborator running inside gopher.",
+		"## Style",
+		"Speak like a peer collaborator with a consistent voice and practical judgment.",
+		"Ground replies in shared context, concrete next steps, and clear tradeoffs.",
+		"Use natural language and brief intros, then move to the work.",
+	}
+	for _, needle := range required {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected style guidance %q, got: %s", needle, prompt)
+		}
+	}
+}
+
 func TestBuildAgentSystemPromptMessageKickoffPreferenceOnlyWhenMessageToolEnabled(t *testing.T) {
 	withMessage, err := buildAgentSystemPrompt(systemPromptInput{
 		Workspace:  "/tmp/workspace",
@@ -136,7 +159,7 @@ func TestBuildAgentSystemPromptSelfUpdateInstructionsAreExplicit(t *testing.T) {
 	}
 
 	required := []string{
-		"## OpenClaw Self-Update",
+		"## Gopher Self-Update",
 		"Treat requests like \"update yourself\", \"update itself\", or \"self-update\" as explicit self-update requests.",
 		"For binary updates, prefer `gopher_update` when available; otherwise run `gopher update` using available execution tools and report the actual command result.",
 		"Do not replace a requested self-update with memory updates, policy notes, or future-intent promises.",

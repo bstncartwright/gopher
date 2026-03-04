@@ -165,14 +165,14 @@ func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
 		t.Fatalf("read AGENTS.md: %v", err)
 	}
 	agentsText := string(agentsBlob)
-	if !strings.Contains(agentsText, "## Session Start (required)") {
-		t.Fatalf("expected OpenClaw-style session start section in AGENTS.md")
+	if !strings.Contains(agentsText, "## Every Session") {
+		t.Fatalf("expected OpenClaw-style every-session section in AGENTS.md")
 	}
-	if !strings.Contains(agentsText, "## Gopher Runtime Notes") {
-		t.Fatalf("expected gopher runtime notes in AGENTS.md")
+	if !strings.Contains(agentsText, "If `BOOTSTRAP.md` exists, that's your birth certificate.") {
+		t.Fatalf("expected OpenClaw bootstrap guidance in AGENTS.md")
 	}
-	if !strings.Contains(agentsText, "Agent id: writer") {
-		t.Fatalf("expected agent id in AGENTS.md")
+	if !strings.Contains(agentsText, "## 💓 Heartbeats - Be Proactive!") {
+		t.Fatalf("expected OpenClaw heartbeat guidance in AGENTS.md")
 	}
 
 	configBlob, err := os.ReadFile(filepath.Join(workspace, "config.toml"))

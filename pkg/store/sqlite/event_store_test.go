@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -195,6 +196,106 @@ func TestEventStoreStreamAndSessionUpsert(t *testing.T) {
 	_, err = store.GetSessionRecord(ctx, "missing")
 	if !errors.Is(err, sessionrt.ErrSessionNotFound) {
 		t.Fatalf("expected ErrSessionNotFound for missing session, got %v", err)
+	}
+}
+
+func TestEventStoreStreamBackpressureKeepsLatestEvents(t *testing.T) {
+	store, err := NewEventStore(EventStoreOptions{
+		Path:         filepath.Join(t.TempDir(), "events.db"),
+		StreamBuffer: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewEventStore() error: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	if err := store.Append(context.Background(), sessionrt.Event{
+		ID:        "s1-000001",
+		SessionID: "s1",
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventControl,
+		Payload:   sessionrt.ControlPayload{Action: sessionrt.ControlActionSessionCreated},
+		Timestamp: now,
+		Seq:       1,
+	}); err != nil {
+		t.Fatalf("seed append error: %v", err)
+	}
+
+	ctxFast, cancelFast := context.WithCancel(context.Background())
+	defer cancelFast()
+	fastCh, err := store.Stream(ctxFast, "s1")
+	if err != nil {
+		t.Fatalf("Stream(fast) error: %v", err)
+	}
+
+	ctxSlow, cancelSlow := context.WithCancel(context.Background())
+	defer cancelSlow()
+	slowCh, err := store.Stream(ctxSlow, "s1")
+	if err != nil {
+		t.Fatalf("Stream(slow) error: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		seq := uint64(i + 2)
+		if err := store.Append(context.Background(), sessionrt.Event{
+			ID:        sessionrt.EventID(fmt.Sprintf("s1-%06d", seq)),
+			SessionID: "s1",
+			From:      "user:me",
+			Type:      sessionrt.EventMessage,
+			Payload:   sessionrt.Message{Role: sessionrt.RoleUser, Content: "m"},
+			Timestamp: now.Add(time.Duration(i+1) * time.Second),
+			Seq:       seq,
+		}); err != nil {
+			t.Fatalf("Append(%d) error: %v", i, err)
+		}
+		select {
+		case _, ok := <-fastCh:
+			if !ok {
+				t.Fatalf("fast stream closed unexpectedly")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for fast stream event %d", i)
+		}
+	}
+
+	firstSlow, ok := <-slowCh
+	if !ok {
+		t.Fatalf("expected slow stream to remain open")
+	}
+	if firstSlow.Seq != 4 {
+		t.Fatalf("first slow event seq = %d, want 4", firstSlow.Seq)
+	}
+
+	if err := store.Append(context.Background(), sessionrt.Event{
+		ID:        "s1-000005",
+		SessionID: "s1",
+		From:      "user:me",
+		Type:      sessionrt.EventMessage,
+		Payload:   sessionrt.Message{Role: sessionrt.RoleUser, Content: "m"},
+		Timestamp: now.Add(4 * time.Second),
+		Seq:       5,
+	}); err != nil {
+		t.Fatalf("Append(4) error: %v", err)
+	}
+	select {
+	case _, ok := <-fastCh:
+		if !ok {
+			t.Fatalf("fast stream closed unexpectedly on fourth event")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for fast stream event 4")
+	}
+	select {
+	case nextSlow, ok := <-slowCh:
+		if !ok {
+			t.Fatalf("expected slow stream to remain open after backpressure")
+		}
+		if nextSlow.Seq != 5 {
+			t.Fatalf("next slow event seq = %d, want 5", nextSlow.Seq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for next slow stream event")
 	}
 }
 

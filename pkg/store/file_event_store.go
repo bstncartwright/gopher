@@ -546,8 +546,18 @@ func (s *FileEventStore) notifySubscribersLocked(event sessionrt.Event) {
 		select {
 		case ch <- event:
 		default:
-			close(ch)
-			delete(subs, subID)
+			// Keep lagging subscribers connected by dropping their oldest buffered
+			// event and preferring the newest event.
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- event:
+			default:
+				close(ch)
+				delete(subs, subID)
+			}
 		}
 	}
 }

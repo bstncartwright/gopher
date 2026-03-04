@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/gateway"
@@ -18,14 +20,18 @@ type gatewayMessagePipeline interface {
 }
 
 type gatewayMessageToolService struct {
-	pipeline  gatewayMessagePipeline
-	transport transport.Transport
+	pipeline       gatewayMessagePipeline
+	transport      transport.Transport
+	draftMu        sync.Mutex
+	draftBySession map[sessionrt.SessionID]int64
+	draftSeq       uint64
 }
 
 func newGatewayMessageToolService(pipeline *gateway.DMPipeline, transportImpl transport.Transport) *gatewayMessageToolService {
 	return &gatewayMessageToolService{
-		pipeline:  pipeline,
-		transport: transportImpl,
+		pipeline:       pipeline,
+		transport:      transportImpl,
+		draftBySession: map[sessionrt.SessionID]int64{},
 	}
 }
 
@@ -68,12 +74,57 @@ func (s *gatewayMessageToolService) SendMessage(ctx context.Context, req agentco
 	}); err != nil {
 		return agentcore.MessageSendResult{}, err
 	}
+	s.clearSessionDraft(sessionID)
 
 	return agentcore.MessageSendResult{
 		Sent:            true,
 		ConversationID:  strings.TrimSpace(conversationID),
 		Text:            text,
 		AttachmentCount: len(attachments),
+	}, nil
+}
+
+type gatewayMessageDraftTransport interface {
+	SendMessageDraft(ctx context.Context, conversationID string, draftID int64, text string) error
+}
+
+func (s *gatewayMessageToolService) SendMessageDraft(ctx context.Context, req agentcore.MessageDraftRequest) (agentcore.MessageDraftResult, error) {
+	if s == nil || s.pipeline == nil || s.transport == nil {
+		return agentcore.MessageDraftResult{}, fmt.Errorf("message service is unavailable")
+	}
+	streamer, ok := s.transport.(gatewayMessageDraftTransport)
+	if !ok {
+		return agentcore.MessageDraftResult{}, fmt.Errorf("streaming drafts are unsupported by active transport")
+	}
+	sessionID := sessionrt.SessionID(strings.TrimSpace(req.SessionID))
+	if strings.TrimSpace(string(sessionID)) == "" {
+		return agentcore.MessageDraftResult{}, fmt.Errorf("session id is required")
+	}
+	conversationID, ok := s.pipeline.ConversationForSession(sessionID)
+	if !ok || strings.TrimSpace(conversationID) == "" {
+		return agentcore.MessageDraftResult{}, fmt.Errorf("conversation is not bound for session %q", sessionID)
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return agentcore.MessageDraftResult{}, fmt.Errorf("text is required")
+	}
+
+	draftID := req.DraftID
+	if draftID <= 0 {
+		draftID = s.sessionDraftID(sessionID)
+	}
+	if draftID <= 0 {
+		return agentcore.MessageDraftResult{}, fmt.Errorf("draft id must be greater than 0")
+	}
+	if err := streamer.SendMessageDraft(ctx, strings.TrimSpace(conversationID), draftID, text); err != nil {
+		return agentcore.MessageDraftResult{}, err
+	}
+	s.rememberSessionDraft(sessionID, draftID)
+	return agentcore.MessageDraftResult{
+		Drafted:        true,
+		ConversationID: strings.TrimSpace(conversationID),
+		DraftID:        draftID,
+		Text:           text,
 	}, nil
 }
 
@@ -119,4 +170,45 @@ func (s *gatewayMessageToolService) SendReaction(ctx context.Context, req agentc
 		TargetEventID:  targetEventID,
 		Emoji:          emoji,
 	}, nil
+}
+
+func (s *gatewayMessageToolService) sessionDraftID(sessionID sessionrt.SessionID) int64 {
+	if s == nil {
+		return 0
+	}
+	s.draftMu.Lock()
+	defer s.draftMu.Unlock()
+	if s.draftBySession != nil {
+		if existing, ok := s.draftBySession[sessionID]; ok && existing > 0 {
+			return existing
+		}
+	}
+	seq := atomic.AddUint64(&s.draftSeq, 1)
+	draftID := int64((seq % (1<<31 - 1)) + 1)
+	if s.draftBySession == nil {
+		s.draftBySession = map[sessionrt.SessionID]int64{}
+	}
+	s.draftBySession[sessionID] = draftID
+	return draftID
+}
+
+func (s *gatewayMessageToolService) rememberSessionDraft(sessionID sessionrt.SessionID, draftID int64) {
+	if s == nil || draftID <= 0 {
+		return
+	}
+	s.draftMu.Lock()
+	if s.draftBySession == nil {
+		s.draftBySession = map[sessionrt.SessionID]int64{}
+	}
+	s.draftBySession[sessionID] = draftID
+	s.draftMu.Unlock()
+}
+
+func (s *gatewayMessageToolService) clearSessionDraft(sessionID sessionrt.SessionID) {
+	if s == nil {
+		return
+	}
+	s.draftMu.Lock()
+	delete(s.draftBySession, sessionID)
+	s.draftMu.Unlock()
 }

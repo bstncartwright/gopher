@@ -33,6 +33,13 @@ func (p *fakeGatewayMessagePipeline) SenderForConversation(conversationID string
 type fakeGatewayMessageTransport struct {
 	sent      []transport.OutboundMessage
 	reactions []transport.OutboundReaction
+	drafts    []gatewayMessageDraftCall
+}
+
+type gatewayMessageDraftCall struct {
+	ConversationID string
+	DraftID        int64
+	Text           string
 }
 
 func (t *fakeGatewayMessageTransport) Start(context.Context) error { return nil }
@@ -46,6 +53,14 @@ func (t *fakeGatewayMessageTransport) SendMessage(_ context.Context, message tra
 }
 func (t *fakeGatewayMessageTransport) SendReaction(_ context.Context, reaction transport.OutboundReaction) error {
 	t.reactions = append(t.reactions, reaction)
+	return nil
+}
+func (t *fakeGatewayMessageTransport) SendMessageDraft(_ context.Context, conversationID string, draftID int64, text string) error {
+	t.drafts = append(t.drafts, gatewayMessageDraftCall{
+		ConversationID: conversationID,
+		DraftID:        draftID,
+		Text:           text,
+	})
 	return nil
 }
 
@@ -113,6 +128,63 @@ func TestGatewayMessageToolServiceRequiresPayload(t *testing.T) {
 	_, err := service.SendMessage(context.Background(), agentcore.MessageSendRequest{SessionID: "sess-1"})
 	if err == nil {
 		t.Fatalf("expected payload validation error")
+	}
+}
+
+func TestGatewayMessageToolServiceStreamsDraftToBoundConversation(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+	}
+	tr := &fakeGatewayMessageTransport{}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	result, err := service.SendMessageDraft(context.Background(), agentcore.MessageDraftRequest{
+		SessionID: "sess-1",
+		Text:      "drafting",
+	})
+	if err != nil {
+		t.Fatalf("SendMessageDraft() error: %v", err)
+	}
+	if !result.Drafted {
+		t.Fatalf("drafted = false, want true")
+	}
+	if result.ConversationID != "telegram:123" {
+		t.Fatalf("conversation id = %q, want telegram:123", result.ConversationID)
+	}
+	if result.DraftID <= 0 {
+		t.Fatalf("draft id = %d, want > 0", result.DraftID)
+	}
+	if len(tr.drafts) != 1 {
+		t.Fatalf("transport draft count = %d, want 1", len(tr.drafts))
+	}
+	if tr.drafts[0].DraftID != result.DraftID {
+		t.Fatalf("transport draft id = %d, want %d", tr.drafts[0].DraftID, result.DraftID)
+	}
+}
+
+func TestGatewayMessageToolServiceReusesSessionDraftID(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+	}
+	tr := &fakeGatewayMessageTransport{}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	first, err := service.SendMessageDraft(context.Background(), agentcore.MessageDraftRequest{
+		SessionID: "sess-1",
+		Text:      "one",
+	})
+	if err != nil {
+		t.Fatalf("SendMessageDraft(first) error: %v", err)
+	}
+	second, err := service.SendMessageDraft(context.Background(), agentcore.MessageDraftRequest{
+		SessionID: "sess-1",
+		Text:      "two",
+	})
+	if err != nil {
+		t.Fatalf("SendMessageDraft(second) error: %v", err)
+	}
+	if first.DraftID != second.DraftID {
+		t.Fatalf("draft ids = %d/%d, want equal", first.DraftID, second.DraftID)
 	}
 }
 

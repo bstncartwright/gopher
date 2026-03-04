@@ -271,12 +271,23 @@ type dmDelayedRecoverStreamingExecutor struct {
 }
 
 type dmStreamingExecutor struct {
-	deltas []string
-	final  string
+	toolCalls []string
+	deltas    []string
+	final     string
 }
 
 func (e *dmStreamingExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
-	events := make([]sessionrt.Event, 0, len(e.deltas)+1)
+	events := make([]sessionrt.Event, 0, len(e.toolCalls)+len(e.deltas)+1)
+	for _, name := range e.toolCalls {
+		events = append(events, sessionrt.Event{
+			From: input.ActorID,
+			Type: sessionrt.EventToolCall,
+			Payload: map[string]any{
+				"name": name,
+				"args": map[string]any{},
+			},
+		})
+	}
 	for _, delta := range e.deltas {
 		events = append(events, sessionrt.Event{
 			From: input.ActorID,
@@ -3884,6 +3895,112 @@ func TestDMPipelineStreamsDraftDeltasToSupportingTransport(t *testing.T) {
 	}
 	if got := fake.lastSent().Text; got != "final reply" {
 		t.Fatalf("final outbound text = %q, want final reply", got)
+	}
+}
+
+func TestDMPipelineStreamsToolCallEmojisBeforeFinalReply(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmStreamingExecutor{
+			toolCalls: []string{"web_search", "exec"},
+			final:     "final reply",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fake.draftSignals()) > 0
+	})
+
+	drafts := fake.draftSignals()
+	foundSearch := false
+	foundExec := false
+	for _, draft := range drafts {
+		if strings.Contains(draft.Text, "🔎") {
+			foundSearch = true
+		}
+		if strings.Contains(draft.Text, "🖥️") {
+			foundExec = true
+		}
+	}
+	if !foundSearch || !foundExec {
+		t.Fatalf("expected tool emojis in drafts, got %#v", drafts)
+	}
+}
+
+func TestDMPipelineDraftIncludesToolEmojiAndTextDeltas(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmStreamingExecutor{
+			toolCalls: []string{"exec"},
+			deltas:    []string{"Building response " + strings.Repeat("x", 80)},
+			final:     "final reply",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() > 0
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fake.draftSignals()) > 0
+	})
+
+	drafts := fake.draftSignals()
+	foundCombined := false
+	for _, draft := range drafts {
+		if strings.Contains(draft.Text, "🖥️") && strings.Contains(draft.Text, "Building response") {
+			foundCombined = true
+			break
+		}
+	}
+	if !foundCombined {
+		t.Fatalf("expected combined tool emoji + delta text draft, got %#v", drafts)
 	}
 }
 

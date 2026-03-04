@@ -40,10 +40,10 @@ type ModelPolicyCommandRequest struct {
 }
 
 type ModelPolicyCommandResult struct {
-	CurrentModelPolicy string
+	CurrentModelPolicy  string
 	PreviousModelPolicy string
-	Updated            bool
-	RestartScheduled   bool
+	Updated             bool
+	RestartScheduled    bool
 }
 
 type ModelPolicyCommandHandler func(context.Context, ModelPolicyCommandRequest) (ModelPolicyCommandResult, error)
@@ -163,11 +163,12 @@ type pendingErrorFallback struct {
 }
 
 type draftStreamState struct {
-	DraftID    int64
-	Text       string
-	LastSentAt time.Time
-	LastSentN  int
-	Disabled   bool
+	DraftID      int64
+	Text         string
+	ToolProgress []string
+	LastSentAt   time.Time
+	LastSentN    int
+	Disabled     bool
 }
 
 type dmErrorClass int
@@ -197,6 +198,7 @@ const (
 	dmDraftMaxChars          = 4096
 	dmDraftMinSendChars      = 48
 	dmDraftMinSendInterval   = 900 * time.Millisecond
+	dmDraftToolPrefix        = "Working:"
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	noReplyToken             = "NO_REPLY"
 	heartbeatAckDefaultChars = 300
@@ -218,6 +220,7 @@ var (
 	fallbackLongTokenPattern      = regexp.MustCompile(`\b[A-Za-z0-9_-]{24,}\b`)
 	heartbeatHTMLTagPattern       = regexp.MustCompile(`<[^>]*>`)
 	heartbeatTokenSuffixPattern   = regexp.MustCompile(regexp.QuoteMeta(heartbeatOKToken) + `[^\w]{0,4}$`)
+	dmToolEmojiFallback           = "🛠️"
 )
 
 type typingTransport interface {
@@ -1388,6 +1391,10 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				p.captureAttachmentsFromEvent(conversationID, event)
 				p.captureMessageEchoFromEvent(conversationID, event)
 			}
+			if event.Type == sessionrt.EventToolCall {
+				p.sendToolCallDraft(conversationID, event)
+				continue
+			}
 			if event.Type == sessionrt.EventAgentDelta {
 				p.sendDraftDelta(conversationID, event)
 				continue
@@ -1438,12 +1445,12 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				"content_length", len(content),
 				"attachments", len(attachments),
 			)
-				if err := p.sendMessage(context.Background(), transport.OutboundMessage{
-					ConversationID: conversationID,
-					SenderID:       p.senderForConversationEvent(conversationID, event.From),
-					Text:           msg.Content,
-					Attachments:    attachments,
-				}); err != nil {
+			if err := p.sendMessage(context.Background(), transport.OutboundMessage{
+				ConversationID: conversationID,
+				SenderID:       p.senderForConversationEvent(conversationID, event.From),
+				Text:           msg.Content,
+				Attachments:    attachments,
+			}); err != nil {
 				slog.Error("dm_pipeline: send dm response failed",
 					"conversation_id", conversationID,
 					"error", err,
@@ -1958,16 +1965,49 @@ func (p *DMPipeline) sendTyping(conversationID string, typing bool) {
 }
 
 func (p *DMPipeline) sendDraftDelta(conversationID string, event sessionrt.Event) {
+	delta := deltaTextFromPayload(event.Payload)
+	if delta == "" {
+		return
+	}
+	p.updateAndSendDraft(conversationID, event.SessionID, false, func(state *draftStreamState) bool {
+		state.Text += delta
+		return true
+	})
+}
+
+func (p *DMPipeline) sendToolCallDraft(conversationID string, event sessionrt.Event) {
+	toolName := toolCallNameFromPayload(event.Payload)
+	if toolName == "" {
+		return
+	}
+	emoji := toolCallEmoji(toolName)
+	p.updateAndSendDraft(conversationID, event.SessionID, true, func(state *draftStreamState) bool {
+		if emoji == "" {
+			return false
+		}
+		if len(state.ToolProgress) > 0 && state.ToolProgress[len(state.ToolProgress)-1] == emoji {
+			return false
+		}
+		state.ToolProgress = append(state.ToolProgress, emoji)
+		if len(state.ToolProgress) > 16 {
+			state.ToolProgress = append([]string(nil), state.ToolProgress[len(state.ToolProgress)-16:]...)
+		}
+		return true
+	})
+}
+
+func (p *DMPipeline) updateAndSendDraft(
+	conversationID string,
+	sessionID sessionrt.SessionID,
+	force bool,
+	update func(state *draftStreamState) bool,
+) {
 	streamer, ok := p.transport.(draftStreamingTransport)
 	if !ok {
 		return
 	}
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
-		return
-	}
-	delta := strings.TrimSpace(deltaTextFromPayload(event.Payload))
-	if delta == "" {
 		return
 	}
 
@@ -1985,14 +2025,20 @@ func (p *DMPipeline) sendDraftDelta(conversationID string, event sessionrt.Event
 		p.draftSeq++
 		state.DraftID = int64((p.draftSeq % (1<<31 - 1)) + 1)
 	}
-	state.Text += delta
-	draftText = trimDraftText(state.Text)
+	if update != nil {
+		if !update(&state) {
+			p.draftState[conversationID] = state
+			p.draftMu.Unlock()
+			return
+		}
+	}
+	draftText = draftTextForState(state)
 	if draftText == "" {
 		p.draftState[conversationID] = state
 		p.draftMu.Unlock()
 		return
 	}
-	if !state.LastSentAt.IsZero() {
+	if !force && !state.LastSentAt.IsZero() {
 		charDelta := runeLen(draftText) - state.LastSentN
 		if charDelta < dmDraftMinSendChars && now.Sub(state.LastSentAt) < dmDraftMinSendInterval {
 			p.draftState[conversationID] = state
@@ -2009,7 +2055,7 @@ func (p *DMPipeline) sendDraftDelta(conversationID string, event sessionrt.Event
 	if err := streamer.SendMessageDraft(context.Background(), conversationID, draftID, draftText); err != nil {
 		slog.Warn("dm_pipeline: send dm draft delta failed",
 			"conversation_id", conversationID,
-			"session_id", event.SessionID,
+			"session_id", sessionID,
 			"error", err,
 		)
 		p.draftMu.Lock()
@@ -2037,6 +2083,61 @@ func deltaTextFromPayload(payload any) string {
 	}
 	delta, _ := value["delta"].(string)
 	return delta
+}
+
+func toolCallNameFromPayload(payload any) string {
+	value, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := value["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+func toolCallEmoji(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return dmToolEmojiFallback
+	}
+	switch {
+	case strings.Contains(normalized, "search"):
+		return "🔎"
+	case strings.Contains(normalized, "fetch"), strings.Contains(normalized, "http"), strings.Contains(normalized, "web"):
+		return "🌐"
+	case strings.Contains(normalized, "exec"), strings.Contains(normalized, "process"), strings.Contains(normalized, "shell"), strings.Contains(normalized, "command"):
+		return "🖥️"
+	case strings.Contains(normalized, "read"), strings.Contains(normalized, "file"), strings.Contains(normalized, "fs"):
+		return "📄"
+	case strings.Contains(normalized, "write"), strings.Contains(normalized, "edit"), strings.Contains(normalized, "patch"):
+		return "✍️"
+	case strings.Contains(normalized, "memory"):
+		return "🧠"
+	case strings.Contains(normalized, "message"):
+		return "💬"
+	case strings.Contains(normalized, "reaction"):
+		return "👍"
+	case strings.Contains(normalized, "cron"), strings.Contains(normalized, "schedule"):
+		return "⏰"
+	case strings.Contains(normalized, "heartbeat"):
+		return "💓"
+	case strings.Contains(normalized, "delegate"):
+		return "🤝"
+	default:
+		return dmToolEmojiFallback
+	}
+}
+
+func draftTextForState(state draftStreamState) string {
+	body := state.Text
+	toolSummary := strings.TrimSpace(strings.Join(state.ToolProgress, " "))
+	switch {
+	case toolSummary == "":
+		return trimDraftText(body)
+	case strings.TrimSpace(body) == "":
+		return trimDraftText(dmDraftToolPrefix + " " + toolSummary)
+	default:
+		return trimDraftText(dmDraftToolPrefix + " " + toolSummary + "\n\n" + body)
+	}
 }
 
 func trimDraftText(text string) string {

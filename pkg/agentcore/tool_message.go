@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 )
 
@@ -33,6 +34,8 @@ func (t *messageTool) Schema() ToolSchema {
 						"required": []any{"path"},
 					},
 				},
+				"stream":   map[string]any{"type": "boolean"},
+				"draft_id": map[string]any{"type": "integer"},
 			},
 		},
 	}
@@ -71,6 +74,55 @@ func (t *messageTool) Run(ctx context.Context, input ToolInput) (ToolOutput, err
 		slog.Error("message_tool: text or attachments required")
 		return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
 	}
+	stream, _ := optionalBoolArg(input.Args, "stream")
+
+	if stream {
+		if len(attachments) > 0 {
+			err := fmt.Errorf("attachments are unsupported when stream is true")
+			slog.Error("message_tool: attachments unsupported in stream mode")
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		}
+		if text == "" {
+			err := fmt.Errorf("text is required when stream is true")
+			slog.Error("message_tool: text required in stream mode")
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		}
+		streamingService, ok := input.Agent.MessageService.(MessageToolStreamingService)
+		if !ok {
+			err := fmt.Errorf("streaming is unsupported by active message service")
+			slog.Error("message_tool: streaming unsupported by active service")
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		}
+		draftID, hasDraftID, err := optionalInt64Arg(input.Args, "draft_id")
+		if err != nil {
+			slog.Error("message_tool: invalid draft id", "error", err)
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		}
+		req := MessageDraftRequest{
+			SessionID: strings.TrimSpace(input.Session.ID),
+			Text:      text,
+		}
+		if hasDraftID {
+			if draftID <= 0 {
+				err := fmt.Errorf("draft_id must be greater than 0")
+				slog.Error("message_tool: invalid draft id", "draft_id", draftID)
+				return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+			}
+			req.DraftID = draftID
+		}
+		result, sendErr := streamingService.SendMessageDraft(ctx, req)
+		if sendErr != nil {
+			slog.Error("message_tool: failed to stream message draft", "error", sendErr)
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": sendErr.Error()}}, sendErr
+		}
+		output := map[string]any{
+			"drafted":         result.Drafted,
+			"conversation_id": strings.TrimSpace(result.ConversationID),
+			"text":            strings.TrimSpace(result.Text),
+			"draft_id":        result.DraftID,
+		}
+		return ToolOutput{Status: ToolStatusOK, Result: output}, nil
+	}
 
 	result, sendErr := input.Agent.MessageService.SendMessage(ctx, MessageSendRequest{
 		SessionID:   strings.TrimSpace(input.Session.ID),
@@ -89,6 +141,44 @@ func (t *messageTool) Run(ctx context.Context, input ToolInput) (ToolOutput, err
 		"attachment_count": result.AttachmentCount,
 	}
 	return ToolOutput{Status: ToolStatusOK, Result: output}, nil
+}
+
+func optionalInt64Arg(args map[string]any, key string) (int64, bool, error) {
+	if args == nil {
+		return 0, false, nil
+	}
+	value, exists := args[key]
+	if !exists || value == nil {
+		return 0, false, nil
+	}
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true, nil
+	case int32:
+		return int64(typed), true, nil
+	case int64:
+		return typed, true, nil
+	case float32:
+		if math.IsNaN(float64(typed)) || math.IsInf(float64(typed), 0) {
+			return 0, false, fmt.Errorf("%s must be a finite integer", key)
+		}
+		value := int64(typed)
+		if float32(value) != typed {
+			return 0, false, fmt.Errorf("%s must be an integer", key)
+		}
+		return value, true, nil
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return 0, false, fmt.Errorf("%s must be a finite integer", key)
+		}
+		value := int64(typed)
+		if float64(value) != typed {
+			return 0, false, fmt.Errorf("%s must be an integer", key)
+		}
+		return value, true, nil
+	default:
+		return 0, false, fmt.Errorf("%s must be an integer", key)
+	}
 }
 
 func messageAttachmentsFromArgs(args map[string]any) ([]MessageAttachment, error) {

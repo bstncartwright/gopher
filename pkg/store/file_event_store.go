@@ -48,7 +48,7 @@ func NewFileEventStore(opts FileEventStoreOptions) (*FileEventStore, error) {
 	}
 	streamBuf := opts.StreamBuffer
 	if streamBuf <= 0 {
-		streamBuf = 32
+		streamBuf = 256
 	}
 
 	eventsDir := filepath.Join(dir, "events")

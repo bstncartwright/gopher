@@ -52,7 +52,7 @@ type InMemoryEventStore struct {
 func NewInMemoryEventStore(opts InMemoryEventStoreOptions) *InMemoryEventStore {
 	streamBuf := opts.StreamBuffer
 	if streamBuf <= 0 {
-		streamBuf = 32
+		streamBuf = 256
 	}
 	return &InMemoryEventStore{
 		events:      make(map[SessionID][]Event),

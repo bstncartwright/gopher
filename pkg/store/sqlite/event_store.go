@@ -42,7 +42,7 @@ func NewEventStore(opts EventStoreOptions) (*EventStore, error) {
 	}
 	streamBuf := opts.StreamBuffer
 	if streamBuf <= 0 {
-		streamBuf = 32
+		streamBuf = 256
 	}
 
 	slog.Info("sqlite_store: opening database", "path", path, "stream_buffer", streamBuf)

@@ -31,8 +31,8 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 	flags := flag.NewFlagSet("onboard", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
-	gatewayConfigPath := flags.String("gateway-config-path", "gopher.toml", "gateway config output path")
-	nodeConfigPath := flags.String("node-config-path", "node.toml", "node config output path")
+	gatewayConfigPath := flags.String("gateway-config-path", defaultOnboardingGatewayConfigPath(), "gateway config output path")
+	nodeConfigPath := flags.String("node-config-path", "", "optional node config output path (default: disabled)")
 	envFile := flags.String("env-file", defaultAuthEnvFilePath(), "env file path")
 	force := flags.Bool("force", false, "overwrite existing config files")
 	nonInteractive := flags.Bool("non-interactive", false, "require all needed values via flags")
@@ -56,9 +56,12 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 	if err != nil {
 		return fmt.Errorf("resolve gateway config path: %w", err)
 	}
-	nodePath, err := resolveAbsolutePath(strings.TrimSpace(*nodeConfigPath))
-	if err != nil {
-		return fmt.Errorf("resolve node config path: %w", err)
+	nodePath := ""
+	if raw := strings.TrimSpace(*nodeConfigPath); raw != "" {
+		nodePath, err = resolveAbsolutePath(raw)
+		if err != nil {
+			return fmt.Errorf("resolve node config path: %w", err)
+		}
 	}
 	envPath, err := resolveAbsolutePath(strings.TrimSpace(*envFile))
 	if err != nil {
@@ -68,12 +71,16 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 	if err := writeDefaultConfig(gatewayPath, []byte(config.DefaultGatewayTOML()), *force); err != nil {
 		return err
 	}
-	if err := writeDefaultConfig(nodePath, []byte(config.DefaultNodeTOML()), *force); err != nil {
-		return err
+	if nodePath != "" {
+		if err := writeDefaultConfig(nodePath, []byte(config.DefaultNodeTOML()), *force); err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(stdout, "gateway config ready: %s\n", gatewayPath)
-	fmt.Fprintf(stdout, "node config ready: %s\n", nodePath)
+	if nodePath != "" {
+		fmt.Fprintf(stdout, "node config ready: %s\n", nodePath)
+	}
 	slog.Info(
 		"onboard: base config files ready",
 		"gateway_config_path", gatewayPath,
@@ -523,6 +530,9 @@ func writeDefaultConfig(path string, content []byte, force bool) error {
 	if path == "" {
 		return fmt.Errorf("config path is required")
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config directory %s: %w", filepath.Dir(path), err)
+	}
 	if _, err := os.Stat(path); err == nil {
 		if !force {
 			return fmt.Errorf("file already exists: %s (use --force to overwrite)", path)
@@ -563,6 +573,21 @@ func defaultFactoryResetPaths(workspace string) ([]string, error) {
 		"/etc/gopher/node.toml",
 	}
 	return dedupePaths(out), nil
+}
+
+func defaultOnboardingGatewayConfigPath() string {
+	if os.Geteuid() == 0 {
+		return "/etc/gopher/gopher.toml"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "gopher.toml"
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "gopher.toml"
+	}
+	return filepath.Join(home, ".gopher", "gopher.toml")
 }
 
 func dedupePaths(paths []string) []string {

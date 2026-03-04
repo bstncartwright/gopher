@@ -16,22 +16,47 @@ func (t *delegateTool) Name() string {
 func (t *delegateTool) Schema() ToolSchema {
 	return ToolSchema{
 		Name:        t.Name(),
-		Description: "Spawn and manage delegated subagent sessions.",
+		Description: "Spawn and manage delegated subagent sessions. `action:\"create\"` is async fire-and-forget: it returns immediately after spawn. After `create`, do not block this turn with polling (`list`/`log`) to wait for completion; resume delegated follow-up only after a later `delegation.completed`/`delegation.failed`/`delegation.cancelled` event.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
-					"type": "string",
-					"enum": []any{"create", "list", "kill", "log"},
+					"type":        "string",
+					"enum":        []any{"create", "list", "kill", "log"},
+					"description": "Delegation action. `create` spawns a subagent asynchronously and returns immediately; do not call `list`/`log` in the same turn to wait for completion.",
 				},
-				"target_agent":     map[string]any{"type": "string"},
-				"model_policy":     map[string]any{"type": "string"},
-				"message":          map[string]any{"type": "string"},
-				"title":            map[string]any{"type": "string"},
-				"delegation_id":    map[string]any{"type": "string"},
-				"include_inactive": map[string]any{"type": "boolean"},
-				"offset":           map[string]any{"type": "integer"},
-				"limit":            map[string]any{"type": "integer"},
+				"target_agent": map[string]any{
+					"type":        "string",
+					"description": "Optional target worker id. Omit to auto-create an ephemeral subagent.",
+				},
+				"model_policy": map[string]any{
+					"type":        "string",
+					"description": "Optional model override for ephemeral workers created via `create`.",
+				},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "Required when `action` is `create`. Task-specific kickoff instruction for the delegated worker.",
+				},
+				"title": map[string]any{
+					"type":        "string",
+					"description": "Optional short title for the delegated session.",
+				},
+				"delegation_id": map[string]any{
+					"type":        "string",
+					"description": "Required for `kill` and `log`. Delegated session id to operate on.",
+				},
+				"include_inactive": map[string]any{
+					"type":        "boolean",
+					"description": "Optional for `list`. Include completed/failed/cancelled delegations when true.",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Optional for `log`. Zero-based log entry offset.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Optional for `log`. Max entries to return (capped server-side).",
+				},
 			},
 			"required": []any{"action"},
 		},
@@ -107,6 +132,14 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 			Result: map[string]any{
 				"action":     "create",
 				"delegation": result,
+				"lifecycle": map[string]any{
+					"mode":                  "async_spawn",
+					"terminal_events":       []any{"delegation.completed", "delegation.failed", "delegation.cancelled"},
+					"wait_for_event":        true,
+					"wait_in_same_turn":     false,
+					"polling_guidance":      "Do not call delegate list/log in this turn to wait for completion.",
+					"recommended_next_step": "End this turn and continue delegated follow-up only when a later terminal delegation event arrives.",
+				},
 			},
 		}, nil
 

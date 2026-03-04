@@ -138,6 +138,64 @@ func TestDelegateToolCreateLeavesTargetEmptyWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestDelegateToolCreateReturnsAsyncLifecycleGuidance(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"delegate"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	fake := &fakeDelegationToolService{}
+	agent.Delegation = fake
+	runner := NewToolRunner(agent)
+	session := agent.NewSession()
+	session.ID = "sess-source"
+
+	output, err := runner.Run(context.Background(), session, toolCall("delegate", map[string]any{
+		"action":  "create",
+		"message": "Please help with this task.",
+	}))
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("status = %q, want ok", output.Status)
+	}
+
+	resultMap, ok := output.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any", output.Result)
+	}
+	lifecycle, ok := resultMap["lifecycle"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing lifecycle payload: %#v", resultMap)
+	}
+	if wait, ok := lifecycle["wait_for_event"].(bool); !ok || !wait {
+		t.Fatalf("wait_for_event = %#v, want true", lifecycle["wait_for_event"])
+	}
+	if waitSameTurn, ok := lifecycle["wait_in_same_turn"].(bool); !ok || waitSameTurn {
+		t.Fatalf("wait_in_same_turn = %#v, want false", lifecycle["wait_in_same_turn"])
+	}
+	terminalEvents, ok := lifecycle["terminal_events"].([]any)
+	if !ok || len(terminalEvents) == 0 {
+		t.Fatalf("terminal_events = %#v, want non-empty list", lifecycle["terminal_events"])
+	}
+	wantEvents := []string{"delegation.completed", "delegation.failed", "delegation.cancelled"}
+	for _, expected := range wantEvents {
+		found := false
+		for _, value := range terminalEvents {
+			if event, ok := value.(string); ok && event == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("terminal_events missing %q: %#v", expected, terminalEvents)
+		}
+	}
+}
+
 func TestDelegateToolListUsesCurrentSessionScope(t *testing.T) {
 	config := defaultConfig()
 	config.EnabledTools = []string{"delegate"}

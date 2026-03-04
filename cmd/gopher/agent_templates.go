@@ -2,7 +2,7 @@ package main
 
 import "fmt"
 
-const defaultAgentModelPolicy = "openai:gpt-5.3-codex"
+const defaultAgentModelPolicy = "openai-codex:gpt-5.3-codex"
 
 func defaultAgentsTemplate(agentID string) string {
 	return fmt.Sprintf(`# AGENTS.md - gopher assistant (default)

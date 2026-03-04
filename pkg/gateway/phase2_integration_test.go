@@ -92,7 +92,7 @@ func TestGatewayRecoveryReplaysAndContinues(t *testing.T) {
 	}
 }
 
-func TestRecoveryFailsSessionsWithInFlightWork(t *testing.T) {
+func TestRecoveryClearsInFlightAndKeepsSessionActive(t *testing.T) {
 	ctx := context.Background()
 	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: t.TempDir()})
 	if err != nil {
@@ -128,24 +128,24 @@ func TestRecoveryFailsSessionsWithInFlightWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession(recovered) error: %v", err)
 	}
-	if loaded.Status != sessionrt.SessionFailed {
-		t.Fatalf("expected recovered session to be failed, got %v", loaded.Status)
+	if loaded.Status != sessionrt.SessionActive {
+		t.Fatalf("expected recovered session to remain active, got %v", loaded.Status)
 	}
 
 	events, err := store.List(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("List() error: %v", err)
 	}
-	if len(events) < 3 {
-		t.Fatalf("expected recovery to append failure events, got %d", len(events))
+	if len(events) < 1 {
+		t.Fatalf("expected session events to remain intact, got %d", len(events))
 	}
-	last := events[len(events)-1]
-	if last.Type != sessionrt.EventControl {
-		t.Fatalf("expected final control event, got %s", last.Type)
+
+	recoveredRecord, err := store.GetSessionRecord(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord(recovered) error: %v", err)
 	}
-	ctrl, ok := anyToControl(last.Payload)
-	if !ok || ctrl.Action != sessionrt.ControlActionSessionFailed {
-		t.Fatalf("expected final control action %q", sessionrt.ControlActionSessionFailed)
+	if recoveredRecord.InFlight {
+		t.Fatalf("expected recovered session in_flight=false")
 	}
 }
 

@@ -7,8 +7,6 @@ import (
 	"sort"
 )
 
-const inFlightRecoveryReason = "gateway_recovered_inflight_aborted"
-
 func (m *Manager) Recover(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -71,8 +69,8 @@ func (m *Manager) Recover(ctx context.Context) error {
 		m.mu.Unlock()
 
 		if rt.inFlight && rt.session.Status == SessionActive {
-			if err := m.markRecoveredInFlightFailure(ctx, rt); err != nil {
-				return fmt.Errorf("recover in-flight session %s: %w", record.SessionID, err)
+			if err := m.clearRecoveredInFlight(ctx, rt); err != nil {
+				return fmt.Errorf("clear in-flight state for recovered session %s: %w", record.SessionID, err)
 			}
 		}
 
@@ -82,39 +80,7 @@ func (m *Manager) Recover(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) markRecoveredInFlightFailure(ctx context.Context, rt *sessionRuntime) error {
+func (m *Manager) clearRecoveredInFlight(ctx context.Context, rt *sessionRuntime) error {
 	rt.inFlight = false
-
-	errEvent, err := m.canonicalizeEvent(rt, Event{
-		SessionID: rt.sessionID,
-		From:      SystemActorID,
-		Type:      EventError,
-		Payload: ErrorPayload{
-			Message: "in-flight work aborted during gateway restart",
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if err := m.appendPersistedEvent(ctx, rt, errEvent); err != nil {
-		return err
-	}
-
-	failedEvent, err := m.canonicalizeEvent(rt, Event{
-		SessionID: rt.sessionID,
-		From:      SystemActorID,
-		Type:      EventControl,
-		Payload: ControlPayload{
-			Action: ControlActionSessionFailed,
-			Reason: inFlightRecoveryReason,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if err := m.appendPersistedEvent(ctx, rt, failedEvent); err != nil {
-		return err
-	}
-
-	return nil
+	return m.persistSessionRecord(ctx, rt, m.now().UTC())
 }

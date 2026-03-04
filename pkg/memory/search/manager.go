@@ -161,6 +161,10 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	if err := configureSQLiteConnection(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	m.db = db
 	if err := m.initSchema(context.Background()); err != nil {
 		_ = db.Close()
@@ -884,6 +888,19 @@ func (m *Manager) setFallbackReason(reason string) {
 	m.mu.Lock()
 	m.fallbackReason = reason
 	m.mu.Unlock()
+}
+
+func configureSQLiteConnection(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("sqlite db is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+		return fmt.Errorf("set sqlite busy_timeout pragma: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) setUnavailableReason(reason string) {

@@ -13,6 +13,11 @@ import (
 	ctxbundle "github.com/bstncartwright/gopher/pkg/context"
 )
 
+const (
+	runTurnContextBuildTimeout         = 45 * time.Second
+	runTurnContextBuildFallbackTimeout = 10 * time.Second
+)
+
 func (a *Agent) RunTurn(ctx context.Context, s *Session, in TurnInput) (TurnResult, error) {
 	return a.runTurn(ctx, s, in, nil)
 }
@@ -71,7 +76,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 
 	emitter := newEventEmitter(a.ID, s.ID, a.Logger, onEvent)
 	slog.Debug("run_turn: building provider context", "agent_id", a.ID, "session_id", s.ID)
-	conversation, diagnostics, err := a.buildProviderContextDetailed(ctx, s, in.UserMessage, in.PromptMode)
+	conversation, diagnostics, err := a.buildTurnProviderContext(ctx, s, in)
 	if err != nil {
 		turnErr = err
 		slog.Error("run_turn: failed to build provider context",
@@ -501,6 +506,65 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 		// Persist conversation progress after each tool round so retries don't replay executed calls.
 		s.Messages = boundMessages(conversation.Messages, a.Config.MaxContextMessages)
 	}
+}
+
+func (a *Agent) buildTurnProviderContext(ctx context.Context, s *Session, in TurnInput) (ai.Context, ctxbundle.ContextDiagnostics, error) {
+	primaryCtx, cancelPrimary := boundedContext(ctx, runTurnContextBuildTimeout)
+	defer cancelPrimary()
+
+	conversation, diagnostics, err := a.buildProviderContextDetailed(primaryCtx, s, in.UserMessage, in.PromptMode)
+	if err == nil {
+		return conversation, diagnostics, nil
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return ai.Context{}, ctxbundle.ContextDiagnostics{}, err
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ai.Context{}, ctxbundle.ContextDiagnostics{}, err
+	}
+
+	slog.Warn("run_turn: provider context timed out, retrying with degraded context",
+		"agent_id", a.ID,
+		"session_id", s.ID,
+		"timeout_ms", runTurnContextBuildTimeout.Milliseconds(),
+	)
+
+	fallbackCtx, cancelFallback := boundedContext(ctx, runTurnContextBuildFallbackTimeout)
+	defer cancelFallback()
+	fallbackConversation, fallbackDiagnostics, fallbackErr := a.buildProviderContextDetailedWithOptions(
+		fallbackCtx,
+		s,
+		in.UserMessage,
+		providerContextBuildOptions{
+			Mode:                         normalizePromptMode(in.PromptMode),
+			MaxMemories:                  2,
+			DisableRetrievedMemory:       true,
+			EnableModelCompactionSummary: false,
+			Warnings: []string{
+				"context build fallback: retrieved memory disabled after timeout",
+			},
+		},
+	)
+	if fallbackErr != nil {
+		return ai.Context{}, ctxbundle.ContextDiagnostics{}, err
+	}
+	return fallbackConversation, fallbackDiagnostics, nil
+}
+
+func boundedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining <= timeout {
+			return ctx, func() {}
+		}
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (a *Agent) shouldRetryContextOverflow(message string, retriesUsed int) bool {

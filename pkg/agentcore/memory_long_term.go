@@ -19,12 +19,25 @@ type toolObservation struct {
 	Result any
 }
 
+const turnMemoryPersistenceTimeout = 5 * time.Second
+
 func (a *Agent) persistTurnMemories(ctx context.Context, s *Session, userMessage string, finalText string, tools []toolObservation, turnErr error) {
 	if a == nil || s == nil {
 		return
 	}
-	if ctx == nil || ctx.Err() != nil {
+	if ctx == nil {
 		ctx = context.Background()
+	}
+	var cancel context.CancelFunc = func() {}
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > turnMemoryPersistenceTimeout {
+		ctx, cancel = context.WithTimeout(ctx, turnMemoryPersistenceTimeout)
+	}
+	defer cancel()
+
+	if ctx.Err() != nil {
+		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), turnMemoryPersistenceTimeout)
+		defer timeoutCancel()
+		ctx = timeoutCtx
 	}
 	now := time.Now().UTC()
 	scope := memory.AgentScope(a.ID)

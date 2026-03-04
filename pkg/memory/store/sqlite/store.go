@@ -42,6 +42,10 @@ func NewStore(opts StoreOptions) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	if err := configureSQLiteConnection(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	store := &Store{db: db, candidateLimit: opts.CandidateLimit}
 	if store.candidateLimit <= 0 {
@@ -316,6 +320,19 @@ func ensureParentDir(path string) error {
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create sqlite directory %s: %w", dir, err)
+	}
+	return nil
+}
+
+func configureSQLiteConnection(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("sqlite db is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+		return fmt.Errorf("set sqlite busy_timeout pragma: %w", err)
 	}
 	return nil
 }

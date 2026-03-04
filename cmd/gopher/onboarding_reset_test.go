@@ -16,13 +16,11 @@ func TestRunOnboardingSubcommandNonInteractive(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "gopher.env")
 	gatewayPath := filepath.Join(dir, "gopher.toml")
-	nodePath := filepath.Join(dir, "node.toml")
 
 	var out bytes.Buffer
 	err := runOnboardingSubcommand([]string{
 		"--non-interactive",
 		"--gateway-config-path", gatewayPath,
-		"--node-config-path", nodePath,
 		"--env-file", envPath,
 		"--auth-provider", "zai",
 		"--auth-api-key", "zai-key",
@@ -44,12 +42,8 @@ func TestRunOnboardingSubcommandNonInteractive(t *testing.T) {
 		t.Fatalf("expected onboarding to auto-enable telegram when token exists: %s", gatewayText)
 	}
 
-	nodeBlob, err := os.ReadFile(nodePath)
-	if err != nil {
-		t.Fatalf("read node config: %v", err)
-	}
-	if !strings.Contains(string(nodeBlob), "[node]") {
-		t.Fatalf("node config missing defaults: %s", string(nodeBlob))
+	if _, err := os.Stat(filepath.Join(dir, "node.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected node.toml to remain absent by default, stat err=%v", err)
 	}
 
 	envBlob, err := os.ReadFile(envPath)
@@ -71,13 +65,11 @@ func TestRunOnboardingSubcommandNonInteractiveFailsWhenAuthMissing(t *testing.T)
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "gopher.env")
 	gatewayPath := filepath.Join(dir, "gopher.toml")
-	nodePath := filepath.Join(dir, "node.toml")
 
 	var out bytes.Buffer
 	err := runOnboardingSubcommand([]string{
 		"--non-interactive",
 		"--gateway-config-path", gatewayPath,
-		"--node-config-path", nodePath,
 		"--env-file", envPath,
 	}, strings.NewReader(""), &out, &out)
 	if err == nil {
@@ -94,13 +86,11 @@ func TestRunOnboardingSubcommandNonInteractiveWebhookMode(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "gopher.env")
 	gatewayPath := filepath.Join(dir, "gopher.toml")
-	nodePath := filepath.Join(dir, "node.toml")
 
 	var out bytes.Buffer
 	err := runOnboardingSubcommand([]string{
 		"--non-interactive",
 		"--gateway-config-path", gatewayPath,
-		"--node-config-path", nodePath,
 		"--env-file", envPath,
 		"--auth-provider", "zai",
 		"--auth-api-key", "zai-key",
@@ -133,7 +123,6 @@ func TestRunOnboardingSubcommandOpenAICodexUsesOAuthFlow(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "gopher.env")
 	gatewayPath := filepath.Join(dir, "gopher.toml")
-	nodePath := filepath.Join(dir, "node.toml")
 
 	originalLogin := loginOpenAICodexForAuth
 	loginOpenAICodexForAuth = func(callbacks ai.OAuthLoginCallbacks) (ai.OAuthCredentials, error) {
@@ -151,7 +140,6 @@ func TestRunOnboardingSubcommandOpenAICodexUsesOAuthFlow(t *testing.T) {
 	err := runOnboardingSubcommand([]string{
 		"--non-interactive",
 		"--gateway-config-path", gatewayPath,
-		"--node-config-path", nodePath,
 		"--env-file", envPath,
 		"--auth-provider", "openai-codex",
 		"--auth-api-key", "should-be-ignored",
@@ -174,6 +162,72 @@ func TestRunOnboardingSubcommandOpenAICodexUsesOAuthFlow(t *testing.T) {
 	}
 	if strings.Contains(envText, "OPENAI_CODEX_API_KEY=") {
 		t.Fatalf("did not expect OPENAI_CODEX_API_KEY to be written: %s", envText)
+	}
+}
+
+func TestRunOnboardingSubcommandWritesNodeConfigWhenExplicitPathProvided(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "gopher.env")
+	gatewayPath := filepath.Join(dir, "gopher.toml")
+	nodePath := filepath.Join(dir, "node.toml")
+
+	var out bytes.Buffer
+	err := runOnboardingSubcommand([]string{
+		"--non-interactive",
+		"--gateway-config-path", gatewayPath,
+		"--node-config-path", nodePath,
+		"--env-file", envPath,
+		"--auth-provider", "zai",
+		"--auth-api-key", "zai-key",
+	}, strings.NewReader(""), &out, &out)
+	if err != nil {
+		t.Fatalf("runOnboardingSubcommand() error: %v", err)
+	}
+
+	nodeBlob, err := os.ReadFile(nodePath)
+	if err != nil {
+		t.Fatalf("read node config: %v", err)
+	}
+	if !strings.Contains(string(nodeBlob), "[node]") {
+		t.Fatalf("node config missing defaults: %s", string(nodeBlob))
+	}
+}
+
+func TestRunOnboardingSubcommandDefaultGatewayPathUsesHomeGopherDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(originalCWD)
+	})
+	if err := os.Chdir(home); err != nil {
+		t.Fatalf("chdir home: %v", err)
+	}
+
+	var out bytes.Buffer
+	err = runOnboardingSubcommand([]string{
+		"--non-interactive",
+		"--auth-provider", "zai",
+		"--auth-api-key", "zai-key",
+	}, strings.NewReader(""), &out, &out)
+	if err != nil {
+		t.Fatalf("runOnboardingSubcommand() error: %v", err)
+	}
+
+	defaultGatewayPath := filepath.Join(home, ".gopher", "gopher.toml")
+	if _, err := os.Stat(defaultGatewayPath); err != nil {
+		t.Fatalf("expected default gateway config at %s: %v", defaultGatewayPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "gopher.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy home gopher.toml to remain absent, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "node.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy home node.toml to remain absent, stat err=%v", err)
 	}
 }
 

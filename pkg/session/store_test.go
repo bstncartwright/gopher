@@ -39,7 +39,7 @@ func TestInMemoryEventStoreListReturnsCopy(t *testing.T) {
 	}
 }
 
-func TestInMemoryEventStoreStreamDisconnectsSlowSubscriber(t *testing.T) {
+func TestInMemoryEventStoreStreamBackpressureKeepsLatestEvents(t *testing.T) {
 	store := NewInMemoryEventStore(InMemoryEventStoreOptions{StreamBuffer: 1})
 	if err := store.Append(context.Background(), Event{
 		ID:        "seed",
@@ -89,17 +89,44 @@ func TestInMemoryEventStoreStreamDisconnectsSlowSubscriber(t *testing.T) {
 		}
 	}
 
-	// Slow stream should have been disconnected once its channel filled.
+	// Slow stream should stay connected and retain the latest buffered event.
 	firstSlow, ok := <-slowCh
 	if !ok {
-		t.Fatalf("expected slow stream to still have buffered event before close")
+		t.Fatalf("expected slow stream to remain open")
 	}
-	if firstSlow.SessionID != "s1" {
-		t.Fatalf("unexpected slow stream event session ID %q", firstSlow.SessionID)
+	if firstSlow.Seq != 4 {
+		t.Fatalf("first slow event seq = %d, want 4 (latest buffered event)", firstSlow.Seq)
 	}
-	_, stillOpen := <-slowCh
-	if stillOpen {
-		t.Fatalf("expected slow stream channel to close after backpressure")
+
+	if err := store.Append(context.Background(), Event{
+		ID:        "e5",
+		SessionID: "s1",
+		From:      "user:me",
+		Type:      EventMessage,
+		Payload:   Message{Role: RoleUser, Content: "m"},
+		Timestamp: time.Now().UTC(),
+		Seq:       5,
+	}); err != nil {
+		t.Fatalf("Append(4) error: %v", err)
+	}
+	select {
+	case _, ok := <-fastCh:
+		if !ok {
+			t.Fatalf("fast stream closed unexpectedly on fourth event")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for fast stream event 4")
+	}
+	select {
+	case nextSlow, ok := <-slowCh:
+		if !ok {
+			t.Fatalf("expected slow stream to remain open after backpressure")
+		}
+		if nextSlow.Seq != 5 {
+			t.Fatalf("next slow event seq = %d, want 5", nextSlow.Seq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for next slow stream event")
 	}
 
 }

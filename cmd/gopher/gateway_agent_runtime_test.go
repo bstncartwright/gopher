@@ -85,6 +85,9 @@ func TestDiscoverGatewayAgentWorkspacesCreatesMainWorkspaceWhenMissing(t *testin
 	if got, want := workspaces[0], filepath.Join(workspace, "agents", "main"); got != want {
 		t.Fatalf("workspace = %q, want %q", got, want)
 	}
+	if _, err := os.Stat(filepath.Join(workspace, "agents", "USER.md")); err != nil {
+		t.Fatalf("expected shared USER.md to exist: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(workspace, "agents", "main", "config.toml")); err != nil {
 		t.Fatalf("expected default config.toml to exist: %v", err)
 	}
@@ -97,6 +100,22 @@ func TestDiscoverGatewayAgentWorkspacesCreatesMainWorkspaceWhenMissing(t *testin
 	}
 	if !strings.Contains(string(configBlob), "allow_cross_agent_fs = true") {
 		t.Fatalf("expected main config to default allow_cross_agent_fs=true")
+	}
+}
+
+func TestDiscoverGatewayAgentWorkspacesEnsuresSharedUserProfileForExistingWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	createGatewayTestAgentWorkspace(t, filepath.Join(workspace, "agents", "main"), "main")
+
+	workspaces, err := discoverGatewayAgentWorkspaces(workspace)
+	if err != nil {
+		t.Fatalf("discoverGatewayAgentWorkspaces() error: %v", err)
+	}
+	if len(workspaces) != 1 {
+		t.Fatalf("workspaces len = %d, want 1", len(workspaces))
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "agents", "USER.md")); err != nil {
+		t.Fatalf("expected shared USER.md to exist for existing workspace: %v", err)
 	}
 }
 

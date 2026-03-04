@@ -253,6 +253,12 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 	}
 
 	agentsRoot := filepath.Join(workspaceAbs, "agents")
+	ensureSharedProfile := func(agentWorkspace string) error {
+		if err := ensureSharedUserProfile(agentsRoot, agentWorkspace); err != nil {
+			return fmt.Errorf("ensure shared user profile for %s: %w", agentWorkspace, err)
+		}
+		return nil
+	}
 	entries, readErr := os.ReadDir(agentsRoot)
 	if readErr != nil {
 		if !os.IsNotExist(readErr) {
@@ -271,6 +277,9 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 				return nil, err
 			}
 			if ok {
+				if err := ensureSharedProfile(candidate); err != nil {
+					return nil, err
+				}
 				addCandidate(candidate)
 			}
 		}
@@ -280,6 +289,9 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 		defaultWorkspace := filepath.Join(agentsRoot, defaultAgentWorkspaceID)
 		if err := ensureAgentWorkspace(defaultAgentWorkspaceID, defaultWorkspace); err != nil {
 			return nil, fmt.Errorf("create main agent workspace %s: %w", defaultWorkspace, err)
+		}
+		if err := ensureSharedProfile(defaultWorkspace); err != nil {
+			return nil, err
 		}
 		addCandidate(defaultWorkspace)
 		slog.Info("agent_runtime_loader: created default main workspace", "workspace", defaultWorkspace)

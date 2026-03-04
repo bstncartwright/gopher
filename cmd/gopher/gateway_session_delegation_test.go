@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,38 @@ func (e *blockingAgentExecutor) Step(ctx context.Context, _ sessionrt.AgentInput
 		return sessionrt.AgentOutput{}, ctx.Err()
 	}
 	return sessionrt.AgentOutput{}, nil
+}
+
+type actorCountingExecutor struct {
+	mu    sync.Mutex
+	calls map[sessionrt.ActorID]int
+}
+
+func (e *actorCountingExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	e.mu.Lock()
+	if e.calls == nil {
+		e.calls = map[sessionrt.ActorID]int{}
+	}
+	e.calls[input.ActorID]++
+	e.mu.Unlock()
+
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: string(input.ActorID) + " ack",
+				},
+			},
+		},
+	}, nil
+}
+
+func (e *actorCountingExecutor) callCount(actorID sessionrt.ActorID) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls[actorID]
 }
 
 func waitForDelegationKickoff(
@@ -601,6 +634,130 @@ func TestGatewaySessionDelegationCompletedAnnouncesToSourceSession(t *testing.T)
 			strings.Contains(msg.Content, "finished session") &&
 			strings.Contains(msg.Content, created.SessionID)
 	})
+}
+
+func TestGatewaySessionDelegationAgentMessageAnnouncesToSourceSession(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil, nil)
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and report back.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+
+	if err := manager.SendEvent(ctx, sessionrt.Event{
+		SessionID: sessionrt.SessionID(created.SessionID),
+		From:      "worker",
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:    sessionrt.RoleAgent,
+			Content: "done",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent(worker message) error: %v", err)
+	}
+
+	controlEvent := waitForSessionControlAction(t, ctx, store, source.ID, "delegation.completed")
+	ctrl, ok := controlPayloadFromAny(controlEvent.Payload)
+	if !ok {
+		t.Fatalf("expected control payload for delegation.completed")
+	}
+	delegationID, _ := ctrl.Metadata["delegation_id"].(string)
+	if strings.TrimSpace(delegationID) != created.SessionID {
+		t.Fatalf("delegation_id metadata = %q, want %q", delegationID, created.SessionID)
+	}
+	status, _ := ctrl.Metadata["status"].(string)
+	if strings.TrimSpace(status) != "completed" {
+		t.Fatalf("status metadata = %q, want completed", status)
+	}
+
+	waitForDelegationKickoff(t, ctx, store, source.ID, func(msg sessionrt.Message) bool {
+		return msg.TargetActorID == "milo" &&
+			strings.Contains(msg.Content, "finished session") &&
+			strings.Contains(msg.Content, created.SessionID)
+	})
+}
+
+func TestGatewaySessionDelegationAgentMessageInvokesSourceAgent(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	exec := &actorCountingExecutor{}
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:         store,
+		Executor:      exec,
+		AgentSelector: gatewayMessageTargetSelector("milo"),
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil, nil)
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and report back.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	if strings.TrimSpace(created.SessionID) == "" {
+		t.Fatalf("delegation session id should be set")
+	}
+
+	waitForSessionControlAction(t, ctx, store, source.ID, "delegation.completed")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if exec.callCount("milo") > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for source agent invocation")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestDelegationTerminalStatusFromEventIgnoresEventError(t *testing.T) {

@@ -162,20 +162,6 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	}
 
 	kickoff := buildDelegationKickoffMessage(displayTargetAgentID, message)
-	s.sendSessionEventAsync(
-		sessionrt.Event{
-			SessionID: createdSession.ID,
-			From:      sourceAgentID,
-			Type:      sessionrt.EventMessage,
-			Payload: sessionrt.Message{
-				Role:          sessionrt.RoleAgent,
-				Content:       kickoff,
-				TargetActorID: resolvedTargetAgentID,
-			},
-		},
-		"delegation kickoff event",
-	)
-
 	announcement := buildDelegationAnnouncement(displayTargetAgentID, string(createdSession.ID))
 	record := map[string]any{
 		"ts":                       now,
@@ -203,6 +189,19 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 		sourceAgentID,
 		sessionrt.ActorID(strings.TrimSpace(displayTargetAgentID)),
 		strings.TrimSpace(req.Title),
+	)
+	s.sendSessionEventAsync(
+		sessionrt.Event{
+			SessionID: createdSession.ID,
+			From:      sourceAgentID,
+			Type:      sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:          sessionrt.RoleAgent,
+				Content:       kickoff,
+				TargetActorID: resolvedTargetAgentID,
+			},
+		},
+		"delegation kickoff event",
 	)
 	s.sendDelegationControlEventAsync(sourceSessionID, "delegation.created", map[string]any{
 		"delegation_id":         string(createdSession.ID),
@@ -274,6 +273,13 @@ func (s *gatewaySessionDelegationToolService) startDelegationLifecycleMonitor(
 		defer cancel()
 		for event := range stream {
 			status, reason, ok := delegationTerminalStatusFromEvent(event)
+			if !ok {
+				if agentReason, completed := delegationCompletedFromAgentMessage(event, targetAgentID); completed {
+					status = "completed"
+					reason = agentReason
+					ok = true
+				}
+			}
 			if !ok {
 				continue
 			}
@@ -1314,6 +1320,30 @@ func delegationTerminalStatusFromEvent(event sessionrt.Event) (status string, re
 	default:
 		return "", "", false
 	}
+}
+
+func delegationCompletedFromAgentMessage(event sessionrt.Event, targetAgentID sessionrt.ActorID) (string, bool) {
+	if event.Type != sessionrt.EventMessage {
+		return "", false
+	}
+	target := strings.TrimSpace(string(targetAgentID))
+	if target == "" {
+		return "", false
+	}
+	if strings.TrimSpace(string(event.From)) != target {
+		return "", false
+	}
+	switch payload := event.Payload.(type) {
+	case sessionrt.Message:
+		if payload.Role == sessionrt.RoleAgent {
+			return "delegated agent produced a terminal message", true
+		}
+	case map[string]any:
+		if strings.TrimSpace(stringFromMap(payload, "role")) == string(sessionrt.RoleAgent) {
+			return "delegated agent produced a terminal message", true
+		}
+	}
+	return "", false
 }
 
 func controlPayloadFromAny(payload any) (sessionrt.ControlPayload, bool) {

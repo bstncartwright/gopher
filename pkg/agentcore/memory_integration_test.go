@@ -9,7 +9,7 @@ import (
 	"github.com/bstncartwright/gopher/pkg/memory"
 )
 
-func TestContextBuilderInjectsRetrievedMemory(t *testing.T) {
+func TestContextBuilderDoesNotInjectRetrievedMemoryInFullMode(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	agent, err := LoadAgent(workspace)
 	if err != nil {
@@ -37,11 +37,11 @@ func TestContextBuilderInjectsRetrievedMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProviderContext() error: %v", err)
 	}
-	if !strings.Contains(ctx.SystemPrompt, "### retrieved memory") {
-		t.Fatalf("expected retrieved memory section in prompt: %s", ctx.SystemPrompt)
+	if strings.Contains(ctx.SystemPrompt, "### retrieved memory") {
+		t.Fatalf("did not expect retrieved memory section in prompt: %s", ctx.SystemPrompt)
 	}
-	if !strings.Contains(strings.ToLower(ctx.SystemPrompt), "migration checks") {
-		t.Fatalf("expected retrieved memory content in prompt")
+	if strings.Contains(strings.ToLower(ctx.SystemPrompt), "migration checks") {
+		t.Fatalf("did not expect retrieved memory content in prompt")
 	}
 }
 
@@ -78,6 +78,73 @@ func TestContextBuilderMinimalModeSkipsRetrievedMemory(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(ctx.SystemPrompt), "migration checks") {
 		t.Fatalf("did not expect retrieved memory content in minimal mode")
+	}
+}
+
+func TestMemorySearchToolRetrievesFromMemoryFiles(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if agent.MemoryFiles == nil {
+		t.Fatalf("expected memory files manager")
+	}
+
+	const marker = "zxqv-memory-probe-marker"
+	if _, err := agent.MemoryFiles.AppendDailyEntry("Remember " + marker + " for deploy checks."); err != nil {
+		t.Fatalf("AppendDailyEntry() error: %v", err)
+	}
+
+	tool := &memorySearchTool{}
+	session := agent.NewSession()
+	output, err := tool.Run(context.Background(), ToolInput{
+		Agent:   agent,
+		Session: session,
+		Args: map[string]any{
+			"query":       marker,
+			"max_results": 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("memorySearchTool.Run() error: %v", err)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("memorySearchTool status = %q, want ok", output.Status)
+	}
+	result, ok := output.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("tool result type = %T, want map[string]any", output.Result)
+	}
+	rawResults, ok := result["results"]
+	if !ok {
+		t.Fatalf("expected results in tool output")
+	}
+	found := false
+	switch typed := rawResults.(type) {
+	case []map[string]any:
+		for _, item := range typed {
+			snippet, _ := item["snippet"].(string)
+			if strings.Contains(strings.ToLower(snippet), marker) {
+				found = true
+				break
+			}
+		}
+	case []any:
+		for _, entry := range typed {
+			item, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			snippet, _ := item["snippet"].(string)
+			if strings.Contains(strings.ToLower(snippet), marker) {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected memory_search results to include marker %q, got: %#v", marker, rawResults)
 	}
 }
 

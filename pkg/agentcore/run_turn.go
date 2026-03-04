@@ -541,7 +541,7 @@ func (a *Agent) buildTurnProviderContext(ctx context.Context, s *Session, in Tur
 			DisableRetrievedMemory:       true,
 			EnableModelCompactionSummary: false,
 			Warnings: []string{
-				"context build fallback: retrieved memory disabled after timeout",
+				"context build fallback after timeout",
 			},
 		},
 	)

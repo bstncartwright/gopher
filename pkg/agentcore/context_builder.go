@@ -117,13 +117,10 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 		Timestamp: userTimestamp,
 	})
 
+	// Retrieved-memory injection is intentionally disabled for all agents.
+	// Memory context should come from auto-loaded files, and deeper lookup
+	// should be explicit via memory_search/memory_get tools.
 	var retrieved []memory.MemoryRecord
-	if mode == PromptModeFull && !opts.DisableRetrievedMemory {
-		if a.MemorySearch != nil {
-			_ = a.MemorySearch.Sync(ctx, false)
-		}
-		retrieved = a.retrieveLongTermMemory(ctx, s, userMessage)
-	}
 
 	compactionSummaries := opts.CompactionSummaries
 	if len(compactionSummaries) == 0 {

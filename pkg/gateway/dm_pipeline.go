@@ -2128,7 +2128,7 @@ func toolCallEmoji(name string) string {
 }
 
 func draftTextForState(state draftStreamState) string {
-	body := state.Text
+	body := sanitizeDraftBody(state.Text)
 	toolSummary := strings.TrimSpace(strings.Join(state.ToolProgress, " "))
 	switch {
 	case toolSummary == "":
@@ -2138,6 +2138,13 @@ func draftTextForState(state draftStreamState) string {
 	default:
 		return trimDraftText(dmDraftToolPrefix + " " + toolSummary + "\n\n" + body)
 	}
+}
+
+func sanitizeDraftBody(text string) string {
+	if text == "" {
+		return ""
+	}
+	return strings.ReplaceAll(text, noReplyToken, "")
 }
 
 func trimDraftText(text string) string {

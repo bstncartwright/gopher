@@ -4004,6 +4004,57 @@ func TestDMPipelineDraftIncludesToolEmojiAndTextDeltas(t *testing.T) {
 	}
 }
 
+func TestDMPipelineDraftSuppressesNoReplyTokenFromDeltas(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmStreamingExecutor{
+			deltas: []string{
+				strings.Repeat("x", 80),
+				strings.Repeat("y", 80) + " NO_REPLY ",
+			},
+			final: "NO_REPLY",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fake.draftSignals()) >= 2
+	})
+
+	drafts := fake.draftSignals()
+	for _, draft := range drafts {
+		if strings.Contains(draft.Text, noReplyToken) {
+			t.Fatalf("expected NO_REPLY token to be stripped from drafts, got %#v", drafts)
+		}
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if got := fake.sentCount(); got != 0 {
+		t.Fatalf("outbound count = %d, want 0 (NO_REPLY final should be suppressed)", got)
+	}
+}
+
 func TestDMPipelineDisablesDraftStreamingAfterDraftError(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

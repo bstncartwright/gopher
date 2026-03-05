@@ -548,7 +548,8 @@ body[data-active-tab="sessions"] .event-keyfacts {
 #session-detail,
 #agents-list,
 #nodes-list,
-#actions-list {
+#actions-list,
+#cron-list {
   padding: 10px 12px 12px;
   overflow: auto;
   max-height: none;
@@ -563,6 +564,7 @@ body[data-active-tab="sessions"] .event-keyfacts {
 #agents-list::-webkit-scrollbar,
 #nodes-list::-webkit-scrollbar,
 #actions-list::-webkit-scrollbar,
+#cron-list::-webkit-scrollbar,
 .payload::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -573,6 +575,7 @@ body[data-active-tab="sessions"] .event-keyfacts {
 #agents-list::-webkit-scrollbar-thumb,
 #nodes-list::-webkit-scrollbar-thumb,
 #actions-list::-webkit-scrollbar-thumb,
+#cron-list::-webkit-scrollbar-thumb,
 .payload::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgba(167, 192, 180, 0.28);
@@ -583,6 +586,7 @@ body[data-active-tab="sessions"] .event-keyfacts {
 #agents-list::-webkit-scrollbar-track,
 #nodes-list::-webkit-scrollbar-track,
 #actions-list::-webkit-scrollbar-track,
+#cron-list::-webkit-scrollbar-track,
 .payload::-webkit-scrollbar-track {
   background: rgba(2, 7, 7, 0.48);
 }
@@ -1512,7 +1516,8 @@ body[data-active-tab="sessions"] .event-keyfacts {
   #session-detail,
   #agents-list,
   #nodes-list,
-  #actions-list {
+  #actions-list,
+  #cron-list {
     max-height: none;
     min-height: auto;
     flex: none;
@@ -1606,7 +1611,8 @@ body[data-active-tab="sessions"] .event-keyfacts {
   #session-detail,
   #agents-list,
   #nodes-list,
-  #actions-list {
+  #actions-list,
+  #cron-list {
     padding: 10px;
   }
 

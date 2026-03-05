@@ -1,0 +1,53 @@
+<div class="overview-head">
+  <h2>Cron Jobs</h2>
+  <p>Updated {{.Now}}</p>
+</div>
+
+{{if .HasCronStore}}
+<div class="summary-grid">
+  <div class="summary-pill pill-active">Enabled: {{.EnabledJobs}}</div>
+  <div class="summary-pill pill-paused">Paused: {{.PausedJobs}}</div>
+  <div class="summary-pill pill-completed">Total: {{.TotalJobs}}</div>
+</div>
+
+{{if .Error}}
+<div class="empty-state">{{.Error}}</div>
+{{else if .Jobs}}
+<table class="node-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Session</th>
+      <th>Status</th>
+      <th>Cron</th>
+      <th>Timezone</th>
+      <th>Created By</th>
+      <th>Updated</th>
+      <th>Next Run</th>
+      <th>Last Run</th>
+      <th>Message</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Jobs}}
+    <tr>
+      <td class="node-id">{{.ID}}</td>
+      <td class="node-id">{{.SessionID}}</td>
+      <td>{{.Status}}</td>
+      <td>{{.CronExpr}}</td>
+      <td>{{.Timezone}}</td>
+      <td>{{.CreatedBy}}</td>
+      <td>{{.UpdatedAt}}</td>
+      <td>{{.NextRunAt}}</td>
+      <td>{{.LastRunAt}}</td>
+      <td>{{.Message}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<div class="empty-state">No cron jobs yet.</div>
+{{end}}
+{{else}}
+<div class="empty-state">Cron storage unavailable for this runtime.</div>
+{{end}}

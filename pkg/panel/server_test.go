@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -178,6 +180,22 @@ func TestPanelQueryTabNormalizesActiveTab(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "data-initial-tab=\"actions\"") {
 		t.Fatalf("expected actions tab in body data marker, got: %s", rec.Body.String())
+	}
+}
+
+func TestPanelPathCronTabRendersActiveTab(t *testing.T) {
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/tab/cron", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "data-initial-tab=\"cron\"") {
+		t.Fatalf("expected cron tab in body data marker, got: %s", rec.Body.String())
 	}
 }
 
@@ -593,6 +611,68 @@ func TestPanelControlAndNodesFragmentsRender(t *testing.T) {
 	}
 	if !strings.Contains(actionsRec.Body.String(), "Control directory unavailable") {
 		t.Fatalf("expected actions unavailable message, got: %s", actionsRec.Body.String())
+	}
+
+	cronRec := httptest.NewRecorder()
+	cronReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/cron", nil)
+	mux.ServeHTTP(cronRec, cronReq)
+	if cronRec.Code != http.StatusOK {
+		t.Fatalf("cron status = %d, want 200", cronRec.Code)
+	}
+	if !strings.Contains(cronRec.Body.String(), "Cron storage unavailable") {
+		t.Fatalf("expected cron unavailable message, got: %s", cronRec.Body.String())
+	}
+}
+
+func TestPanelCronFragmentRendersJobs(t *testing.T) {
+	tempDir := t.TempDir()
+	cronStorePath := filepath.Join(tempDir, "cron", "jobs.json")
+	if err := os.MkdirAll(filepath.Dir(cronStorePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	blob := `{
+  "jobs": [
+    {
+      "id": "cron-1",
+      "session_id": "sess-1",
+      "message": "daily check-in",
+      "cron_expr": "0 9 * * *",
+      "timezone": "UTC",
+      "enabled": true,
+      "created_by": "agent",
+      "updated_at": "2026-03-05T00:00:00Z",
+      "next_run_at": "2026-03-06T09:00:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(cronStorePath, []byte(blob), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	srv, err := NewServer(ServerOptions{
+		ListenAddr:    "127.0.0.1:29329",
+		CronStorePath: cronStorePath,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/cron", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "cron-1") {
+		t.Fatalf("expected cron id, got: %s", body)
+	}
+	if !strings.Contains(body, "daily check-in") {
+		t.Fatalf("expected cron message, got: %s", body)
+	}
+	if !strings.Contains(body, "Enabled: 1") {
+		t.Fatalf("expected enabled count, got: %s", body)
 	}
 }
 

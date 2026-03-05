@@ -33,6 +33,7 @@
       <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="sessions">Sessions</button>
       <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="nodes">Nodes</button>
       <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="actions">Control Actions</button>
+      <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="cron">Cron</button>
       <button type="button" class="tab-btn" role="tab" aria-selected="false" data-panel-tab="agents">Agents</button>
     </nav>
 
@@ -147,6 +148,18 @@
       </article>
     </section>
 
+    <section class="tab-pane" data-tab-pane="cron">
+      <article class="card agents">
+        <header class="section-header">
+          <h2>Cron</h2>
+          <p>Durable scheduled jobs and next run timing.</p>
+        </header>
+        <div id="cron-list" hx-get="/_gopher/panel/fragments/cron" hx-trigger="load, every 8s">
+          <div class="loading">Loading cron jobs...</div>
+        </div>
+      </article>
+    </section>
+
     <section class="tab-pane" data-tab-pane="agents">
       <article class="card agents">
         <header class="section-header">
@@ -165,7 +178,7 @@
       var PANEL_ROOT = "/_gopher/panel";
 
       function isValidTab(value) {
-        return value === "control" || value === "sessions" || value === "nodes" || value === "actions" || value === "agents";
+        return value === "control" || value === "sessions" || value === "nodes" || value === "actions" || value === "cron" || value === "agents";
       }
 
       function tabPath(tabID) {
@@ -1563,7 +1576,7 @@
         if (tabButton) {
           event.preventDefault();
           var tabID = tabButton.getAttribute("data-panel-tab") || "control";
-          if (tabID !== "control" && tabID !== "sessions" && tabID !== "agents" && tabID !== "nodes" && tabID !== "actions") {
+          if (tabID !== "control" && tabID !== "sessions" && tabID !== "agents" && tabID !== "nodes" && tabID !== "actions" && tabID !== "cron") {
             tabID = "control";
           }
           if (tabID === state.activeTab) {

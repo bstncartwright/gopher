@@ -680,6 +680,7 @@ func startGatewayPanel(
 		Store:           store,
 		SessionMetadata: sessionMetadata,
 		ControlDir:      filepath.Join(controlDir, "control"),
+		CronStorePath:   filepath.Join(controlDir, "cron", "jobs.json"),
 		NodeSnapshot: func() []scheduler.NodeInfo {
 			return process.registry.Snapshot()
 		},

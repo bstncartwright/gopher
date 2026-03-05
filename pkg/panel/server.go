@@ -72,6 +72,7 @@ type ServerOptions struct {
 	NodeSnapshot    func() []scheduler.NodeInfo
 	AgentSnapshot   func() []AgentInfo
 	ControlDir      string
+	CronStorePath   string
 }
 
 type Server struct {
@@ -81,6 +82,7 @@ type Server struct {
 	nodeSnapshot    func() []scheduler.NodeInfo
 	agentSnapshot   func() []AgentInfo
 	controlDir      string
+	cronStorePath   string
 	templates       *template.Template
 	assets          fs.FS
 }
@@ -115,6 +117,46 @@ type controlActionsData struct {
 	Now           string
 	HasControl    bool
 	RecentActions []controlActionRecord
+}
+
+type cronData struct {
+	Now          string
+	HasCronStore bool
+	Error        string
+	TotalJobs    int
+	EnabledJobs  int
+	PausedJobs   int
+	Jobs         []cronJobRow
+}
+
+type cronJobRow struct {
+	ID        string
+	SessionID string
+	Status    string
+	CronExpr  string
+	Timezone  string
+	CreatedBy string
+	Message   string
+	LastRunAt string
+	NextRunAt string
+	UpdatedAt string
+}
+
+type cronJobDisk struct {
+	ID        string     `json:"id"`
+	SessionID string     `json:"session_id"`
+	Message   string     `json:"message"`
+	CronExpr  string     `json:"cron_expr"`
+	Timezone  string     `json:"timezone"`
+	Enabled   bool       `json:"enabled"`
+	CreatedBy string     `json:"created_by"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	LastRunAt *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+}
+
+type cronStoreDisk struct {
+	Jobs []cronJobDisk `json:"jobs"`
 }
 
 type agentsData struct {
@@ -256,6 +298,11 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if agentSnapshot == nil {
 		agentSnapshot = func() []AgentInfo { return nil }
 	}
+	controlDir := strings.TrimSpace(opts.ControlDir)
+	cronStorePath := strings.TrimSpace(opts.CronStorePath)
+	if cronStorePath == "" && controlDir != "" {
+		cronStorePath = filepath.Join(filepath.Dir(controlDir), "cron", "jobs.json")
+	}
 	slog.Info("panel_server: created", "listen_addr", listenAddr, "has_store", opts.Store != nil)
 	return &Server{
 		listenAddr:      listenAddr,
@@ -263,7 +310,8 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		sessionMetadata: opts.SessionMetadata,
 		nodeSnapshot:    nodeSnapshot,
 		agentSnapshot:   agentSnapshot,
-		controlDir:      strings.TrimSpace(opts.ControlDir),
+		controlDir:      controlDir,
+		cronStorePath:   cronStorePath,
 		templates:       tpl,
 		assets:          assetsFS,
 	}, nil
@@ -336,6 +384,7 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("GET /_gopher/panel/fragments/control", s.handleControl)
 	mux.HandleFunc("GET /_gopher/panel/fragments/nodes-table", s.handleNodesFragment)
 	mux.HandleFunc("GET /_gopher/panel/fragments/control-actions", s.handleControlActions)
+	mux.HandleFunc("GET /_gopher/panel/fragments/cron", s.handleCron)
 	mux.HandleFunc("GET /_gopher/panel/fragments/overview", s.handleOverview)
 	mux.HandleFunc("GET /_gopher/panel/fragments/sessions", s.handleSessions)
 	mux.HandleFunc("GET /_gopher/panel/fragments/session/{sessionID}", s.handleSessionDetail)
@@ -413,6 +462,65 @@ func (s *Server) handleControlActions(w http.ResponseWriter, _ *http.Request) {
 		HasControl:    s.controlDir != "",
 		RecentActions: actions,
 	})
+}
+
+func (s *Server) handleCron(w http.ResponseWriter, _ *http.Request) {
+	data := cronData{
+		Now:          time.Now().UTC().Format(time.RFC3339),
+		HasCronStore: strings.TrimSpace(s.cronStorePath) != "",
+	}
+	if !data.HasCronStore {
+		s.renderTemplate(w, "cron.html", data)
+		return
+	}
+
+	jobs, err := readCronJobs(s.cronStorePath)
+	if err != nil {
+		data.Error = fmt.Sprintf("Load cron jobs failed: %v", err)
+		s.renderTemplate(w, "cron.html", data)
+		return
+	}
+
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].Enabled != jobs[j].Enabled {
+			return jobs[i].Enabled
+		}
+		leftNextZero := jobs[i].NextRunAt == nil || jobs[i].NextRunAt.IsZero()
+		rightNextZero := jobs[j].NextRunAt == nil || jobs[j].NextRunAt.IsZero()
+		if leftNextZero != rightNextZero {
+			return !leftNextZero
+		}
+		if !leftNextZero && !jobs[i].NextRunAt.Equal(*jobs[j].NextRunAt) {
+			return jobs[i].NextRunAt.Before(*jobs[j].NextRunAt)
+		}
+		return jobs[i].UpdatedAt.After(jobs[j].UpdatedAt)
+	})
+
+	rows := make([]cronJobRow, 0, len(jobs))
+	for _, job := range jobs {
+		data.TotalJobs++
+		status := "paused"
+		if job.Enabled {
+			status = "enabled"
+			data.EnabledJobs++
+		} else {
+			data.PausedJobs++
+		}
+		rows = append(rows, cronJobRow{
+			ID:        strings.TrimSpace(job.ID),
+			SessionID: strings.TrimSpace(job.SessionID),
+			Status:    status,
+			CronExpr:  strings.TrimSpace(job.CronExpr),
+			Timezone:  strings.TrimSpace(job.Timezone),
+			CreatedBy: strings.TrimSpace(job.CreatedBy),
+			Message:   clipPanelText(strings.TrimSpace(job.Message), 180),
+			LastRunAt: formatOptionalTime(job.LastRunAt),
+			NextRunAt: formatOptionalTime(job.NextRunAt),
+			UpdatedAt: formatTime(job.UpdatedAt),
+		})
+	}
+	data.Jobs = rows
+	s.renderTemplate(w, "cron.html", data)
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -1312,6 +1420,46 @@ func asInt64(value any) int64 {
 	}
 }
 
+func readCronJobs(path string) ([]cronJobDisk, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(blob))) == 0 {
+		return nil, nil
+	}
+	doc := cronStoreDisk{}
+	if err := json.Unmarshal(blob, &doc); err != nil {
+		return nil, err
+	}
+	return doc.Jobs, nil
+}
+
+func formatOptionalTime(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return "-"
+	}
+	return formatTime(*value)
+}
+
+func clipPanelText(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	if max == 1 {
+		return "…"
+	}
+	return value[:max-1] + "…"
+}
+
 func formatStringList(values []string) string {
 	trimmed := make([]string, 0, len(values))
 	for _, value := range values {
@@ -1356,6 +1504,8 @@ func normalizePanelTab(value string) string {
 		return "nodes"
 	case "actions", "control-actions":
 		return "actions"
+	case "cron":
+		return "cron"
 	case "agents":
 		return "agents"
 	default:

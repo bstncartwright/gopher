@@ -56,6 +56,16 @@ type codexRequestBody struct {
 	PromptCacheKey    string           `json:"prompt_cache_key,omitempty"`
 }
 
+func resolveOpenAICodexResponsesTransport(model Model, options *OpenAICodexResponsesOptions) Transport {
+	if options != nil && options.Transport != "" {
+		return options.Transport
+	}
+	if supportsCodexWebSocketByDefault(model.BaseURL) {
+		return TransportAuto
+	}
+	return TransportSSE
+}
+
 func StreamOpenAICodexResponses(model Model, conversation Context, options *StreamOptions) *AssistantMessageEventStream {
 	opts := &OpenAICodexResponsesOptions{}
 	if options != nil {
@@ -134,14 +144,7 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 		}
 
 		headers := buildCodexHeaders(model.Headers, options.Headers, accountID, apiKey, options.SessionID)
-		transport := options.Transport
-		if transport == "" {
-			if strings.TrimSpace(options.SessionID) != "" && supportsCodexWebSocketByDefault(model.BaseURL) {
-				transport = TransportAuto
-			} else {
-				transport = TransportSSE
-			}
-		}
+		transport := resolveOpenAICodexResponsesTransport(model, options)
 
 		if transport != TransportSSE {
 			wsStarted := false

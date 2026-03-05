@@ -218,7 +218,7 @@ func (a *Agent) buildProviderContextDetailedWithAttachments(ctx context.Context,
 	return ai.Context{
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
-		Tools:        toolSchemasToAITools(activeTools),
+		Tools:        buildProviderAITools(activeTools, a.model, a.Config, a.Policies, false),
 	}, diagnostics, nil
 }
 

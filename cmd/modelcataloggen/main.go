@@ -194,6 +194,12 @@ func toAIModel(targetProvider string, model modelsDevModel, apiType ai.API, base
 	if contextWindow <= 0 {
 		contextWindow = model.Limit.Context
 	}
+	var responsesCompat *ai.OpenAIResponsesCompat
+	if apiType == ai.APIOpenAIResponses || apiType == ai.APIOpenAICodexResponse {
+		responsesCompat = &ai.OpenAIResponsesCompat{
+			SupportsHostedWebSearch: boolPtr(targetProvider == "openai" || targetProvider == "openai-codex"),
+		}
+	}
 	return ai.Model{
 		ID:        strings.TrimSpace(model.ID),
 		Name:      strings.TrimSpace(model.Name),
@@ -208,9 +214,10 @@ func toAIModel(targetProvider string, model modelsDevModel, apiType ai.API, base
 			CacheRead:  model.Cost.CacheRead,
 			CacheWrite: model.Cost.CacheWrite,
 		},
-		ContextWindow: contextWindow,
-		MaxTokens:     model.Limit.Output,
-		Compat:        cloneCompat(compat),
+		ContextWindow:   contextWindow,
+		MaxTokens:       model.Limit.Output,
+		Compat:          cloneCompat(compat),
+		ResponsesCompat: responsesCompat,
 	}
 }
 

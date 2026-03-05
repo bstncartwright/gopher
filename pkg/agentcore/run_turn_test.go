@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -242,6 +243,122 @@ func TestRunTurnUsesStreamErrorWhenProviderErrorMessageEmpty(t *testing.T) {
 	if !strings.Contains(runErr.Error(), "No tool call found") {
 		t.Fatalf("expected stream error fallback message, got %v", runErr)
 	}
+}
+
+func TestRunTurnTracesHostedWebSearchWithoutLocalToolExecution(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	capture := &aliasCaptureTool{name: "web_search"}
+	agent.Tools = NewToolRegistry([]Tool{capture})
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonStop
+	assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+	agent.Provider = &mockProvider{
+		rounds: []mockRound{{
+			assistant: assistant,
+			events: []ai.AssistantMessageEvent{
+				{Type: ai.EventWebSearchStart, WebSearch: &ai.HostedWebSearchCall{ID: "ws_1", Query: "weather denver", Status: "in_progress"}},
+				{Type: ai.EventWebSearchEnd, WebSearch: &ai.HostedWebSearchCall{ID: "ws_1", Query: "weather denver", Status: "completed"}},
+			},
+		}},
+	}
+
+	session := agent.NewSession()
+	result, err := agent.RunTurn(context.Background(), session, TurnInput{UserMessage: "check weather"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if capture.ran {
+		t.Fatalf("expected hosted web_search to avoid local tool execution")
+	}
+	if result.FinalText != "done" {
+		t.Fatalf("final text = %q, want done", result.FinalText)
+	}
+	if countEvents(result.Events, EventTypeToolCall) != 1 {
+		t.Fatalf("tool call events = %d, want 1", countEvents(result.Events, EventTypeToolCall))
+	}
+	if countEvents(result.Events, EventTypeToolResult) != 1 {
+		t.Fatalf("tool result events = %d, want 1", countEvents(result.Events, EventTypeToolResult))
+	}
+	callPayload := eventPayloadForType(result.Events, EventTypeToolCall)
+	if got := strings.TrimSpace(fmt.Sprint(callPayload["backend"])); got != "provider_native" {
+		t.Fatalf("tool.call backend = %q, want provider_native", got)
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == ai.RoleToolResult {
+			t.Fatalf("did not expect provider-native web_search to persist toolResult context message")
+		}
+	}
+}
+
+func TestRunTurnRetriesHostedWebSearchWithMCPFallback(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	capture := &aliasCaptureTool{name: "web_search"}
+	agent.Tools = NewToolRegistry([]Tool{capture})
+
+	first := ai.NewAssistantMessage(agent.model)
+	first.StopReason = ai.StopReasonError
+	first.ErrorMessage = "web_search is not supported for this model"
+	second := ai.NewAssistantMessage(agent.model)
+	second.StopReason = ai.StopReasonStop
+	second.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "fallback ok"}}
+	provider := &mockProvider{
+		rounds: []mockRound{
+			{assistant: first},
+			{assistant: second},
+		},
+	}
+	agent.Provider = provider
+
+	result, err := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "search this"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if result.FinalText != "fallback ok" {
+		t.Fatalf("final text = %q, want fallback ok", result.FinalText)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls)
+	}
+	if len(provider.contexts) != 2 {
+		t.Fatalf("provider contexts = %d, want 2", len(provider.contexts))
+	}
+	if hostedWebSearchMode(provider.contexts[0].Tools) == NativeWebSearchModeDisabled {
+		t.Fatalf("expected first request to use hosted web_search")
+	}
+	if hostedWebSearchMode(provider.contexts[1].Tools) != NativeWebSearchModeDisabled {
+		t.Fatalf("expected retry request to disable hosted web_search")
+	}
+}
+
+func countEvents(events []Event, eventType EventType) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	return count
+}
+
+func eventPayloadForType(events []Event, eventType EventType) map[string]any {
+	for _, event := range events {
+		if event.Type != eventType {
+			continue
+		}
+		if payload, ok := event.Payload.(map[string]any); ok {
+			return payload
+		}
+	}
+	return nil
 }
 
 func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {

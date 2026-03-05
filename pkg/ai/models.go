@@ -41,6 +41,7 @@ func loadGeneratedModels() {
 			if model.Provider == "" {
 				model.Provider = provider
 			}
+			model = applyDefaultResponsesCompat(model)
 			providerModels[id] = model
 		}
 		out[provider] = providerModels
@@ -95,6 +96,9 @@ func loadGeneratedModels() {
 		},
 		ContextWindow: 272000,
 		MaxTokens:     128000,
+		ResponsesCompat: &OpenAIResponsesCompat{
+			SupportsHostedWebSearch: boolPtr(true),
+		},
 	}
 
 	modelRegistry = out
@@ -108,9 +112,26 @@ func SetModels(provider Provider, models map[string]Model) {
 	}
 	cp := make(map[string]Model, len(models))
 	for id, model := range models {
+		model = applyDefaultResponsesCompat(model)
 		cp[id] = model
 	}
 	modelRegistry[provider] = cp
+}
+
+func applyDefaultResponsesCompat(model Model) Model {
+	if model.API != APIOpenAIResponses && model.API != APIOpenAICodexResponse {
+		return model
+	}
+	if model.Provider != ProviderOpenAI && model.Provider != ProviderOpenAICodex {
+		return model
+	}
+	if model.ResponsesCompat == nil {
+		model.ResponsesCompat = &OpenAIResponsesCompat{}
+	}
+	if model.ResponsesCompat.SupportsHostedWebSearch == nil {
+		model.ResponsesCompat.SupportsHostedWebSearch = boolPtr(true)
+	}
+	return model
 }
 
 func GetModel(provider, modelID string) (Model, bool) {

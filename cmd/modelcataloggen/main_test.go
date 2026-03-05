@@ -51,6 +51,9 @@ func TestTransformOpenAICodexModelsMirrorsOpenAIModels(t *testing.T) {
 	if model.BaseURL != "https://chatgpt.com/backend-api" {
 		t.Fatalf("baseURL = %q", model.BaseURL)
 	}
+	if model.ResponsesCompat == nil || model.ResponsesCompat.SupportsHostedWebSearch == nil || !*model.ResponsesCompat.SupportsHostedWebSearch {
+		t.Fatalf("expected openai-codex responses compat to enable hosted web search")
+	}
 	if model.ContextWindow != 272000 {
 		t.Fatalf("contextWindow = %d, want 272000", model.ContextWindow)
 	}
@@ -119,6 +122,9 @@ func TestBuildGopherCatalogMapsExpectedProviders(t *testing.T) {
 
 	if _, ok := catalog["openai"]["gpt-4o-mini"]; !ok {
 		t.Fatalf("expected openai:gpt-4o-mini in catalog")
+	}
+	if model := catalog["openai"]["gpt-4o-mini"]; model.ResponsesCompat == nil || model.ResponsesCompat.SupportsHostedWebSearch == nil || !*model.ResponsesCompat.SupportsHostedWebSearch {
+		t.Fatalf("expected openai responses compat to enable hosted web search")
 	}
 	if _, ok := catalog["openai-codex"]["gpt-5.3-codex"]; !ok {
 		t.Fatalf("expected derived openai-codex:gpt-5.3-codex in catalog")

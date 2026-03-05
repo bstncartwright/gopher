@@ -27,6 +27,7 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	var sawConversationID string
 	var sawSessionID string
 	var sawPromptCacheKey string
+	var sawServiceTier string
 	var sawStore any
 
 	oldClient := defaultHTTPClient
@@ -42,6 +43,7 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			sawPromptCacheKey = fmt.Sprint(body["prompt_cache_key"])
+			sawServiceTier = fmt.Sprint(body["service_tier"])
 			sawStore = body["store"]
 
 			events := []map[string]any{
@@ -83,7 +85,14 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	stream := StreamOpenAICodexResponses(
 		model,
 		Context{SystemPrompt: "You are helpful", Messages: []Message{{Role: RoleUser, Content: "hi", Timestamp: time.Now().UnixMilli()}}},
-		&StreamOptions{APIKey: token, SessionID: sessionID, RequestContext: ctx},
+		&StreamOptions{
+			APIKey:         token,
+			SessionID:      sessionID,
+			RequestContext: ctx,
+			ProviderOptions: map[string]any{
+				"service_tier": "fast",
+			},
+		},
 	)
 
 	result, err := stream.Result(ctx)
@@ -104,6 +113,9 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	}
 	if sawPromptCacheKey != sessionID {
 		t.Fatalf("expected prompt_cache_key %q, got %q", sessionID, sawPromptCacheKey)
+	}
+	if sawServiceTier != "priority" {
+		t.Fatalf("expected service_tier %q, got %q", "priority", sawServiceTier)
 	}
 	storeFlag, ok := sawStore.(bool)
 	if !ok {

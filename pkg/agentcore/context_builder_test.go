@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
 	"strings"
 	"testing"
@@ -173,4 +174,72 @@ func (s *testReactionToolService) SendReaction(_ context.Context, req ReactionSe
 		TargetEventID:  "1",
 		Emoji:          strings.TrimSpace(req.Emoji),
 	}, nil
+}
+
+func TestBuildTurnProviderContextIncludesImageAttachmentsAsBlocks(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	agent.model.Input = []string{"text", "image"}
+
+	ctx, _, err := agent.buildTurnProviderContext(context.Background(), &Session{ID: "s-image"}, TurnInput{
+		UserMessage: "describe this",
+		Attachments: []Attachment{{
+			Name:     "photo.jpg",
+			MIMEType: "image/jpeg",
+			Data:     []byte("img"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildTurnProviderContext() error: %v", err)
+	}
+
+	blocks, ok := ctx.Messages[len(ctx.Messages)-1].ContentBlocks()
+	if !ok {
+		t.Fatalf("expected user content blocks")
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("block count = %d, want 2", len(blocks))
+	}
+	if blocks[0].Type != ai.ContentTypeText || blocks[0].Text != "describe this" {
+		t.Fatalf("unexpected first block: %#v", blocks[0])
+	}
+	if blocks[1].Type != ai.ContentTypeImage {
+		t.Fatalf("unexpected second block type: %q", blocks[1].Type)
+	}
+	if blocks[1].Data != base64.StdEncoding.EncodeToString([]byte("img")) {
+		t.Fatalf("unexpected image payload: %q", blocks[1].Data)
+	}
+}
+
+func TestBuildTurnProviderContextFallsBackToTextForAudioAttachments(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	ctx, _, err := agent.buildTurnProviderContext(context.Background(), &Session{ID: "s-audio"}, TurnInput{
+		Attachments: []Attachment{{
+			Name:     "voice.ogg",
+			MIMEType: "audio/ogg",
+			Data:     []byte("ogg"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildTurnProviderContext() error: %v", err)
+	}
+
+	blocks, ok := ctx.Messages[len(ctx.Messages)-1].ContentBlocks()
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("expected single text block, got %#v", ctx.Messages[len(ctx.Messages)-1].Content)
+	}
+	if blocks[0].Type != ai.ContentTypeText {
+		t.Fatalf("unexpected block type: %q", blocks[0].Type)
+	}
+	if !strings.Contains(blocks[0].Text, "voice.ogg") || !strings.Contains(blocks[0].Text, "audio/ogg") {
+		t.Fatalf("unexpected attachment summary: %q", blocks[0].Text)
+	}
 }

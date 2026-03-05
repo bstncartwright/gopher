@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -454,4 +455,35 @@ func hasEventType(events []sessionrt.Event, target sessionrt.EventType) bool {
 		}
 	}
 	return false
+}
+
+func TestPromptMessageFromPayloadDecodesPersistedAttachments(t *testing.T) {
+	payload, err := json.Marshal(sessionrt.Message{
+		Role:    sessionrt.RoleUser,
+		Content: "",
+		Attachments: []sessionrt.Attachment{{
+			Name:     "photo.jpg",
+			MIMEType: "image/jpeg",
+			Data:     []byte("img"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+
+	msg, ok := promptMessageFromPayload(decoded)
+	if !ok {
+		t.Fatalf("expected promptMessageFromPayload() to succeed")
+	}
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(msg.Attachments))
+	}
+	if string(msg.Attachments[0].Data) != "img" {
+		t.Fatalf("attachment data = %q", string(msg.Attachments[0].Data))
+	}
 }

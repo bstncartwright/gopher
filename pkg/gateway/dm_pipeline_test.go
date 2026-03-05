@@ -873,6 +873,86 @@ func TestDMPipelineRoutesInboundToAgentAndOutbound(t *testing.T) {
 	}
 }
 
+func TestDMPipelinePersistsInboundAttachmentsOnUserMessage(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: &fakeTransport{},
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:attachments",
+		SenderID:       "@user:hs",
+		Attachments: []transport.InboundAttachment{{
+			Name:     "photo.jpg",
+			MIMEType: "image/jpeg",
+			Data:     []byte("img"),
+		}},
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	sessions, err := store.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions() error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("session count = %d, want 1", len(sessions))
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		events, err := store.List(ctx, sessions[0].SessionID)
+		if err != nil {
+			return false
+		}
+		for _, event := range events {
+			if event.Type != sessionrt.EventMessage {
+				continue
+			}
+			msg, ok := event.Payload.(sessionrt.Message)
+			if !ok || msg.Role != sessionrt.RoleUser || len(msg.Attachments) != 1 {
+				continue
+			}
+			return true
+		}
+		return false
+	})
+	events, err := store.List(ctx, sessions[0].SessionID)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	for _, event := range events {
+		if event.Type != sessionrt.EventMessage {
+			continue
+		}
+		msg, ok := event.Payload.(sessionrt.Message)
+		if !ok || msg.Role != sessionrt.RoleUser || len(msg.Attachments) != 1 {
+			continue
+		}
+		if msg.Attachments[0].Name != "photo.jpg" {
+			t.Fatalf("attachment name = %q, want photo.jpg", msg.Attachments[0].Name)
+		}
+		if string(msg.Attachments[0].Data) != "img" {
+			t.Fatalf("attachment data = %q", string(msg.Attachments[0].Data))
+		}
+		return
+	}
+	t.Fatalf("expected user message event with attachment")
+}
+
 func TestDMPipelineDoesNotSendProgressUpdatesDuringToolExecution(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

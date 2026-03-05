@@ -512,7 +512,10 @@ func (a *Agent) buildTurnProviderContext(ctx context.Context, s *Session, in Tur
 	primaryCtx, cancelPrimary := boundedContext(ctx, runTurnContextBuildTimeout)
 	defer cancelPrimary()
 
-	conversation, diagnostics, err := a.buildProviderContextDetailed(primaryCtx, s, in.UserMessage, in.PromptMode)
+	conversation, diagnostics, err := a.buildProviderContextDetailedWithAttachments(primaryCtx, s, in.UserMessage, in.Attachments, providerContextBuildOptions{
+		Mode:                         normalizePromptMode(in.PromptMode),
+		EnableModelCompactionSummary: true,
+	})
 	if err == nil {
 		return conversation, diagnostics, nil
 	}
@@ -531,10 +534,11 @@ func (a *Agent) buildTurnProviderContext(ctx context.Context, s *Session, in Tur
 
 	fallbackCtx, cancelFallback := boundedContext(ctx, runTurnContextBuildFallbackTimeout)
 	defer cancelFallback()
-	fallbackConversation, fallbackDiagnostics, fallbackErr := a.buildProviderContextDetailedWithOptions(
+	fallbackConversation, fallbackDiagnostics, fallbackErr := a.buildProviderContextDetailedWithAttachments(
 		fallbackCtx,
 		s,
 		in.UserMessage,
+		in.Attachments,
 		providerContextBuildOptions{
 			Mode:                         normalizePromptMode(in.PromptMode),
 			MaxMemories:                  2,

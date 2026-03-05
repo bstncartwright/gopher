@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -33,7 +34,7 @@ func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessag
 	if len(modeOverride) > 0 {
 		mode = normalizePromptMode(modeOverride[0])
 	}
-	out, _, err := a.buildProviderContextDetailedWithOptions(ctx, s, userMessage, providerContextBuildOptions{
+	out, _, err := a.buildProviderContextDetailedWithAttachments(ctx, s, userMessage, nil, providerContextBuildOptions{
 		Mode:                         mode,
 		EnableModelCompactionSummary: true,
 	})
@@ -45,13 +46,17 @@ func (a *Agent) buildProviderContextDetailed(ctx context.Context, s *Session, us
 	if len(modeOverride) > 0 {
 		mode = normalizePromptMode(modeOverride[0])
 	}
-	return a.buildProviderContextDetailedWithOptions(ctx, s, userMessage, providerContextBuildOptions{
+	return a.buildProviderContextDetailedWithAttachments(ctx, s, userMessage, nil, providerContextBuildOptions{
 		Mode:                         mode,
 		EnableModelCompactionSummary: true,
 	})
 }
 
 func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *Session, userMessage string, opts providerContextBuildOptions) (ai.Context, ctxbundle.ContextDiagnostics, error) {
+	return a.buildProviderContextDetailedWithAttachments(ctx, s, userMessage, nil, opts)
+}
+
+func (a *Agent) buildProviderContextDetailedWithAttachments(ctx context.Context, s *Session, userMessage string, attachments []Attachment, opts providerContextBuildOptions) (ai.Context, ctxbundle.ContextDiagnostics, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,9 +116,13 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	if len(messages) > 0 {
 		userTimestamp = messages[len(messages)-1].Timestamp + 1
 	}
+	userContent := any(expandedUserMessage)
+	if len(attachments) > 0 {
+		userContent = buildInboundAttachmentContent(expandedUserMessage, attachments, a.model)
+	}
 	messages = append(messages, ai.Message{
 		Role:      ai.RoleUser,
-		Content:   expandedUserMessage,
+		Content:   userContent,
 		Timestamp: userTimestamp,
 	})
 
@@ -211,6 +220,90 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 		Messages:     messages,
 		Tools:        toolSchemasToAITools(activeTools),
 	}, diagnostics, nil
+}
+
+func buildInboundAttachmentContent(text string, attachments []Attachment, model ai.Model) any {
+	if len(attachments) == 0 {
+		return text
+	}
+
+	blocks := make([]ai.ContentBlock, 0, 1+len(attachments)*2)
+	if strings.TrimSpace(text) != "" {
+		blocks = append(blocks, ai.ContentBlock{Type: ai.ContentTypeText, Text: text})
+	}
+	for _, attachment := range attachments {
+		blocks = append(blocks, attachmentContentBlocks(attachment, model)...)
+	}
+	if len(blocks) == 0 {
+		return text
+	}
+	return blocks
+}
+
+func attachmentContentBlocks(attachment Attachment, model ai.Model) []ai.ContentBlock {
+	mimeType := strings.ToLower(strings.TrimSpace(attachment.MIMEType))
+	if strings.HasPrefix(mimeType, "image/") && len(attachment.Data) > 0 && modelSupportsInput(model, "image") {
+		blocks := []ai.ContentBlock{{
+			Type:     ai.ContentTypeImage,
+			MimeType: mimeType,
+			Data:     base64.StdEncoding.EncodeToString(attachment.Data),
+		}}
+		if text := strings.TrimSpace(attachment.Text); text != "" {
+			blocks = append(blocks, ai.ContentBlock{Type: ai.ContentTypeText, Text: formatInboundAttachmentText(attachment, text)})
+		}
+		return blocks
+	}
+	if text := strings.TrimSpace(attachment.Text); text != "" {
+		return []ai.ContentBlock{{Type: ai.ContentTypeText, Text: formatInboundAttachmentText(attachment, text)}}
+	}
+	return []ai.ContentBlock{{Type: ai.ContentTypeText, Text: formatInboundAttachmentSummary(attachment)}}
+}
+
+func formatInboundAttachmentSummary(attachment Attachment) string {
+	label := "file"
+	mimeType := strings.ToLower(strings.TrimSpace(attachment.MIMEType))
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		label = "image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		label = "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		label = "video"
+	case mimeType == "application/pdf":
+		label = "pdf"
+	case mimeType != "":
+		label = mimeType
+	}
+
+	name := strings.TrimSpace(attachment.Name)
+	switch {
+	case name != "" && mimeType != "":
+		return fmt.Sprintf("Attached %s: %s (%s).", label, name, mimeType)
+	case name != "":
+		return fmt.Sprintf("Attached %s: %s.", label, name)
+	case mimeType != "":
+		return fmt.Sprintf("Attached %s (%s).", label, mimeType)
+	default:
+		return fmt.Sprintf("Attached %s.", label)
+	}
+}
+
+func formatInboundAttachmentText(attachment Attachment, text string) string {
+	summary := formatInboundAttachmentSummary(attachment)
+	return summary + "\n\n" + text
+}
+
+func modelSupportsInput(model ai.Model, inputType string) bool {
+	inputType = strings.TrimSpace(strings.ToLower(inputType))
+	if inputType == "" {
+		return false
+	}
+	for _, item := range model.Input {
+		if strings.EqualFold(strings.TrimSpace(item), inputType) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) InspectContext(ctx context.Context, s *Session, in TurnInput) (ctxbundle.ContextDiagnostics, error) {

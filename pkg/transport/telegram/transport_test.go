@@ -179,6 +179,127 @@ func TestDispatchEventMapsInboundFieldsWithMessageThread(t *testing.T) {
 	}
 }
 
+func TestDispatchEventIncludesInboundPhotoAttachment(t *testing.T) {
+	var requestedFileID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bottoken/getFile":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode getFile payload: %v", err)
+			}
+			requestedFileID, _ = payload["file_id"].(string)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_path":"photos/pic.jpg"}}`))
+		case "/file/bottoken/photos/pic.jpg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("jpeg-bytes"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	var got transport.InboundMessage
+	tr.SetInboundHandler(func(_ context.Context, inbound transport.InboundMessage) error {
+		got = inbound
+		return nil
+	})
+
+	event := telegramEvent{
+		UpdateID: 35,
+		Message: &telegramMessage{
+			MessageID: 735,
+			From:      &telegramUser{ID: 501, Username: "boss"},
+			Chat:      &telegramChat{ID: 777},
+			Caption:   "look at this",
+			Photo: []telegramPhotoSize{
+				{FileID: "small", FileSize: 10, Width: 10, Height: 10},
+				{FileID: "large", FileSize: 20, Width: 20, Height: 20},
+			},
+		},
+	}
+
+	if err := tr.dispatchEvent(context.Background(), event); err != nil {
+		t.Fatalf("dispatchEvent() error: %v", err)
+	}
+	if requestedFileID != "large" {
+		t.Fatalf("requested file id = %q, want large", requestedFileID)
+	}
+	if got.Text != "look at this" {
+		t.Fatalf("text = %q, want caption", got.Text)
+	}
+	if len(got.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(got.Attachments))
+	}
+	if got.Attachments[0].Name != "pic.jpg" {
+		t.Fatalf("attachment name = %q, want pic.jpg", got.Attachments[0].Name)
+	}
+	if got.Attachments[0].MIMEType != "image/jpeg" {
+		t.Fatalf("attachment mime = %q, want image/jpeg", got.Attachments[0].MIMEType)
+	}
+	if string(got.Attachments[0].Data) != "jpeg-bytes" {
+		t.Fatalf("attachment data = %q", string(got.Attachments[0].Data))
+	}
+}
+
+func TestDispatchEventIncludesTextDocumentAttachmentWithoutMessageText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bottoken/getFile":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_path":"docs/note.txt"}}`))
+		case "/file/bottoken/docs/note.txt":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("hello from attachment"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	var got transport.InboundMessage
+	tr.SetInboundHandler(func(_ context.Context, inbound transport.InboundMessage) error {
+		got = inbound
+		return nil
+	})
+
+	event := telegramEvent{
+		UpdateID: 36,
+		Message: &telegramMessage{
+			MessageID: 736,
+			From:      &telegramUser{ID: 501, Username: "boss"},
+			Chat:      &telegramChat{ID: 777},
+			Document: &telegramFile{
+				FileID:   "doc-1",
+				FileName: "note.txt",
+				MimeType: "text/plain",
+			},
+		},
+	}
+
+	if err := tr.dispatchEvent(context.Background(), event); err != nil {
+		t.Fatalf("dispatchEvent() error: %v", err)
+	}
+	if got.Text != "" {
+		t.Fatalf("text = %q, want empty", got.Text)
+	}
+	if len(got.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(got.Attachments))
+	}
+	if got.Attachments[0].Text != "hello from attachment" {
+		t.Fatalf("attachment text = %q", got.Attachments[0].Text)
+	}
+}
+
 func TestRenderTelegramMessageTextConvertsMarkdown(t *testing.T) {
 	text := "Hey **Boston**\nUse `gopher` and [docs](https://example.com)\n\n```bash\necho hi\n```"
 	rendered, parseMode := renderTelegramMessageText(text)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bstncartwright/gopher/pkg/transport"
 	"log/slog"
@@ -78,6 +80,41 @@ type telegramMessage struct {
 	Chat            *telegramChat `json:"chat"`
 	Date            int64         `json:"date"`
 	Text            string        `json:"text"`
+	Caption         string        `json:"caption"`
+	Photo           []telegramPhotoSize
+	Document        *telegramFile `json:"document"`
+	Video           *telegramFile `json:"video"`
+	Audio           *telegramFile `json:"audio"`
+	Voice           *telegramFile `json:"voice"`
+	Animation       *telegramFile `json:"animation"`
+}
+
+type telegramPhotoSize struct {
+	FileID   string `json:"file_id"`
+	FileSize int64  `json:"file_size"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+}
+
+type telegramFile struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize     int64  `json:"file_size"`
+	FileName     string `json:"file_name"`
+	MimeType     string `json:"mime_type"`
+}
+
+type telegramGetFileResponse struct {
+	OK          bool             `json:"ok"`
+	Result      telegramFilePath `json:"result"`
+	Description string           `json:"description"`
+	ErrorCode   int              `json:"error_code"`
+}
+
+type telegramFilePath struct {
+	FileID   string `json:"file_id"`
+	FilePath string `json:"file_path"`
+	FileSize int64  `json:"file_size"`
 }
 
 type telegramUser struct {
@@ -492,11 +529,6 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 		slog.Debug("telegram transport: dropping event: missing message metadata", "update_id", event.UpdateID)
 		return nil
 	}
-	messageText := strings.TrimSpace(event.Message.Text)
-	if messageText == "" {
-		slog.Debug("telegram transport: dropping event: empty message text", "update_id", event.UpdateID, "chat_id", event.Message.Chat.ID, "user_id", event.Message.From.ID)
-		return nil
-	}
 	userID := strconv.FormatInt(event.Message.From.ID, 10)
 	chatID := strconv.FormatInt(event.Message.Chat.ID, 10)
 	if t.allowedUserID != "" && userID != t.allowedUserID {
@@ -515,6 +547,18 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 	if conversationName == "" {
 		conversationName = "telegram-chat-" + chatID
 	}
+	messageText := strings.TrimSpace(event.Message.Text)
+	if messageText == "" {
+		messageText = strings.TrimSpace(event.Message.Caption)
+	}
+	attachments, err := t.resolveInboundAttachments(ctx, event.Message)
+	if err != nil {
+		return err
+	}
+	if messageText == "" && len(attachments) == 0 {
+		slog.Debug("telegram transport: dropping event: empty message payload", "update_id", event.UpdateID, "chat_id", event.Message.Chat.ID, "user_id", event.Message.From.ID)
+		return nil
+	}
 	conversationID := formatConversationID(chatID, event.Message.MessageThreadID)
 	slog.Info(
 		"telegram transport: dispatching inbound message",
@@ -523,6 +567,7 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 		"sender_id", "telegram-user:"+userID,
 		"conversation_name", conversationName,
 		"text_length", len(messageText),
+		"attachment_count", len(attachments),
 	)
 	return handler(ctx, transport.InboundMessage{
 		ConversationID:   conversationID,
@@ -531,6 +576,7 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 		RecipientID:      "telegram-bot",
 		EventID:          strconv.FormatInt(event.Message.MessageID, 10),
 		Text:             messageText,
+		Attachments:      attachments,
 	})
 }
 
@@ -610,6 +656,203 @@ func (t *Transport) sendMultipartAPI(ctx context.Context, method string, body *b
 		}
 	}
 	return nil
+}
+
+func (t *Transport) resolveInboundAttachments(ctx context.Context, message *telegramMessage) ([]transport.InboundAttachment, error) {
+	if message == nil {
+		return nil, nil
+	}
+	attachments := make([]transport.InboundAttachment, 0, 4)
+	if photo := largestTelegramPhoto(message.Photo); photo != nil {
+		attachment, err := t.fetchInboundAttachment(ctx, photo.FileID, "", "image/jpeg")
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	fileRefs := []struct {
+		file        *telegramFile
+		defaultMIME string
+	}{
+		{file: message.Document},
+		{file: message.Video, defaultMIME: "video/mp4"},
+		{file: message.Audio, defaultMIME: "audio/mpeg"},
+		{file: message.Voice, defaultMIME: "audio/ogg"},
+		{file: message.Animation, defaultMIME: "image/gif"},
+	}
+	for _, ref := range fileRefs {
+		if ref.file == nil || strings.TrimSpace(ref.file.FileID) == "" {
+			continue
+		}
+		attachment, err := t.fetchInboundAttachment(ctx, ref.file.FileID, ref.file.FileName, firstNonEmpty(ref.file.MimeType, ref.defaultMIME))
+		if err != nil {
+			return nil, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	return attachments, nil
+}
+
+func largestTelegramPhoto(photos []telegramPhotoSize) *telegramPhotoSize {
+	if len(photos) == 0 {
+		return nil
+	}
+	largest := &photos[0]
+	for i := 1; i < len(photos); i++ {
+		candidate := &photos[i]
+		if candidate.FileSize > largest.FileSize {
+			largest = candidate
+			continue
+		}
+		if candidate.FileSize == largest.FileSize && candidate.Width*candidate.Height > largest.Width*largest.Height {
+			largest = candidate
+		}
+	}
+	return largest
+}
+
+func (t *Transport) fetchInboundAttachment(ctx context.Context, fileID, name, mimeType string) (transport.InboundAttachment, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return transport.InboundAttachment{}, fmt.Errorf("telegram attachment file id is required")
+	}
+	fileInfo, err := t.getTelegramFile(ctx, fileID)
+	if err != nil {
+		return transport.InboundAttachment{}, err
+	}
+	data, err := t.downloadTelegramFile(ctx, fileInfo.FilePath)
+	if err != nil {
+		return transport.InboundAttachment{}, err
+	}
+	if strings.TrimSpace(name) == "" {
+		name = filepath.Base(strings.TrimSpace(fileInfo.FilePath))
+	}
+	mimeType = normalizeInboundMIMEType(mimeType, name)
+	return transport.InboundAttachment{
+		Name:     strings.TrimSpace(name),
+		MIMEType: mimeType,
+		Text:     inlineTextFromAttachment(mimeType, data),
+		Data:     data,
+	}, nil
+}
+
+func (t *Transport) getTelegramFile(ctx context.Context, fileID string) (telegramFilePath, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload := map[string]any{"file_id": strings.TrimSpace(fileID)}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return telegramFilePath{}, fmt.Errorf("encode telegram getFile payload: %w", err)
+	}
+	endpoint := fmt.Sprintf("%s/bot%s/getFile", t.apiBaseURL, url.PathEscape(t.botToken))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return telegramFilePath{}, fmt.Errorf("build telegram getFile request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := t.client.Do(request)
+	if err != nil {
+		return telegramFilePath{}, fmt.Errorf("send telegram getFile request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return telegramFilePath{}, fmt.Errorf("telegram getFile status: %s", response.Status)
+	}
+	var parsed telegramGetFileResponse
+	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
+		return telegramFilePath{}, fmt.Errorf("decode telegram getFile response: %w", err)
+	}
+	if !parsed.OK {
+		return telegramFilePath{}, &telegramAPIError{
+			Method:      "getFile",
+			Description: strings.TrimSpace(parsed.Description),
+			ErrorCode:   parsed.ErrorCode,
+		}
+	}
+	if strings.TrimSpace(parsed.Result.FilePath) == "" {
+		return telegramFilePath{}, fmt.Errorf("telegram getFile returned empty file path")
+	}
+	return parsed.Result, nil
+}
+
+func (t *Transport) downloadTelegramFile(ctx context.Context, filePath string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	filePath = strings.TrimLeft(strings.TrimSpace(filePath), "/")
+	if filePath == "" {
+		return nil, fmt.Errorf("telegram file path is required")
+	}
+	endpoint := fmt.Sprintf("%s/file/bot%s/%s", t.apiBaseURL, url.PathEscape(t.botToken), filePath)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build telegram file download request: %w", err)
+	}
+	response, err := t.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("download telegram file: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("telegram file download status: %s", response.Status)
+	}
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read telegram file download: %w", err)
+	}
+	return data, nil
+}
+
+func normalizeInboundMIMEType(mimeType, name string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(strings.SplitN(strings.TrimSpace(mimeType), ";", 2)[0]))
+	if mimeType != "" {
+		return mimeType
+	}
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(name)))
+	if ext == "" {
+		return ""
+	}
+	guessed := strings.TrimSpace(mime.TypeByExtension(ext))
+	if guessed == "" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(strings.SplitN(guessed, ";", 2)[0]))
+}
+
+func inlineTextFromAttachment(mimeType string, data []byte) string {
+	if len(data) == 0 || len(data) > 256*1024 {
+		return ""
+	}
+	switch normalizeInboundMIMEType(mimeType, "") {
+	case "text/plain", "text/markdown", "text/csv", "application/json", "application/xml", "application/yaml", "application/x-yaml":
+		if !utf8.Valid(data) {
+			return ""
+		}
+		text := strings.TrimSpace(string(data))
+		if len(text) > 24000 {
+			text = strings.TrimSpace(text[:24000]) + "\n\n[truncated]"
+		}
+		return text
+	}
+	if strings.HasPrefix(normalizeInboundMIMEType(mimeType, ""), "text/") && utf8.Valid(data) {
+		text := strings.TrimSpace(string(data))
+		if len(text) > 24000 {
+			text = strings.TrimSpace(text[:24000]) + "\n\n[truncated]"
+		}
+		return text
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (t *Transport) sendAttachment(ctx context.Context, conversationID string, target telegramConversationTarget, attachment transport.OutboundAttachment) error {

@@ -145,6 +145,50 @@ func TestContextBuilderIncludesMessageToolWhenServiceAvailable(t *testing.T) {
 	}
 }
 
+func TestContextBuilderPrefersHostedWebSearchForSupportedProviders(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:web"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	session := &Session{ID: "s-search"}
+
+	ctx, err := agent.buildProviderContext(context.Background(), session, "search")
+	if err != nil {
+		t.Fatalf("buildProviderContext() error: %v", err)
+	}
+	tool := contextToolByName(ctx, "web_search")
+	if tool == nil || !tool.IsHostedWebSearch() {
+		t.Fatalf("expected hosted web_search tool, got %#v", ctx.Tools)
+	}
+	if tool.ExternalWebAccess == nil || *tool.ExternalWebAccess {
+		t.Fatalf("expected cached hosted search")
+	}
+}
+
+func TestContextBuilderFallsBackToMCPWhenHostedSearchDisabled(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:web"}
+	config.NativeWebSearchMode = string(NativeWebSearchModeDisabled)
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	session := &Session{ID: "s-search-mcp"}
+
+	ctx, err := agent.buildProviderContext(context.Background(), session, "search")
+	if err != nil {
+		t.Fatalf("buildProviderContext() error: %v", err)
+	}
+	tool := contextToolByName(ctx, "web_search")
+	if tool == nil || tool.IsHostedWebSearch() {
+		t.Fatalf("expected MCP web_search tool, got %#v", ctx.Tools)
+	}
+}
+
 func contextHasTool(ctx ai.Context, name string) bool {
 	for _, tool := range ctx.Tools {
 		if strings.TrimSpace(tool.Name) == name {
@@ -152,6 +196,15 @@ func contextHasTool(ctx ai.Context, name string) bool {
 		}
 	}
 	return false
+}
+
+func contextToolByName(ctx ai.Context, name string) *ai.Tool {
+	for i := range ctx.Tools {
+		if strings.TrimSpace(ctx.Tools[i].Name) == name {
+			return &ctx.Tools[i]
+		}
+	}
+	return nil
 }
 
 type testMessageToolService struct{}

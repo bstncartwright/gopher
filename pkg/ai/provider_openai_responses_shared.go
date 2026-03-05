@@ -179,13 +179,22 @@ func convertResponsesTools(tools []Tool, strict *bool) []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
-		out = append(out, map[string]any{
-			"type":        "function",
-			"name":        tool.Name,
-			"description": tool.Description,
-			"parameters":  tool.Parameters,
-			"strict":      strictValue,
-		})
+		switch tool.KindValue() {
+		case ToolKindHostedWebSearch:
+			entry := map[string]any{"type": "web_search"}
+			if tool.ExternalWebAccess != nil {
+				entry["external_web_access"] = *tool.ExternalWebAccess
+			}
+			out = append(out, entry)
+		default:
+			out = append(out, map[string]any{
+				"type":        "function",
+				"name":        tool.Name,
+				"description": tool.Description,
+				"parameters":  tool.Parameters,
+				"strict":      strictValue,
+			})
+		}
 	}
 	return out
 }
@@ -215,6 +224,12 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 			state.currentItemType = "function_call"
 			state.partialJSON = stringFrom(item, "arguments")
 			stream.Push(AssistantMessageEvent{Type: EventToolCallStart, ContentIndex: len(output.Content) - 1, Partial: output})
+		case "web_search_call":
+			call := hostedWebSearchCallFromItem(item)
+			state.currentItemType = "web_search_call"
+			state.currentWebSearch = &call
+			copyCall := call
+			stream.Push(AssistantMessageEvent{Type: EventWebSearchStart, WebSearch: &copyCall, Partial: output})
 		}
 	case "response.reasoning_summary_text.delta":
 		if state.currentItemType == "reasoning" && state.currentBlock != nil && state.currentBlock.Type == ContentTypeThinking {
@@ -243,7 +258,7 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 	case "response.output_item.done":
 		item := mapFrom(event, "item")
 		itemType := stringFrom(item, "type")
-		if state.currentBlock == nil {
+		if state.currentBlock == nil && itemType != "web_search_call" {
 			break
 		}
 		idx := len(output.Content) - 1
@@ -283,10 +298,18 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 			state.currentBlock.Arguments = ParseStreamingJSON(state.partialJSON)
 			copyBlock := state.currentBlock.Clone()
 			stream.Push(AssistantMessageEvent{Type: EventToolCallEnd, ContentIndex: idx, ToolCall: &copyBlock, Partial: output})
+		case "web_search_call":
+			call := hostedWebSearchCallFromItem(item)
+			if state.currentWebSearch != nil {
+				call = mergeHostedWebSearchCall(*state.currentWebSearch, call)
+			}
+			copyCall := call
+			stream.Push(AssistantMessageEvent{Type: EventWebSearchEnd, WebSearch: &copyCall, Partial: output})
 		}
 		state.currentBlock = nil
 		state.currentItemType = ""
 		state.partialJSON = ""
+		state.currentWebSearch = nil
 	case "response.completed":
 		response := mapFrom(event, "response")
 		status := stringFrom(response, "status")
@@ -336,9 +359,38 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 }
 
 type responsesStreamState struct {
-	currentItemType string
-	currentBlock    *ContentBlock
-	partialJSON     string
+	currentItemType  string
+	currentBlock     *ContentBlock
+	partialJSON      string
+	currentWebSearch *HostedWebSearchCall
+}
+
+func hostedWebSearchCallFromItem(item map[string]any) HostedWebSearchCall {
+	call := HostedWebSearchCall{
+		ID:     stringFrom(item, "id"),
+		Query:  stringFrom(item, "query"),
+		Status: stringFrom(item, "status"),
+	}
+	if action := mapFrom(item, "action"); len(action) > 0 {
+		call.Action = HostedWebSearchAction(CloneMap(action))
+	}
+	return call
+}
+
+func mergeHostedWebSearchCall(current HostedWebSearchCall, update HostedWebSearchCall) HostedWebSearchCall {
+	if update.ID == "" {
+		update.ID = current.ID
+	}
+	if update.Query == "" {
+		update.Query = current.Query
+	}
+	if update.Status == "" {
+		update.Status = current.Status
+	}
+	if len(update.Action) == 0 && len(current.Action) > 0 {
+		update.Action = HostedWebSearchAction(CloneMap(current.Action))
+	}
+	return update
 }
 
 func mapOpenAIResponsesStopReason(status string) StopReason {

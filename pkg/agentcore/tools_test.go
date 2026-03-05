@@ -1,6 +1,10 @@
 package agentcore
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bstncartwright/gopher/pkg/ai"
+)
 
 func TestBuildRegistryGroupWebEnablesWebTools(t *testing.T) {
 	registry := buildRegistry([]string{"group:web"}, defaultPolicies())
@@ -54,5 +58,50 @@ func TestBuildRegistryGroupRuntimeEnablesGopherMeta(t *testing.T) {
 	}
 	if _, ok := registry.Get("gopher_update"); !ok {
 		t.Fatalf("expected gopher_update tool to be enabled")
+	}
+}
+
+func TestBuildProviderAIToolsPrefersHostedWebSearchForSupportedProviders(t *testing.T) {
+	registry := buildRegistry([]string{"group:web"}, defaultPolicies())
+	tools := buildProviderAITools(registry, ai.Model{
+		API:      ai.APIOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+	}, defaultConfig(), defaultPolicies(), false)
+
+	if len(tools) == 0 || !tools[0].IsHostedWebSearch() {
+		t.Fatalf("expected hosted web_search tool, got %#v", tools)
+	}
+	if tools[0].ExternalWebAccess == nil || *tools[0].ExternalWebAccess {
+		t.Fatalf("expected hosted web_search to default to cached mode")
+	}
+}
+
+func TestBuildProviderAIToolsFallsBackToMCPWhenHostedSearchDisabled(t *testing.T) {
+	config := defaultConfig()
+	config.NativeWebSearchMode = string(NativeWebSearchModeDisabled)
+	registry := buildRegistry([]string{"group:web"}, defaultPolicies())
+	tools := buildProviderAITools(registry, ai.Model{
+		API:      ai.APIOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+	}, config, defaultPolicies(), false)
+
+	if len(tools) == 0 || tools[0].IsHostedWebSearch() {
+		t.Fatalf("expected MCP web_search tool, got %#v", tools)
+	}
+}
+
+func TestBuildProviderAIToolsOmitsWebSearchWhenNetworkDisabled(t *testing.T) {
+	policies := defaultPolicies()
+	policies.Network.Enabled = false
+	registry := buildRegistry([]string{"group:web"}, policies)
+	tools := buildProviderAITools(registry, ai.Model{
+		API:      ai.APIOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+	}, defaultConfig(), policies, false)
+
+	for _, tool := range tools {
+		if tool.Name == "web_search" {
+			t.Fatalf("expected web_search to be omitted when network is disabled")
+		}
 	}
 }

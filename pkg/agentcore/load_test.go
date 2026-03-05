@@ -234,6 +234,30 @@ historical_tool_result_chars = 240
 	}
 }
 
+func TestLoadAgentRejectsInvalidNativeWebSearchMode(t *testing.T) {
+	config := defaultConfig()
+	config.NativeWebSearchMode = "always"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected invalid native_web_search_mode error")
+	}
+	if !strings.Contains(err.Error(), "native_web_search_mode") {
+		t.Fatalf("expected native_web_search_mode in error, got: %v", err)
+	}
+}
+
+func TestAgentConfigNativeWebSearchModeDefaultsToCachedForSupportedProviders(t *testing.T) {
+	mode := defaultConfig().NativeWebSearchModeValue(ai.Model{
+		API:      ai.APIOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+	})
+	if mode != NativeWebSearchModeCached {
+		t.Fatalf("mode = %q, want cached", mode)
+	}
+}
+
 func TestLoadAgentParsesProviderOptionsFromTOML(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	if err := os.Remove(filepath.Join(workspace, "config.json")); err != nil {

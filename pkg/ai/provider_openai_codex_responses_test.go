@@ -126,6 +126,31 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	}
 }
 
+func TestBuildCodexRequestBodyIncludesHostedWebSearch(t *testing.T) {
+	body := buildCodexRequestBody(Model{
+		ID:       "gpt-5.1-codex",
+		API:      APIOpenAICodexResponse,
+		Provider: ProviderOpenAICodex,
+	}, Context{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		Tools: []Tool{{
+			Kind:              ToolKindHostedWebSearch,
+			Name:              "web_search",
+			ExternalWebAccess: boolPtr(true),
+		}},
+	}, &OpenAICodexResponsesOptions{})
+
+	if len(body.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(body.Tools))
+	}
+	if got := body.Tools[0]["type"]; got != "web_search" {
+		t.Fatalf("type = %#v, want web_search", got)
+	}
+	if got, ok := body.Tools[0]["external_web_access"].(bool); !ok || !got {
+		t.Fatalf("expected external_web_access=true, got %#v", body.Tools[0]["external_web_access"])
+	}
+}
+
 func TestStreamOpenAICodexResponsesAutoFallsBackAfterNormalWebSocketClosure(t *testing.T) {
 	sessionID := "test-session-ws-fallback"
 	payload, _ := json.Marshal(map[string]any{

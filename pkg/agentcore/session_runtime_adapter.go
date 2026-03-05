@@ -312,6 +312,9 @@ func toolResultMessageFromPayload(event sessionrt.Event) (Message, bool) {
 	if !ok || payload == nil {
 		return Message{}, false
 	}
+	if strings.EqualFold(strings.TrimSpace(asString(payload["backend"])), "provider_native") {
+		return Message{}, false
+	}
 	toolName := strings.TrimSpace(asString(payload["name"]))
 	if toolName == "" {
 		return Message{}, false

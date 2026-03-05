@@ -143,6 +143,21 @@ func TestLatestPromptMessageSkipsUntargetedAgentMessage(t *testing.T) {
 	}
 }
 
+func TestToolResultMessageFromPayloadSkipsProviderNativeSearchResults(t *testing.T) {
+	msg, ok := toolResultMessageFromPayload(sessionrt.Event{
+		ID: "evt-1",
+		Payload: map[string]any{
+			"name":    "web_search",
+			"backend": "provider_native",
+			"status":  "ok",
+			"result":  map[string]any{"query": "weather"},
+		},
+	})
+	if ok {
+		t.Fatalf("expected provider-native web_search replay payload to be skipped, got %#v", msg)
+	}
+}
+
 func TestWithTurnTimeoutAddsDeadlineWhenMissing(t *testing.T) {
 	prev := sessionRuntimeTurnTimeout
 	sessionRuntimeTurnTimeout = time.Second

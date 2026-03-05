@@ -130,29 +130,31 @@ type cronData struct {
 }
 
 type cronJobRow struct {
-	ID        string
-	SessionID string
-	Status    string
-	CronExpr  string
-	Timezone  string
-	CreatedBy string
-	Message   string
-	LastRunAt string
-	NextRunAt string
-	UpdatedAt string
+	ID            string
+	SessionID     string
+	ScheduleState string
+	RunStatus     string
+	CronExpr      string
+	Timezone      string
+	CreatedBy     string
+	Message       string
+	LastRunAt     string
+	NextRunAt     string
+	UpdatedAt     string
 }
 
 type cronJobDisk struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"session_id"`
-	Message   string     `json:"message"`
-	CronExpr  string     `json:"cron_expr"`
-	Timezone  string     `json:"timezone"`
-	Enabled   bool       `json:"enabled"`
-	CreatedBy string     `json:"created_by"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	LastRunAt *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	ID            string     `json:"id"`
+	SessionID     string     `json:"session_id"`
+	Message       string     `json:"message"`
+	CronExpr      string     `json:"cron_expr"`
+	Timezone      string     `json:"timezone"`
+	Enabled       bool       `json:"enabled"`
+	CreatedBy     string     `json:"created_by"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt     *time.Time `json:"next_run_at,omitempty"`
+	LastRunStatus string     `json:"last_run_status,omitempty"`
 }
 
 type cronStoreDisk struct {
@@ -500,6 +502,10 @@ func (s *Server) handleCron(w http.ResponseWriter, _ *http.Request) {
 	for _, job := range jobs {
 		data.TotalJobs++
 		status := "paused"
+		runStatus := strings.ToLower(strings.TrimSpace(job.LastRunStatus))
+		if runStatus == "" {
+			runStatus = "completed"
+		}
 		if job.Enabled {
 			status = "enabled"
 			data.EnabledJobs++
@@ -507,16 +513,17 @@ func (s *Server) handleCron(w http.ResponseWriter, _ *http.Request) {
 			data.PausedJobs++
 		}
 		rows = append(rows, cronJobRow{
-			ID:        strings.TrimSpace(job.ID),
-			SessionID: strings.TrimSpace(job.SessionID),
-			Status:    status,
-			CronExpr:  strings.TrimSpace(job.CronExpr),
-			Timezone:  strings.TrimSpace(job.Timezone),
-			CreatedBy: strings.TrimSpace(job.CreatedBy),
-			Message:   clipPanelText(strings.TrimSpace(job.Message), 180),
-			LastRunAt: formatOptionalTime(job.LastRunAt),
-			NextRunAt: formatOptionalTime(job.NextRunAt),
-			UpdatedAt: formatTime(job.UpdatedAt),
+			ID:            strings.TrimSpace(job.ID),
+			SessionID:     strings.TrimSpace(job.SessionID),
+			ScheduleState: status,
+			RunStatus:     runStatus,
+			CronExpr:      strings.TrimSpace(job.CronExpr),
+			Timezone:      strings.TrimSpace(job.Timezone),
+			CreatedBy:     strings.TrimSpace(job.CreatedBy),
+			Message:       clipPanelText(strings.TrimSpace(job.Message), 180),
+			LastRunAt:     formatOptionalTime(job.LastRunAt),
+			NextRunAt:     formatOptionalTime(job.NextRunAt),
+			UpdatedAt:     formatTime(job.UpdatedAt),
 		})
 	}
 	data.Jobs = rows

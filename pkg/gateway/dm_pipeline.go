@@ -315,14 +315,34 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 	} else {
 		pipeline.lifecycle = sessionrt.DefaultDailyResetPolicy()
 	}
-	for _, binding := range bindings.List() {
+	existingBindings := bindings.List()
+	for _, binding := range existingBindings {
 		pipeline.conversations.Set(binding.ConversationID, binding.SessionID)
 		pipeline.setConversationRoute(binding.ConversationID, binding.AgentID, binding.RecipientID, binding.Mode)
 		pipeline.setTraceConversationRoute(binding.ConversationID, binding.TraceConversationID)
 	}
+	pipeline.restoreBindingSubscriptions(existingBindings)
 	pipeline.transport.SetInboundHandler(pipeline.HandleInbound)
 	slog.Info("dm_pipeline: pipeline created", "agent_id", opts.AgentID)
 	return pipeline, nil
+}
+
+func (p *DMPipeline) restoreBindingSubscriptions(bindings []ConversationBinding) {
+	for _, binding := range bindings {
+		conversationID := strings.TrimSpace(binding.ConversationID)
+		sessionID := sessionrt.SessionID(strings.TrimSpace(string(binding.SessionID)))
+		if conversationID == "" || strings.TrimSpace(string(sessionID)) == "" {
+			continue
+		}
+		if err := p.ensureSubscription(conversationID, sessionID); err != nil {
+			slog.Warn(
+				"dm_pipeline: failed to restore existing conversation subscription",
+				"conversation_id", conversationID,
+				"session_id", sessionID,
+				"error", err,
+			)
+		}
+	}
 }
 
 func (p *DMPipeline) HandleInbound(ctx context.Context, inbound transport.InboundMessage) error {

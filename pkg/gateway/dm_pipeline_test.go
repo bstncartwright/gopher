@@ -1185,6 +1185,120 @@ func TestDMPipelineIgnoresTraceRoomInboundMessages(t *testing.T) {
 	}
 }
 
+func TestDMPipelineRestoresSubscriptionsForExistingBindings(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	bindings := NewInMemoryConversationBindingStore()
+	if err := bindings.Set(ConversationBinding{
+		ConversationID: "!dm:restored",
+		SessionID:      created.ID,
+		AgentID:        "agent:a",
+		RecipientID:    "@milo:hs",
+		Mode:           ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("bindings.Set() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		Bindings:  bindings,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+	if pipeline == nil {
+		t.Fatalf("expected pipeline")
+	}
+
+	if err := manager.SendEvent(context.Background(), sessionrt.Event{
+		SessionID: created.ID,
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:          sessionrt.RoleUser,
+			Content:       "heartbeat ping",
+			TargetActorID: "agent:a",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+	got := fake.lastSent()
+	if got.ConversationID != "!dm:restored" {
+		t.Fatalf("conversation id = %q, want !dm:restored", got.ConversationID)
+	}
+	if strings.TrimSpace(got.Text) != "ack" {
+		t.Fatalf("outbound text = %q, want ack", got.Text)
+	}
+}
+
+func TestDMPipelineIgnoresInvalidBindingSubscriptionRestore(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "ack"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	bindings := NewInMemoryConversationBindingStore()
+	if err := bindings.Set(ConversationBinding{
+		ConversationID: "!dm:missing",
+		SessionID:      "sess-missing",
+		AgentID:        "agent:a",
+		RecipientID:    "@milo:hs",
+		Mode:           ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("bindings.Set() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+		Bindings:  bindings,
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+	if pipeline == nil {
+		t.Fatalf("expected pipeline")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:fresh",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+}
+
 func TestDMPipelineTraceProvisionerBackoffAppliesAcrossSessionReset(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

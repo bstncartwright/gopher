@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
+	"github.com/bstncartwright/gopher/pkg/ai"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -1039,6 +1040,14 @@ func (s *gatewaySessionDelegationToolService) spawnEphemeralWorker(_ context.Con
 		return nil, err
 	}
 
+	modelPolicy := defaultAgentModelPolicy
+	if strings.TrimSpace(requestedModelPolicy) != "" {
+		modelPolicy = strings.TrimSpace(requestedModelPolicy)
+	}
+	if _, err := ai.ResolveModelPolicy(modelPolicy); err != nil {
+		return nil, err
+	}
+
 	workspace, err := createDelegationWorkspaceSnapshot(sourceWorkspace, strings.TrimSpace(string(targetAlias)), strings.TrimSpace(s.dataDir))
 	if err != nil {
 		return nil, err
@@ -1046,10 +1055,7 @@ func (s *gatewaySessionDelegationToolService) spawnEphemeralWorker(_ context.Con
 
 	cfg := sourceAgent.Config
 	cfg.AgentID = strings.TrimSpace(string(targetAlias))
-	cfg.ModelPolicy = defaultAgentModelPolicy
-	if strings.TrimSpace(requestedModelPolicy) != "" {
-		cfg.ModelPolicy = strings.TrimSpace(requestedModelPolicy)
-	}
+	cfg.ModelPolicy = modelPolicy
 	if strings.TrimSpace(cfg.Name) == "" || strings.TrimSpace(cfg.Name) == strings.TrimSpace(sourceAgent.Name) {
 		cfg.Name = strings.TrimSpace(string(targetAlias))
 	}

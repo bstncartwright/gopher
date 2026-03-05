@@ -102,6 +102,26 @@ func GetModel(provider, modelID string) (Model, bool) {
 	return model, ok
 }
 
+func ResolveModelPolicy(raw string) (Model, error) {
+	policy := strings.TrimSpace(raw)
+	parts := strings.SplitN(policy, ":", 2)
+	if len(parts) != 2 {
+		return Model{}, fmt.Errorf("invalid model_policy %q: expected provider:model", raw)
+	}
+
+	providerName := strings.TrimSpace(parts[0])
+	modelID := strings.TrimSpace(parts[1])
+	if providerName == "" || modelID == "" {
+		return Model{}, fmt.Errorf("invalid model_policy %q: provider and model are required", raw)
+	}
+
+	model, ok := GetModel(providerName, modelID)
+	if !ok {
+		return Model{}, fmt.Errorf("model not found for model_policy %q", raw)
+	}
+	return model, nil
+}
+
 func GetModels(provider string) []Model {
 	modelRegistryMu.RLock()
 	defer modelRegistryMu.RUnlock()

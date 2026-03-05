@@ -447,6 +447,20 @@ func TestLoadAgentModelPolicyAllowsColonInModelID(t *testing.T) {
 	}
 }
 
+func TestLoadAgentRejectsUnknownModelPolicy(t *testing.T) {
+	config := defaultConfig()
+	config.ModelPolicy = "openai:not-a-real-model"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected missing model_policy error")
+	}
+	if !strings.Contains(err.Error(), `model not found for model_policy "openai:not-a-real-model"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadAgentRejectsFSRootsOutsideWorkspace(t *testing.T) {
 	policies := defaultPolicies()
 	policies.FSRoots = []string{"../outside"}

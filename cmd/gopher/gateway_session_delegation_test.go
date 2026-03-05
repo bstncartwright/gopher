@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
+	"github.com/bstncartwright/gopher/pkg/ai"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
@@ -150,6 +151,14 @@ func loadDelegationTestAgent(t *testing.T, workspaceRoot, agentID string) *agent
 		t.Fatalf("LoadAgent(%s): %v", workspace, err)
 	}
 	return agent
+}
+
+func modelsToMap(models []ai.Model) map[string]ai.Model {
+	out := make(map[string]ai.Model, len(models))
+	for _, model := range models {
+		out[model.ID] = model
+	}
+	return out
 }
 
 func newDynamicDelegationFixture(t *testing.T) (context.Context, *gatewaySessionDelegationToolService, gatewaySessionDelegationStore, *agentcore.ActorExecutorRouter, *agentcore.Agent, *sessionrt.Manager, *sessionrt.Session) {
@@ -360,6 +369,51 @@ func TestGatewaySessionDelegationEphemeralWorkerModelPolicyDefaultsAndOverride(t
 	}
 	if got := strings.TrimSpace(overriddenWorker.Config.ModelPolicy); got != "openai:gpt-4o-mini" {
 		t.Fatalf("overridden model_policy = %q, want openai:gpt-4o-mini", got)
+	}
+}
+
+func TestGatewaySessionDelegationRejectsInvalidEphemeralWorkerModelOverride(t *testing.T) {
+	ctx, service, _, _, _, _, sourceSession := newDynamicDelegationFixture(t)
+
+	_, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		ModelPolicy:     "openai:not-a-real-model",
+		Message:         "Task one.",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid model_policy override error")
+	}
+	if !strings.Contains(err.Error(), `model not found for model_policy "openai:not-a-real-model"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, exists := service.lookupAgent("subagent1"); exists {
+		t.Fatalf("did not expect worker agent to be created after failed validation")
+	}
+}
+
+func TestGatewaySessionDelegationRejectsInvalidDefaultEphemeralWorkerModelPolicy(t *testing.T) {
+	ctx, service, _, _, _, _, sourceSession := newDynamicDelegationFixture(t)
+
+	original := modelsToMap(ai.GetModels(string(ai.ProviderOpenAICodex)))
+	updated := modelsToMap(ai.GetModels(string(ai.ProviderOpenAICodex)))
+	delete(updated, "gpt-5.3-codex")
+	ai.SetModels(ai.ProviderOpenAICodex, updated)
+	defer ai.SetModels(ai.ProviderOpenAICodex, original)
+
+	_, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   "milo",
+		Message:         "Task one.",
+	})
+	if err == nil {
+		t.Fatalf("expected invalid default model_policy error")
+	}
+	if !strings.Contains(err.Error(), `model not found for model_policy "openai-codex:gpt-5.3-codex"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, exists := service.lookupAgent("subagent1"); exists {
+		t.Fatalf("did not expect worker agent to be created after failed validation")
 	}
 }
 

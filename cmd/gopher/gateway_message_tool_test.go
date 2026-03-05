@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -31,9 +32,10 @@ func (p *fakeGatewayMessagePipeline) SenderForConversation(conversationID string
 }
 
 type fakeGatewayMessageTransport struct {
-	sent      []transport.OutboundMessage
-	reactions []transport.OutboundReaction
-	drafts    []gatewayMessageDraftCall
+	sent        []transport.OutboundMessage
+	reactions   []transport.OutboundReaction
+	drafts      []gatewayMessageDraftCall
+	reactionErr error
 }
 
 type gatewayMessageDraftCall struct {
@@ -53,7 +55,7 @@ func (t *fakeGatewayMessageTransport) SendMessage(_ context.Context, message tra
 }
 func (t *fakeGatewayMessageTransport) SendReaction(_ context.Context, reaction transport.OutboundReaction) error {
 	t.reactions = append(t.reactions, reaction)
-	return nil
+	return t.reactionErr
 }
 func (t *fakeGatewayMessageTransport) SendMessageDraft(_ context.Context, conversationID string, draftID int64, text string) error {
 	t.drafts = append(t.drafts, gatewayMessageDraftCall{
@@ -304,5 +306,32 @@ func TestGatewayMessageToolServiceReactionFailsWithoutInboundTarget(t *testing.T
 	}
 	if !strings.Contains(err.Error(), "no inbound message") {
 		t.Fatalf("error = %q, want missing inbound target", err.Error())
+	}
+}
+
+func TestGatewayMessageToolServiceReactionWrapsTransportErrorWithContext(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+		lastInboundBySession:  map[sessionrt.SessionID]string{"sess-1": "42"},
+		senderByConversation:  map[string]string{"telegram:123": "telegram-bot"},
+	}
+	tr := &fakeGatewayMessageTransport{reactionErr: errors.New("telegram setMessageReaction returned ok=false (error_code=400): Bad Request: reaction is invalid")}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	_, err := service.SendReaction(context.Background(), agentcore.ReactionSendRequest{
+		SessionID: "sess-1",
+		Emoji:     "✅",
+	})
+	if err == nil {
+		t.Fatalf("expected wrapped transport error")
+	}
+	if !strings.Contains(err.Error(), `send reaction "✅"`) {
+		t.Fatalf("error = %q, want emoji context", err.Error())
+	}
+	if !strings.Contains(err.Error(), "telegram:123/42") {
+		t.Fatalf("error = %q, want conversation and target context", err.Error())
+	}
+	if !strings.Contains(err.Error(), "reaction is invalid") {
+		t.Fatalf("error = %q, want telegram cause", err.Error())
 	}
 }

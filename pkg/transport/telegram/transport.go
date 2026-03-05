@@ -134,6 +134,8 @@ var (
 	telegramInlineCodePattern      = regexp.MustCompile("`([^`\\n]+)`")
 	telegramMarkdownLinkPattern    = regexp.MustCompile(`\[(.+?)\]\((https?://[^\s)]+|tg://[^\s)]+)\)`)
 	telegramBoldPattern            = regexp.MustCompile(`\*\*(.+?)\*\*|__(.+?)__`)
+	telegramMarkdownHeaderPattern  = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*$`)
+	telegramHeaderSuffixPattern    = regexp.MustCompile(`\s+#+\s*$`)
 )
 
 func New(opts Options) (*Transport, error) {
@@ -939,7 +941,7 @@ func renderTelegramMessageText(text string) (string, string) {
 }
 
 func markdownishToTelegramHTML(input string) string {
-	text := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(input), "\r\n", "\n"), "\r", "\n")
+	text := normalizeTelegramMarkdown(input)
 	if text == "" {
 		return ""
 	}
@@ -1000,6 +1002,35 @@ func markdownishToTelegramHTML(input string) string {
 	return rendered
 }
 
+func normalizeTelegramMarkdown(input string) string {
+	text := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(input), "\r\n", "\n"), "\r", "\n")
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	inFencedCode := false
+	for i := range lines {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "```") {
+			inFencedCode = !inFencedCode
+			continue
+		}
+		if inFencedCode {
+			continue
+		}
+		matches := telegramMarkdownHeaderPattern.FindStringSubmatch(lines[i])
+		if len(matches) == 0 {
+			continue
+		}
+		header := strings.TrimSpace(telegramHeaderSuffixPattern.ReplaceAllString(matches[1], ""))
+		if header == "" {
+			continue
+		}
+		lines[i] = "**" + header + "**"
+	}
+	return strings.Join(lines, "\n")
+}
+
 func isSupportedTelegramLink(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1020,7 +1051,7 @@ func isSupportedTelegramLink(raw string) bool {
 }
 
 func stripCommonMarkdownFormatting(text string) string {
-	text = strings.TrimSpace(text)
+	text = normalizeTelegramMarkdown(text)
 	if text == "" {
 		return ""
 	}

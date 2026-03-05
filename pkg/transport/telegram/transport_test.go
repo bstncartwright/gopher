@@ -212,6 +212,40 @@ func TestRenderTelegramMessageTextEscapesRawHTML(t *testing.T) {
 	}
 }
 
+func TestRenderTelegramMessageTextConvertsMarkdownHeaders(t *testing.T) {
+	text := "### Gmail (last 24h)\n- **Total unread:** 29\n\n```text\n### keep literal\n```"
+	rendered, parseMode := renderTelegramMessageText(text)
+	if parseMode != "HTML" {
+		t.Fatalf("parse mode = %q, want HTML", parseMode)
+	}
+	if !strings.Contains(rendered, "<b>Gmail (last 24h)</b>") {
+		t.Fatalf("rendered text missing markdown heading conversion: %q", rendered)
+	}
+	if !strings.Contains(rendered, "- <b>Total unread:</b> 29") {
+		t.Fatalf("rendered text missing list/bold conversion: %q", rendered)
+	}
+	if !strings.Contains(rendered, "<pre><code>### keep literal</code></pre>") {
+		t.Fatalf("rendered text should preserve heading markers inside code blocks: %q", rendered)
+	}
+}
+
+func TestStripCommonMarkdownFormattingRemovesHeadingMarkers(t *testing.T) {
+	text := "### Bottom line\n- **Total unread:** 29\n[docs](https://example.com)"
+	stripped := stripCommonMarkdownFormatting(text)
+	if strings.Contains(stripped, "###") {
+		t.Fatalf("stripped text should not include markdown heading markers: %q", stripped)
+	}
+	if strings.Contains(stripped, "**") {
+		t.Fatalf("stripped text should not include markdown bold delimiters: %q", stripped)
+	}
+	if !strings.Contains(stripped, "Bottom line") {
+		t.Fatalf("stripped text missing heading text: %q", stripped)
+	}
+	if !strings.Contains(stripped, "docs (https://example.com)") {
+		t.Fatalf("stripped text missing markdown link fallback: %q", stripped)
+	}
+}
+
 func TestSendMessageRetriesWithoutParseModeWhenTelegramRejectsEntities(t *testing.T) {
 	var requests []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -397,7 +397,7 @@ func TestGatewaySessionDelegationRejectsInvalidDefaultEphemeralWorkerModelPolicy
 
 	original := modelsToMap(ai.GetModels(string(ai.ProviderOpenAICodex)))
 	updated := modelsToMap(ai.GetModels(string(ai.ProviderOpenAICodex)))
-	delete(updated, "gpt-5.3-codex")
+	delete(updated, "gpt-5.4")
 	ai.SetModels(ai.ProviderOpenAICodex, updated)
 	defer ai.SetModels(ai.ProviderOpenAICodex, original)
 
@@ -409,7 +409,7 @@ func TestGatewaySessionDelegationRejectsInvalidDefaultEphemeralWorkerModelPolicy
 	if err == nil {
 		t.Fatalf("expected invalid default model_policy error")
 	}
-	if !strings.Contains(err.Error(), `model not found for model_policy "openai-codex:gpt-5.3-codex"`) {
+	if !strings.Contains(err.Error(), `model not found for model_policy "openai-codex:gpt-5.4"`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, exists := service.lookupAgent("subagent1"); exists {

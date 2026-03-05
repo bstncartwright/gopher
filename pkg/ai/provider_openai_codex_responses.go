@@ -254,7 +254,7 @@ func clampCodexReasoningEffort(modelID string, effort ThinkingLevel) string {
 		parts := strings.Split(id, "/")
 		id = parts[len(parts)-1]
 	}
-	if (strings.HasPrefix(id, "gpt-5.2") || strings.HasPrefix(id, "gpt-5.3")) && effort == ThinkingMinimal {
+	if (strings.HasPrefix(id, "gpt-5.2") || strings.HasPrefix(id, "gpt-5.3") || strings.HasPrefix(id, "gpt-5.4")) && effort == ThinkingMinimal {
 		return "low"
 	}
 	if id == "gpt-5.1" && effort == ThinkingXHigh {

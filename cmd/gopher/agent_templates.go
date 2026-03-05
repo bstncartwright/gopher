@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const defaultAgentModelPolicy = "openai-codex:gpt-5.3-codex"
+const defaultAgentModelPolicy = "openai-codex:gpt-5.4"
 
 //go:embed default_templates/*.md
 var defaultTemplateFS embed.FS

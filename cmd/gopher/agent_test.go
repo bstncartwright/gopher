@@ -186,8 +186,8 @@ func TestAgentCreateWritesAdaptedDefaultTemplates(t *testing.T) {
 	if got, _ := config["agent_id"].(string); got != "writer" {
 		t.Fatalf("config agent_id=%q, want writer", got)
 	}
-	if got, _ := config["model_policy"].(string); got != "openai-codex:gpt-5.3-codex" {
-		t.Fatalf("config model_policy=%q, want openai-codex:gpt-5.3-codex", got)
+	if got, _ := config["model_policy"].(string); got != defaultAgentModelPolicy {
+		t.Fatalf("config model_policy=%q, want %q", got, defaultAgentModelPolicy)
 	}
 	if got, _ := config["reasoning_level"].(string); got != "medium" {
 		t.Fatalf("config reasoning_level=%q, want medium", got)

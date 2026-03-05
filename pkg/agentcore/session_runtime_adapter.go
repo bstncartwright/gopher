@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,7 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 
 	result, err := a.agent.RunTurn(turnCtx, sessionData, TurnInput{
 		UserMessage: userMsg.Content,
+		Attachments: mapSessionAttachments(userMsg.Attachments),
 		PromptMode:  PromptModeFull,
 	})
 	if err != nil {
@@ -94,6 +96,7 @@ func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.
 
 	_, err := a.agent.RunTurnWithEventHandler(turnCtx, sessionData, TurnInput{
 		UserMessage: userMsg.Content,
+		Attachments: mapSessionAttachments(userMsg.Attachments),
 		PromptMode:  PromptModeFull,
 	}, func(event Event) error {
 		mapped, ok := a.mapEvent(event)
@@ -168,22 +171,21 @@ func promptMessageFromPayload(payload any) (sessionrt.Message, bool) {
 	case sessionrt.Message:
 		return value, true
 	case map[string]any:
-		roleRaw, ok := value["role"].(string)
-		if !ok {
+		if _, ok := value["role"]; !ok {
 			return sessionrt.Message{}, false
 		}
-		content, ok := value["content"].(string)
-		if !ok {
+		if _, ok := value["content"]; !ok {
 			return sessionrt.Message{}, false
 		}
-		out := sessionrt.Message{
-			Role:    sessionrt.Role(strings.TrimSpace(roleRaw)),
-			Content: content,
+		blob, err := json.Marshal(value)
+		if err != nil {
+			return sessionrt.Message{}, false
 		}
-		targetRaw, targetOK := value["target_actor_id"].(string)
-		if targetOK {
-			out.TargetActorID = sessionrt.ActorID(strings.TrimSpace(targetRaw))
+		var out sessionrt.Message
+		if err := json.Unmarshal(blob, &out); err != nil {
+			return sessionrt.Message{}, false
 		}
+		out.Role = sessionrt.Role(strings.TrimSpace(string(out.Role)))
 		return out, true
 	default:
 		return sessionrt.Message{}, false
@@ -228,12 +230,12 @@ func (a *SessionRuntimeAdapter) getOrInitSession(sessionID sessionrt.SessionID, 
 	if promptIdx >= 0 && promptIdx <= len(history) {
 		bootstrapHistory = history[:promptIdx]
 	}
-	hydrateSessionMessagesFromHistory(sessionData, bootstrapHistory, actorID, a.agent.Config.MaxContextMessages)
+	hydrateSessionMessagesFromHistory(sessionData, bootstrapHistory, actorID, a.agent.Config.MaxContextMessages, a.agent.model)
 	a.sessions[sessionID] = sessionData
 	return sessionData
 }
 
-func hydrateSessionMessagesFromHistory(sessionData *Session, history []sessionrt.Event, actorID sessionrt.ActorID, maxMessages int) {
+func hydrateSessionMessagesFromHistory(sessionData *Session, history []sessionrt.Event, actorID sessionrt.ActorID, maxMessages int, model ai.Model) {
 	if sessionData == nil || len(history) == 0 {
 		return
 	}
@@ -250,11 +252,15 @@ func hydrateSessionMessagesFromHistory(sessionData *Session, history []sessionrt
 			if !include {
 				continue
 			}
-			messages = append(messages, Message{
+			mapped := Message{
 				Role:      mappedRole,
 				Content:   msg.Content,
 				Timestamp: eventTimestampMillis(event),
-			})
+			}
+			if len(msg.Attachments) > 0 {
+				mapped.Content = buildInboundAttachmentContent(msg.Content, mapSessionAttachments(msg.Attachments), model)
+			}
+			messages = append(messages, mapped)
 		case sessionrt.EventToolResult:
 			if targetActor != "" {
 				fromActor := strings.TrimSpace(string(event.From))
@@ -355,6 +361,22 @@ func asString(value any) string {
 	default:
 		return ""
 	}
+}
+
+func mapSessionAttachments(in []sessionrt.Attachment) []Attachment {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Attachment, 0, len(in))
+	for _, attachment := range in {
+		out = append(out, Attachment{
+			Name:     strings.TrimSpace(attachment.Name),
+			MIMEType: strings.TrimSpace(attachment.MIMEType),
+			Text:     attachment.Text,
+			Data:     append([]byte(nil), attachment.Data...),
+		})
+	}
+	return out
 }
 
 func (a *SessionRuntimeAdapter) mapEvent(event Event) (sessionrt.Event, bool) {

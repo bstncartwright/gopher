@@ -370,6 +370,9 @@ func (p *DMPipeline) handleInboundUnlocked(ctx context.Context, inbound transpor
 		"recipient_id", inbound.RecipientID,
 		"sender_managed", inbound.SenderManaged,
 	)
+	if strings.TrimSpace(inbound.Text) == "" && len(inbound.Attachments) == 0 {
+		return nil
+	}
 	if inbound.SenderManaged {
 		mode := p.conversationModeFor(conversationID)
 		if mode != ConversationModeDelegation {
@@ -428,11 +431,28 @@ func (p *DMPipeline) handleInboundUnlocked(ctx context.Context, inbound transpor
 		From:      from,
 		Type:      sessionrt.EventMessage,
 		Payload: sessionrt.Message{
-			Role:    sessionrt.RoleUser,
-			Content: inbound.Text,
+			Role:        sessionrt.RoleUser,
+			Content:     inbound.Text,
+			Attachments: sessionAttachmentsFromInbound(inbound.Attachments),
 		},
 	}, conversationID, inbound.SenderID, inbound.EventID)
 	return nil
+}
+
+func sessionAttachmentsFromInbound(in []transport.InboundAttachment) []sessionrt.Attachment {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]sessionrt.Attachment, 0, len(in))
+	for _, attachment := range in {
+		out = append(out, sessionrt.Attachment{
+			Name:     strings.TrimSpace(attachment.Name),
+			MIMEType: strings.TrimSpace(attachment.MIMEType),
+			Text:     attachment.Text,
+			Data:     append([]byte(nil), attachment.Data...),
+		})
+	}
+	return out
 }
 
 func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport.InboundMessage, agentID sessionrt.ActorID, recipientID string) (bool, error) {

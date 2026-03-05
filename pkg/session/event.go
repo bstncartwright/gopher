@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -66,31 +67,26 @@ func messageFromPayload(payload any) (Message, bool) {
 		}
 		return *v, true
 	case map[string]any:
-		roleAny, ok := v["role"]
+		if _, ok := v["role"]; !ok {
+			return Message{}, false
+		}
+		if _, ok := v["content"]; !ok {
+			return Message{}, false
+		}
+		blob, err := json.Marshal(v)
+		if err != nil {
+			return Message{}, false
+		}
+		var out Message
+		if err := json.Unmarshal(blob, &out); err != nil {
+			return Message{}, false
+		}
+		role, ok := roleFromAny(string(out.Role))
 		if !ok {
 			return Message{}, false
 		}
-		contentAny, ok := v["content"]
-		if !ok {
-			return Message{}, false
-		}
-		role, ok := roleFromAny(roleAny)
-		if !ok {
-			return Message{}, false
-		}
-		content, ok := contentAny.(string)
-		if !ok {
-			return Message{}, false
-		}
-		targetActorID := ActorID("")
-		if targetAny, exists := v["target_actor_id"]; exists && targetAny != nil {
-			targetRaw, ok := targetAny.(string)
-			if !ok {
-				return Message{}, false
-			}
-			targetActorID = ActorID(strings.TrimSpace(targetRaw))
-		}
-		return Message{Role: role, Content: content, TargetActorID: targetActorID}, true
+		out.Role = role
+		return out, true
 	default:
 		return Message{}, false
 	}

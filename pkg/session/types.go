@@ -59,6 +59,13 @@ type Event struct {
 	Seq       uint64    `json:"seq"`
 }
 
+type Attachment struct {
+	Name     string `json:"name,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Data     []byte `json:"data,omitempty"`
+}
+
 type EventType string
 
 const (
@@ -75,9 +82,10 @@ const (
 )
 
 type Message struct {
-	Role          Role    `json:"role"`
-	Content       string  `json:"content"`
-	TargetActorID ActorID `json:"target_actor_id,omitempty"`
+	Role          Role         `json:"role"`
+	Content       string       `json:"content"`
+	TargetActorID ActorID      `json:"target_actor_id,omitempty"`
+	Attachments   []Attachment `json:"attachments,omitempty"`
 }
 
 type Role string

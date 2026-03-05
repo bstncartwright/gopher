@@ -16,14 +16,14 @@ func (t *delegateTool) Name() string {
 func (t *delegateTool) Schema() ToolSchema {
 	return ToolSchema{
 		Name:        t.Name(),
-		Description: "Spawn and manage delegated subagent sessions. `action:\"create\"` is async fire-and-forget: it returns immediately after spawn. After `create`, do not block this turn with polling (`list`/`log`) to wait for completion; resume delegated follow-up only after a later `delegation.completed`/`delegation.failed`/`delegation.cancelled` event.",
+		Description: "Spawn and manage delegated subagent sessions. `action:\"create\"` is async fire-and-forget: it returns immediately after spawn. After `create`, do not block this turn with polling (`list`/`log`/`summary`) to wait for completion; resume delegated follow-up only after a later `delegation.completed`/`delegation.failed`/`delegation.cancelled` event.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []any{"create", "list", "kill", "log"},
-					"description": "Delegation action. `create` spawns a subagent asynchronously and returns immediately; do not call `list`/`log` in the same turn to wait for completion.",
+					"enum":        []any{"create", "list", "kill", "log", "summary"},
+					"description": "Delegation action. `create` spawns a subagent asynchronously and returns immediately; do not call `list`/`log`/`summary` in the same turn to wait for completion.",
 				},
 				"target_agent": map[string]any{
 					"type":        "string",
@@ -43,7 +43,7 @@ func (t *delegateTool) Schema() ToolSchema {
 				},
 				"delegation_id": map[string]any{
 					"type":        "string",
-					"description": "Required for `kill` and `log`. Delegated session id to operate on.",
+					"description": "Required for `kill`, `log`, and `summary`. Delegated session id to operate on.",
 				},
 				"include_inactive": map[string]any{
 					"type":        "boolean",
@@ -236,6 +236,27 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 			Result: map[string]any{
 				"action": "log",
 				"log":    result,
+			},
+		}, nil
+	case "summary":
+		delegationID, err := requiredStringArg(input.Args, "delegation_id")
+		if err != nil {
+			slog.Error("delegate_tool: delegation_id arg required for summary")
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		}
+		result, summaryErr := input.Agent.Delegation.GetDelegationSummary(ctx, DelegationSummaryRequest{
+			SourceSessionID: sessionID,
+			DelegationID:    strings.TrimSpace(delegationID),
+		})
+		if summaryErr != nil {
+			slog.Error("delegate_tool: failed to fetch delegation summary", "delegation_id", delegationID, "error", summaryErr)
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": summaryErr.Error()}}, summaryErr
+		}
+		return ToolOutput{
+			Status: ToolStatusOK,
+			Result: map[string]any{
+				"action":  "summary",
+				"summary": result,
 			},
 		}, nil
 	default:

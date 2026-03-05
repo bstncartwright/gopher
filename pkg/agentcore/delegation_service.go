@@ -86,9 +86,28 @@ type DelegationLogResult struct {
 	Entries   []DelegationLogEntry `json:"entries"`
 }
 
+type DelegationSummaryRequest struct {
+	SourceSessionID string
+	DelegationID    string
+}
+
+type DelegationSummaryResult struct {
+	SessionID         string   `json:"session_id"`
+	Status            string   `json:"status"`
+	Terminal          bool     `json:"terminal"`
+	TotalEvents       int      `json:"total_events"`
+	LastSeq           uint64   `json:"last_seq,omitempty"`
+	LastUpdated       string   `json:"last_updated,omitempty"`
+	Summary           string   `json:"summary"`
+	Highlights        []string `json:"highlights,omitempty"`
+	LatestAgentUpdate string   `json:"latest_agent_update,omitempty"`
+	LastToolCall      string   `json:"last_tool_call,omitempty"`
+}
+
 type DelegationToolService interface {
 	CreateDelegationSession(ctx context.Context, req DelegationCreateRequest) (DelegationSession, error)
 	ListDelegationSessions(ctx context.Context, req DelegationListRequest) ([]DelegationListItem, error)
 	KillDelegationSession(ctx context.Context, req DelegationKillRequest) (DelegationKillResult, error)
 	GetDelegationLog(ctx context.Context, req DelegationLogRequest) (DelegationLogResult, error)
+	GetDelegationSummary(ctx context.Context, req DelegationSummaryRequest) (DelegationSummaryResult, error)
 }

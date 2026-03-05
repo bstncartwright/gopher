@@ -7,10 +7,11 @@ import (
 )
 
 type fakeDelegationToolService struct {
-	lastCreateReq DelegationCreateRequest
-	lastListReq   DelegationListRequest
-	lastKillReq   DelegationKillRequest
-	lastLogReq    DelegationLogRequest
+	lastCreateReq  DelegationCreateRequest
+	lastListReq    DelegationListRequest
+	lastKillReq    DelegationKillRequest
+	lastLogReq     DelegationLogRequest
+	lastSummaryReq DelegationSummaryRequest
 }
 
 func (s *fakeDelegationToolService) CreateDelegationSession(_ context.Context, req DelegationCreateRequest) (DelegationSession, error) {
@@ -62,6 +63,21 @@ func (s *fakeDelegationToolService) GetDelegationLog(_ context.Context, req Dele
 			Content:   "done",
 			Timestamp: "2026-01-01T00:00:00Z",
 		}},
+	}, nil
+}
+
+func (s *fakeDelegationToolService) GetDelegationSummary(_ context.Context, req DelegationSummaryRequest) (DelegationSummaryResult, error) {
+	s.lastSummaryReq = req
+	return DelegationSummaryResult{
+		SessionID:         req.DelegationID,
+		Status:            "active",
+		Terminal:          false,
+		TotalEvents:       3,
+		LastSeq:           3,
+		LastUpdated:       "2026-01-01T00:00:00Z",
+		Summary:           "In progress (3 events). Latest agent update: done",
+		LatestAgentUpdate: "done",
+		LastToolCall:      "read",
 	}, nil
 }
 
@@ -294,5 +310,37 @@ func TestDelegateToolLogUsesOffsetAndLimit(t *testing.T) {
 	}
 	if fake.lastLogReq.Offset != 3 || fake.lastLogReq.Limit != 25 {
 		t.Fatalf("offset/limit = %d/%d, want 3/25", fake.lastLogReq.Offset, fake.lastLogReq.Limit)
+	}
+}
+
+func TestDelegateToolSummaryUsesDelegationID(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"delegate"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	fake := &fakeDelegationToolService{}
+	agent.Delegation = fake
+	runner := NewToolRunner(agent)
+	session := agent.NewSession()
+	session.ID = "sess-source"
+
+	output, err := runner.Run(context.Background(), session, toolCall("delegate", map[string]any{
+		"action":        "summary",
+		"delegation_id": "sess-delegate-1",
+	}))
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if output.Status != ToolStatusOK {
+		t.Fatalf("status = %q, want ok", output.Status)
+	}
+	if fake.lastSummaryReq.SourceSessionID != "sess-source" {
+		t.Fatalf("source session = %q, want sess-source", fake.lastSummaryReq.SourceSessionID)
+	}
+	if fake.lastSummaryReq.DelegationID != "sess-delegate-1" {
+		t.Fatalf("delegation id = %q, want sess-delegate-1", fake.lastSummaryReq.DelegationID)
 	}
 }

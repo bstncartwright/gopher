@@ -760,6 +760,148 @@ func TestGatewaySessionDelegationAgentMessageInvokesSourceAgent(t *testing.T) {
 	}
 }
 
+func TestGatewaySessionDelegationSummaryActiveReturnsProgressDigest(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil, nil)
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and report back.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+
+	if err := manager.SendEvent(ctx, sessionrt.Event{
+		SessionID: sessionrt.SessionID(created.SessionID),
+		From:      "worker",
+		Type:      sessionrt.EventToolCall,
+		Payload: map[string]any{
+			"name": "read",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent(tool_call) error: %v", err)
+	}
+
+	summary, err := service.GetDelegationSummary(ctx, agentcore.DelegationSummaryRequest{
+		SourceSessionID: string(source.ID),
+		DelegationID:    created.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("GetDelegationSummary() error: %v", err)
+	}
+	if summary.Status != "active" {
+		t.Fatalf("status = %q, want active", summary.Status)
+	}
+	if summary.Terminal {
+		t.Fatalf("terminal = true, want false")
+	}
+	if summary.TotalEvents == 0 {
+		t.Fatalf("total events = 0, want > 0")
+	}
+	if summary.LastToolCall != "read" {
+		t.Fatalf("last tool call = %q, want read", summary.LastToolCall)
+	}
+	if !strings.Contains(summary.Summary, "In progress") {
+		t.Fatalf("summary = %q, expected in-progress digest", summary.Summary)
+	}
+}
+
+func TestGatewaySessionDelegationSummaryCompletedReturnsTerminalDigest(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "milo", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo":   {},
+		"worker": {},
+	}, t.TempDir(), nil, nil)
+
+	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "worker",
+		Message:         "Investigate and report back.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+
+	if err := manager.SendEvent(ctx, sessionrt.Event{
+		SessionID: sessionrt.SessionID(created.SessionID),
+		From:      sessionrt.SystemActorID,
+		Type:      sessionrt.EventControl,
+		Payload: sessionrt.ControlPayload{
+			Action: sessionrt.ControlActionSessionCompleted,
+			Reason: "done by worker",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent(session.completed) error: %v", err)
+	}
+
+	waitForSessionControlAction(t, ctx, store, source.ID, "delegation.completed")
+
+	summary, err := service.GetDelegationSummary(ctx, agentcore.DelegationSummaryRequest{
+		SourceSessionID: string(source.ID),
+		DelegationID:    created.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("GetDelegationSummary() error: %v", err)
+	}
+	if summary.Status != "completed" {
+		t.Fatalf("status = %q, want completed", summary.Status)
+	}
+	if !summary.Terminal {
+		t.Fatalf("terminal = false, want true")
+	}
+	if !strings.Contains(summary.Summary, "Completed") {
+		t.Fatalf("summary = %q, expected completed digest", summary.Summary)
+	}
+	if !strings.Contains(summary.Summary, "done by worker") {
+		t.Fatalf("summary = %q, expected terminal reason", summary.Summary)
+	}
+}
+
 func TestDelegationTerminalStatusFromEventIgnoresEventError(t *testing.T) {
 	status, reason, ok := delegationTerminalStatusFromEvent(sessionrt.Event{
 		Type: sessionrt.EventError,

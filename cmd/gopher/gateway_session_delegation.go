@@ -666,6 +666,125 @@ func (s *gatewaySessionDelegationToolService) GetDelegationLog(ctx context.Conte
 	}, nil
 }
 
+func (s *gatewaySessionDelegationToolService) GetDelegationSummary(ctx context.Context, req agentcore.DelegationSummaryRequest) (agentcore.DelegationSummaryResult, error) {
+	if s == nil || s.store == nil {
+		return agentcore.DelegationSummaryResult{}, fmt.Errorf("delegation summary service is unavailable")
+	}
+	s.cleanupExpiredDelegations(ctx)
+
+	delegationID := strings.TrimSpace(req.DelegationID)
+	if delegationID == "" {
+		return agentcore.DelegationSummaryResult{}, fmt.Errorf("delegation_id is required")
+	}
+	record, ok := s.readDelegationRecords()[delegationID]
+	if !ok {
+		return agentcore.DelegationSummaryResult{}, fmt.Errorf("unknown delegation session %q", delegationID)
+	}
+	reqSourceSessionID := strings.TrimSpace(req.SourceSessionID)
+	sourceSessionID := stringFromMap(record, "source_session_id")
+	if reqSourceSessionID != "" && sourceSessionID != reqSourceSessionID {
+		return agentcore.DelegationSummaryResult{}, fmt.Errorf("delegation session %q does not belong to source session %q", delegationID, reqSourceSessionID)
+	}
+
+	events, err := s.store.List(ctx, sessionrt.SessionID(delegationID))
+	if err != nil {
+		return agentcore.DelegationSummaryResult{}, fmt.Errorf("load delegation events: %w", err)
+	}
+
+	status := delegationStatus(record)
+	sessionRecords := s.readSessionRecordMap(ctx)
+	if sessionRecord, hasSession := sessionRecords[sessionrt.SessionID(delegationID)]; hasSession {
+		status = delegationStatusFromSessionRecord(status, sessionRecord)
+		if status == "active" && delegationSessionRecordIsStale(sessionRecord, time.Now()) {
+			status = "stale"
+		}
+	}
+
+	targetAgentID := strings.TrimSpace(stringFromMap(record, "target_agent_id"))
+	agentMessageCount := 0
+	toolCallCount := 0
+	errorCount := 0
+	lastSeq := uint64(0)
+	lastAt := time.Time{}
+	lastToolCall := ""
+	latestAgentUpdate := ""
+	latestAgentUpdateSeq := uint64(0)
+	terminalReason := ""
+
+	for _, event := range events {
+		if event.Seq > lastSeq {
+			lastSeq = event.Seq
+		}
+		if !event.Timestamp.IsZero() && event.Timestamp.After(lastAt) {
+			lastAt = event.Timestamp
+		}
+
+		switch event.Type {
+		case sessionrt.EventMessage:
+			entry := delegationLogEntryFromEvent(event)
+			if strings.TrimSpace(entry.Role) != string(sessionrt.RoleAgent) {
+				continue
+			}
+			agentMessageCount++
+			from := strings.TrimSpace(entry.From)
+			content := strings.TrimSpace(entry.Content)
+			if content == "" {
+				continue
+			}
+			if targetAgentID == "" {
+				if latestAgentUpdate == "" || event.Seq >= latestAgentUpdateSeq {
+					latestAgentUpdate = content
+					latestAgentUpdateSeq = event.Seq
+				}
+				continue
+			}
+			if from == targetAgentID {
+				latestAgentUpdate = content
+				latestAgentUpdateSeq = event.Seq
+				continue
+			}
+			if latestAgentUpdate == "" && latestAgentUpdateSeq == 0 {
+				latestAgentUpdate = content
+				latestAgentUpdateSeq = event.Seq
+			}
+		case sessionrt.EventToolCall:
+			toolCallCount++
+			if name := toolNameFromPayload(event.Payload); name != "" {
+				lastToolCall = name
+			}
+		case sessionrt.EventError:
+			errorCount++
+		case sessionrt.EventControl:
+			if _, reason, ok := delegationTerminalStatusFromEvent(event); ok && strings.TrimSpace(reason) != "" {
+				terminalReason = strings.TrimSpace(reason)
+			}
+		}
+	}
+
+	lastUpdated := strings.TrimSpace(stringFromMap(record, "updated_at"))
+	if !lastAt.IsZero() {
+		lastUpdated = lastAt.UTC().Format(time.RFC3339Nano)
+	}
+	if lastUpdated == "" {
+		lastUpdated = strings.TrimSpace(stringFromMap(record, "created_at"))
+	}
+
+	summary, highlights := buildDelegationSummaryText(status, len(events), agentMessageCount, toolCallCount, errorCount, latestAgentUpdate, lastToolCall, terminalReason)
+	s.touchDelegationActivity(delegationID, time.Now().UTC())
+	return agentcore.DelegationSummaryResult{
+		SessionID:         delegationID,
+		Status:            status,
+		Terminal:          status != "active",
+		TotalEvents:       len(events),
+		LastSeq:           lastSeq,
+		LastUpdated:       lastUpdated,
+		Summary:           summary,
+		Highlights:        highlights,
+		LatestAgentUpdate: truncateDelegationSummaryText(latestAgentUpdate, 240),
+		LastToolCall:      lastToolCall,
+	}, nil
+}
+
 func (s *gatewaySessionDelegationToolService) readSessionRecordMap(ctx context.Context) map[sessionrt.SessionID]sessionrt.SessionRecord {
 	out := map[sessionrt.SessionID]sessionrt.SessionRecord{}
 	if s == nil || s.store == nil {
@@ -1428,6 +1547,108 @@ func delegationLogEntryFromEvent(event sessionrt.Event) agentcore.DelegationLogE
 		entry.TargetActorID = strings.TrimSpace(stringFromMap(payload, "target_actor_id"))
 	}
 	return entry
+}
+
+func toolNameFromPayload(payload any) string {
+	switch typed := payload.(type) {
+	case map[string]any:
+		return strings.TrimSpace(stringFromMap(typed, "name"))
+	default:
+		blob, err := json.Marshal(payload)
+		if err != nil {
+			return ""
+		}
+		decoded := map[string]any{}
+		if err := json.Unmarshal(blob, &decoded); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(stringFromMap(decoded, "name"))
+	}
+}
+
+func buildDelegationSummaryText(status string, totalEvents, agentMessages, toolCalls, errorCount int, latestAgentUpdate, lastToolCall, terminalReason string) (string, []string) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	latestAgentUpdate = strings.TrimSpace(latestAgentUpdate)
+	lastToolCall = strings.TrimSpace(lastToolCall)
+	terminalReason = strings.TrimSpace(terminalReason)
+
+	highlights := make([]string, 0, 5)
+	highlights = append(highlights, fmt.Sprintf("events=%d", totalEvents))
+	if agentMessages > 0 {
+		highlights = append(highlights, fmt.Sprintf("agent_messages=%d", agentMessages))
+	}
+	if toolCalls > 0 {
+		highlights = append(highlights, fmt.Sprintf("tool_calls=%d", toolCalls))
+	}
+	if errorCount > 0 {
+		highlights = append(highlights, fmt.Sprintf("errors=%d", errorCount))
+	}
+	if lastToolCall != "" {
+		highlights = append(highlights, "last_tool="+lastToolCall)
+	}
+
+	if status == "active" {
+		summary := fmt.Sprintf("In progress (%d events", totalEvents)
+		if agentMessages > 0 || toolCalls > 0 {
+			summary += fmt.Sprintf(", %d agent messages, %d tool calls", agentMessages, toolCalls)
+		}
+		if errorCount > 0 {
+			summary += fmt.Sprintf(", %d errors", errorCount)
+		}
+		summary += ")."
+		if latestAgentUpdate != "" {
+			summary += " Latest agent update: " + truncateDelegationSummaryText(latestAgentUpdate, 180)
+		} else if lastToolCall != "" {
+			summary += " Last tool call: " + lastToolCall + "."
+		}
+		return summary, highlights
+	}
+
+	prefix := terminalStatusLabel(status)
+	summary := prefix + fmt.Sprintf(" after %d events.", totalEvents)
+	if latestAgentUpdate != "" {
+		summary += " Final agent update: " + truncateDelegationSummaryText(latestAgentUpdate, 180)
+	} else if terminalReason != "" {
+		summary += " Reason: " + truncateDelegationSummaryText(terminalReason, 160)
+	} else if lastToolCall != "" {
+		summary += " Last tool call: " + lastToolCall + "."
+	}
+	if terminalReason != "" {
+		highlights = append(highlights, "reason="+truncateDelegationSummaryText(terminalReason, 80))
+	}
+	return summary, highlights
+}
+
+func terminalStatusLabel(status string) string {
+	trimmed := strings.TrimSpace(status)
+	switch strings.ToLower(trimmed) {
+	case "completed":
+		return "Completed"
+	case "failed":
+		return "Failed"
+	case "cancelled":
+		return "Cancelled"
+	case "expired":
+		return "Expired"
+	case "stale":
+		return "Stale"
+	default:
+		if trimmed == "" {
+			return "Finished"
+		}
+		return strings.ToUpper(trimmed[:1]) + trimmed[1:]
+	}
+}
+
+func truncateDelegationSummaryText(value string, limit int) string {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if limit <= 0 || len(normalized) <= limit {
+		return normalized
+	}
+	if limit <= 3 {
+		return normalized[:limit]
+	}
+	return strings.TrimSpace(normalized[:limit-3]) + "..."
 }
 
 func stringFromMap(record map[string]any, key string) string {

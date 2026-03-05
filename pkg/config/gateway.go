@@ -305,7 +305,7 @@ listen_addr = "127.0.0.1:29329"
 capture_thinking = true
 
 [gateway.cron]
-enabled = false
+enabled = true
 poll_interval = "1s"
 default_timezone = "UTC"
 
@@ -375,7 +375,7 @@ func defaultGatewayConfig() GatewayConfig {
 			CaptureThinking: true,
 		},
 		Cron: CronConfig{
-			Enabled:         false,
+			Enabled:         true,
 			PollInterval:    DefaultCronPollInterval,
 			DefaultTimezone: "UTC",
 		},

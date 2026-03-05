@@ -41,6 +41,9 @@ func TestLoadGatewayConfigDefaults(t *testing.T) {
 	if cfg.Telegram.Webhook.Path != "/_gopher/telegram/webhook" {
 		t.Fatalf("telegram webhook path = %q", cfg.Telegram.Webhook.Path)
 	}
+	if !cfg.Cron.Enabled {
+		t.Fatalf("cron enabled = false, want true")
+	}
 	if len(sources) != 1 || sources[0] != "defaults" {
 		t.Fatalf("sources = %#v, want defaults only", sources)
 	}

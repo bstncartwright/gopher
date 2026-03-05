@@ -55,9 +55,10 @@ type gatewaySessionDelegationToolService struct {
 }
 
 const (
-	delegationAsyncSendTimeout = 10 * time.Minute
-	delegationEphemeralTTL     = 30 * time.Minute
-	delegationWatchTimeout     = 24 * time.Hour
+	delegationAsyncSendTimeout   = 10 * time.Minute
+	delegationEphemeralTTL       = 30 * time.Minute
+	delegationWatchTimeout       = 24 * time.Hour
+	delegatedAgentTerminalReason = "delegated agent produced a terminal message"
 )
 
 var validDelegationAliasPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -272,11 +273,15 @@ func (s *gatewaySessionDelegationToolService) startDelegationLifecycleMonitor(
 	go func() {
 		defer cancel()
 		for event := range stream {
+			terminalResponse := ""
 			status, reason, ok := delegationTerminalStatusFromEvent(event)
 			if !ok {
-				if agentReason, completed := delegationCompletedFromAgentMessage(event, targetAgentID); completed {
+				if agentResponse, completed := delegationCompletedFromAgentMessage(event, targetAgentID); completed {
 					status = "completed"
-					reason = agentReason
+					reason = agentResponse
+					if agentResponse != delegatedAgentTerminalReason {
+						terminalResponse = agentResponse
+					}
 					ok = true
 				}
 			}
@@ -291,6 +296,7 @@ func (s *gatewaySessionDelegationToolService) startDelegationLifecycleMonitor(
 				title,
 				status,
 				reason,
+				terminalResponse,
 				event.Timestamp,
 			)
 			return
@@ -306,6 +312,7 @@ func (s *gatewaySessionDelegationToolService) handleDelegationTerminalState(
 	title string,
 	status string,
 	reason string,
+	terminalResponse string,
 	at time.Time,
 ) {
 	if s == nil {
@@ -395,13 +402,17 @@ func (s *gatewaySessionDelegationToolService) handleDelegationTerminalState(
 	s.sendDelegationControlEventAsync(sourceSessionID, action, metadata)
 	sourceAgentID = sessionrt.ActorID(strings.TrimSpace(string(sourceAgentID)))
 	if sourceAgentID != "" {
+		terminalMessage := strings.TrimSpace(terminalResponse)
+		if terminalMessage == "" {
+			terminalMessage = buildDelegationTerminalMessage(targetAgent, delegationID, status, reason, diffArtifactPath)
+		}
 		s.sendSessionEventAsync(sessionrt.Event{
 			SessionID: sourceSessionID,
 			From:      sessionrt.SystemActorID,
 			Type:      sessionrt.EventMessage,
 			Payload: sessionrt.Message{
 				Role:          sessionrt.RoleAgent,
-				Content:       buildDelegationTerminalMessage(targetAgent, delegationID, status, reason, diffArtifactPath),
+				Content:       terminalMessage,
 				TargetActorID: sourceAgentID,
 			},
 		}, "delegation terminal announcement")
@@ -1455,11 +1466,19 @@ func delegationCompletedFromAgentMessage(event sessionrt.Event, targetAgentID se
 	switch payload := event.Payload.(type) {
 	case sessionrt.Message:
 		if payload.Role == sessionrt.RoleAgent {
-			return "delegated agent produced a terminal message", true
+			content := strings.TrimSpace(payload.Content)
+			if content == "" {
+				return delegatedAgentTerminalReason, true
+			}
+			return content, true
 		}
 	case map[string]any:
 		if strings.TrimSpace(stringFromMap(payload, "role")) == string(sessionrt.RoleAgent) {
-			return "delegated agent produced a terminal message", true
+			content := strings.TrimSpace(stringFromMap(payload, "content"))
+			if content == "" {
+				return delegatedAgentTerminalReason, true
+			}
+			return content, true
 		}
 	}
 	return "", false

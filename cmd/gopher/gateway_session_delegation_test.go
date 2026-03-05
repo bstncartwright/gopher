@@ -700,8 +700,7 @@ func TestGatewaySessionDelegationAgentMessageAnnouncesToSourceSession(t *testing
 
 	waitForDelegationKickoff(t, ctx, store, source.ID, func(msg sessionrt.Message) bool {
 		return msg.TargetActorID == "milo" &&
-			strings.Contains(msg.Content, "finished session") &&
-			strings.Contains(msg.Content, created.SessionID)
+			strings.TrimSpace(msg.Content) == "done"
 	})
 }
 

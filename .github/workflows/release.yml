@@ -78,6 +78,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: refresh model catalog
+        run: go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
+
       - name: run tests
         run: go test ./...
 

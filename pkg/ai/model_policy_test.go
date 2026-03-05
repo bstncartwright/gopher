@@ -18,6 +18,19 @@ func TestResolveModelPolicyValidBuiltInModel(t *testing.T) {
 	}
 }
 
+func TestResolveModelPolicyValidCuratedOpenAICodexOverride(t *testing.T) {
+	model, err := ResolveModelPolicy("openai-codex:gpt-5.4")
+	if err != nil {
+		t.Fatalf("ResolveModelPolicy() error: %v", err)
+	}
+	if model.Provider != ProviderOpenAICodex {
+		t.Fatalf("provider = %q, want %q", model.Provider, ProviderOpenAICodex)
+	}
+	if model.ID != "gpt-5.4" {
+		t.Fatalf("model ID = %q, want gpt-5.4", model.ID)
+	}
+}
+
 func TestResolveModelPolicyRejectsInvalidFormat(t *testing.T) {
 	_, err := ResolveModelPolicy("gpt-4o-mini")
 	if err == nil {

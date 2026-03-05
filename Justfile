@@ -3,6 +3,13 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
   @just --list
 
+generate-models:
+  go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
+
+build:
+  just generate-models
+  go build -o gopher ./cmd/gopher
+
 # Apply Go formatting to all packages.
 fmt:
   go fmt ./...

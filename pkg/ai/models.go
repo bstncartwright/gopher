@@ -167,7 +167,7 @@ func CalculateCost(model Model, usage *Usage) CostBreakdown {
 }
 
 func SupportsXHigh(model Model) bool {
-	if strings.Contains(model.ID, "gpt-5.2") || strings.Contains(model.ID, "gpt-5.3") {
+	if strings.Contains(model.ID, "gpt-5.2") || strings.Contains(model.ID, "gpt-5.3") || strings.Contains(model.ID, "gpt-5.4") {
 		return true
 	}
 	if model.API == APIAnthropicMessages {

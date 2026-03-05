@@ -885,6 +885,26 @@ var generatedModelsJSON = `
       "provider": "openai-codex",
       "reasoning": true
     },
+    "gpt-5.4": {
+      "api": "openai-codex-responses",
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "contextWindow": 272000,
+      "cost": {
+        "cacheRead": 0.175,
+        "cacheWrite": 0,
+        "input": 1.75,
+        "output": 14
+      },
+      "id": "gpt-5.4",
+      "input": [
+        "text",
+        "image"
+      ],
+      "maxTokens": 128000,
+      "name": "GPT-5.4",
+      "provider": "openai-codex",
+      "reasoning": true
+    },
     "gpt-5.3-codex-spark": {
       "api": "openai-codex-responses",
       "baseUrl": "https://chatgpt.com/backend-api",

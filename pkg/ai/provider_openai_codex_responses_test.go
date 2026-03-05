@@ -198,6 +198,16 @@ func TestStreamOpenAICodexResponsesAutoFallsBackAfterNormalWebSocketClosure(t *t
 	}
 }
 
+func TestResolveOpenAICodexResponsesTransportDefaultsToAuto(t *testing.T) {
+	model := Model{
+		Provider: ProviderOpenAICodex,
+		BaseURL:  "https://chatgpt.com/backend-api",
+	}
+	if got := resolveOpenAICodexResponsesTransport(model, &OpenAICodexResponsesOptions{}); got != TransportAuto {
+		t.Fatalf("transport = %q, want %q", got, TransportAuto)
+	}
+}
+
 func TestStreamOpenAICodexResponsesWebSocketAcceptsLargeEventFrames(t *testing.T) {
 	sessionID := "test-session-ws-large-frame"
 	payload, _ := json.Marshal(map[string]any{

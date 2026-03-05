@@ -103,6 +103,16 @@ func TestStreamOpenAIResponsesWebSocketMode(t *testing.T) {
 	}
 }
 
+func TestResolveOpenAIResponsesTransportDefaultsToAuto(t *testing.T) {
+	model := Model{
+		Provider: ProviderOpenAI,
+		BaseURL:  "https://api.openai.com/v1",
+	}
+	if got := resolveOpenAIResponsesTransport(model, &OpenAIResponsesOptions{}); got != TransportAuto {
+		t.Fatalf("transport = %q, want %q", got, TransportAuto)
+	}
+}
+
 func TestStreamOpenAIResponsesAutoFallsBackToSSE(t *testing.T) {
 	var wsAttempts atomic.Int32
 

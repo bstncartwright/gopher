@@ -75,6 +75,28 @@ func loadGeneratedModels() {
 		},
 	}
 
+	// Temporary override until models.dev publishes this id.
+	if _, ok := out[ProviderOpenAICodex]; !ok {
+		out[ProviderOpenAICodex] = map[string]Model{}
+	}
+	out[ProviderOpenAICodex]["gpt-5.4"] = Model{
+		ID:        "gpt-5.4",
+		Name:      "GPT-5.4",
+		API:       APIOpenAICodexResponse,
+		Provider:  ProviderOpenAICodex,
+		BaseURL:   "https://chatgpt.com/backend-api",
+		Reasoning: true,
+		Input:     []string{"text", "image", "pdf"},
+		Cost: ModelCost{
+			Input:      1.75,
+			Output:     14,
+			CacheRead:  0.175,
+			CacheWrite: 0,
+		},
+		ContextWindow: 272000,
+		MaxTokens:     128000,
+	}
+
 	modelRegistry = out
 }
 

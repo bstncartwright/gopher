@@ -129,6 +129,10 @@ pkg/
 
 ```bash
 # build
+just build
+
+# if you prefer raw go commands, refresh the embedded model catalog first
+go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
 go build -o gopher ./cmd/gopher
 
 # init config (optional)
@@ -417,6 +421,8 @@ dm control commands:
 ## releases
 
 gopher now includes a github actions release workflow at `.github/workflows/release.yml`.
+
+the release build refreshes `pkg/ai/models_generated.go` from `https://models.dev/api.json` before running tests and building the binary.
 
 - trigger: push a tag like `v0.1.0` (or run manual dispatch with a `v*` tag)
 - build outputs:

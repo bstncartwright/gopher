@@ -3,25 +3,38 @@ package agentcore
 import "context"
 
 type CronJob struct {
-	ID        string  `json:"id"`
-	SessionID string  `json:"session_id"`
-	Message   string  `json:"message"`
-	CronExpr  string  `json:"cron_expr"`
-	Timezone  string  `json:"timezone"`
-	Enabled   bool    `json:"enabled"`
-	CreatedBy string  `json:"created_by"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	LastRunAt *string `json:"last_run_at,omitempty"`
-	NextRunAt *string `json:"next_run_at,omitempty"`
+	ID             string  `json:"id"`
+	SessionID      string  `json:"session_id"`
+	Title          string  `json:"title,omitempty"`
+	Message        string  `json:"message"`
+	CronExpr       string  `json:"cron_expr"`
+	Timezone       string  `json:"timezone"`
+	Mode           string  `json:"mode,omitempty"`
+	NotifyActorID  string  `json:"notify_actor_id,omitempty"`
+	TargetAgent    string  `json:"target_agent,omitempty"`
+	ModelPolicy    string  `json:"model_policy,omitempty"`
+	Enabled        bool    `json:"enabled"`
+	CreatedBy      string  `json:"created_by"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+	LastRunAt      *string `json:"last_run_at,omitempty"`
+	NextRunAt      *string `json:"next_run_at,omitempty"`
+	LastRunStatus  string  `json:"last_run_status,omitempty"`
+	LastRunSummary string  `json:"last_run_summary,omitempty"`
+	LastRunError   string  `json:"last_run_error,omitempty"`
 }
 
 type CronCreateRequest struct {
-	SessionID string
-	Message   string
-	CronExpr  string
-	Timezone  string
-	CreatedBy string
+	SessionID     string
+	Title         string
+	Message       string
+	CronExpr      string
+	Timezone      string
+	Mode          string
+	NotifyActorID string
+	TargetAgent   string
+	ModelPolicy   string
+	CreatedBy     string
 }
 
 type CronListRequest struct {

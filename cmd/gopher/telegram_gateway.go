@@ -120,9 +120,14 @@ func startTelegramDMBridgeWithRuntime(
 		agent.SessionMemoryFlusher = agentcore.NewStoreBackedSessionMemoryFlusher(store, agent.LongTermMemory, agent.ID)
 	}
 
+	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router)
+	for _, agent := range agentRuntime.Agents {
+		agent.Delegation = delegationTool
+	}
+
 	var cronRunner *gateway.CronRunner
 	if cfg.Cron.Enabled {
-		dispatcher, err := gateway.NewSessionCronDispatcher(manager)
+		dispatcher, err := newScheduledTaskCronDispatcher(manager, delegationTool)
 		if err != nil {
 			return nil, fmt.Errorf("create cron dispatcher: %w", err)
 		}
@@ -205,11 +210,6 @@ func startTelegramDMBridgeWithRuntime(
 	for _, agent := range agentRuntime.Agents {
 		agent.MessageService = messageTool
 		agent.ReactionService = messageTool
-	}
-
-	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router)
-	for _, agent := range agentRuntime.Agents {
-		agent.Delegation = delegationTool
 	}
 
 	heartbeatSchedules := collectHeartbeatSchedules(agentRuntime)

@@ -10,7 +10,15 @@ import (
 )
 
 type CronDispatcher interface {
-	Dispatch(ctx context.Context, job CronJob, firedAt time.Time) error
+	Dispatch(ctx context.Context, job CronJob, firedAt time.Time) (CronDispatchResult, error)
+	Poll(ctx context.Context, job CronJob, now time.Time) (CronDispatchResult, error)
+}
+
+type CronDispatchResult struct {
+	Status      string
+	Summary     string
+	Error       string
+	ActiveRunID string
 }
 
 type CronServiceOptions struct {
@@ -71,6 +79,14 @@ func (s *CronService) Create(_ context.Context, input CronCreateInput) (CronJob,
 	if expr == "" {
 		return CronJob{}, fmt.Errorf("cron expression is required")
 	}
+	mode := normalizeCronMode(input.Mode)
+	if mode == "" {
+		return CronJob{}, fmt.Errorf("invalid cron mode %q", strings.TrimSpace(input.Mode))
+	}
+	notifyActorID := strings.TrimSpace(input.NotifyActorID)
+	if notifyActorID == "" {
+		return CronJob{}, fmt.Errorf("notify actor id is required")
+	}
 	timezone := normalizeCronTimezone(input.Timezone)
 	if input.Timezone == "" {
 		timezone = s.defaultTimezone
@@ -82,16 +98,21 @@ func (s *CronService) Create(_ context.Context, input CronCreateInput) (CronJob,
 	}
 	id := s.newJobID()
 	job := CronJob{
-		ID:        id,
-		SessionID: sessionID,
-		Message:   message,
-		CronExpr:  expr,
-		Timezone:  timezone,
-		Enabled:   true,
-		CreatedBy: strings.TrimSpace(input.CreatedBy),
-		CreatedAt: now,
-		UpdatedAt: now,
-		NextRunAt: ptrTime(nextRun),
+		ID:            id,
+		SessionID:     sessionID,
+		Title:         strings.TrimSpace(input.Title),
+		Message:       message,
+		CronExpr:      expr,
+		Timezone:      timezone,
+		Mode:          mode,
+		NotifyActorID: notifyActorID,
+		TargetAgent:   strings.TrimSpace(input.TargetAgent),
+		ModelPolicy:   strings.TrimSpace(input.ModelPolicy),
+		Enabled:       true,
+		CreatedBy:     strings.TrimSpace(input.CreatedBy),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		NextRunAt:     ptrTime(nextRun),
 	}
 	if err := s.store.Create(job); err != nil {
 		return CronJob{}, err
@@ -128,6 +149,10 @@ func (s *CronService) Pause(_ context.Context, jobID string) (CronJob, error) {
 	job.Enabled = false
 	job.UpdatedAt = now
 	job.NextRunAt = nil
+	job.ActiveRunID = ""
+	job.LastRunStatus = ""
+	job.LastRunSummary = ""
+	job.LastRunError = ""
 	if err := s.store.Update(job); err != nil {
 		return CronJob{}, err
 	}
@@ -147,6 +172,10 @@ func (s *CronService) Resume(_ context.Context, jobID string) (CronJob, error) {
 	job.Enabled = true
 	job.UpdatedAt = now
 	job.NextRunAt = ptrTime(nextRun)
+	job.ActiveRunID = ""
+	job.LastRunStatus = ""
+	job.LastRunSummary = ""
+	job.LastRunError = ""
 	if err := s.store.Update(job); err != nil {
 		return CronJob{}, err
 	}
@@ -159,6 +188,7 @@ func (s *CronService) ProcessDue(ctx context.Context) error {
 	}
 	now := s.now().UTC()
 	jobs := s.store.List()
+	s.reconcileRunning(ctx, now, jobs)
 	sort.Slice(jobs, func(i, j int) bool {
 		left := jobs[i].NextRunAt
 		right := jobs[j].NextRunAt
@@ -180,6 +210,9 @@ func (s *CronService) ProcessDue(ctx context.Context) error {
 		if !job.Enabled {
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(job.LastRunStatus), CronRunStatusRunning) {
+			continue
+		}
 		if job.NextRunAt == nil {
 			nextRun, err := nextCronRun(job.CronExpr, job.Timezone, now)
 			if err != nil {
@@ -193,17 +226,7 @@ func (s *CronService) ProcessDue(ctx context.Context) error {
 		if job.NextRunAt.After(now) {
 			continue
 		}
-		if err := s.dispatcher.Dispatch(ctx, job, now); err != nil {
-			continue
-		}
-		nextRun, err := nextCronRun(job.CronExpr, job.Timezone, now)
-		if err != nil {
-			continue
-		}
-		job.LastRunAt = ptrTime(now)
-		job.NextRunAt = ptrTime(nextRun)
-		job.UpdatedAt = now
-		_ = s.store.Update(job)
+		s.dispatchJob(ctx, job, now)
 	}
 	return nil
 }
@@ -214,8 +237,12 @@ func (s *CronService) PrepareOnStart(ctx context.Context) error {
 	}
 	now := s.now().UTC()
 	jobs := s.store.List()
+	s.reconcileRunning(ctx, now, jobs)
 	for _, job := range jobs {
 		if !job.Enabled {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(job.LastRunStatus), CronRunStatusRunning) {
 			continue
 		}
 		if job.NextRunAt == nil {
@@ -231,19 +258,93 @@ func (s *CronService) PrepareOnStart(ctx context.Context) error {
 		if !s.catchupOnStartOnce || job.NextRunAt.After(now) {
 			continue
 		}
-		if err := s.dispatcher.Dispatch(ctx, job, now); err != nil {
-			continue
-		}
-		nextRun, err := nextCronRun(job.CronExpr, job.Timezone, now)
-		if err != nil {
-			continue
-		}
-		job.LastRunAt = ptrTime(now)
-		job.NextRunAt = ptrTime(nextRun)
-		job.UpdatedAt = now
-		_ = s.store.Update(job)
+		s.dispatchJob(ctx, job, now)
 	}
 	return nil
+}
+
+func (s *CronService) dispatchJob(ctx context.Context, job CronJob, now time.Time) {
+	dispatchJob := cloneCronJob(job)
+	job.LastRunStatus = CronRunStatusRunning
+	job.LastRunSummary = ""
+	job.LastRunError = ""
+	job.ActiveRunID = ""
+	job.UpdatedAt = now
+	job.NextRunAt = nil
+	if err := s.store.Update(job); err != nil {
+		return
+	}
+
+	result, err := s.dispatcher.Dispatch(ctx, dispatchJob, now)
+	if err != nil {
+		s.finalizeJob(job, CronDispatchResult{
+			Status:  CronRunStatusFailed,
+			Error:   err.Error(),
+			Summary: err.Error(),
+		}, now)
+		return
+	}
+	if !validCronRunStatus(result.Status) || strings.TrimSpace(result.Status) == "" {
+		result.Status = CronRunStatusCompleted
+	}
+	if strings.EqualFold(strings.TrimSpace(result.Status), CronRunStatusRunning) {
+		job.ActiveRunID = strings.TrimSpace(result.ActiveRunID)
+		job.LastRunStatus = CronRunStatusRunning
+		job.LastRunSummary = strings.TrimSpace(result.Summary)
+		job.LastRunError = ""
+		job.UpdatedAt = now
+		_ = s.store.Update(job)
+		return
+	}
+	s.finalizeJob(job, result, now)
+}
+
+func (s *CronService) reconcileRunning(ctx context.Context, now time.Time, jobs []CronJob) {
+	for _, job := range jobs {
+		if !strings.EqualFold(strings.TrimSpace(job.LastRunStatus), CronRunStatusRunning) {
+			continue
+		}
+		if strings.TrimSpace(job.ActiveRunID) == "" {
+			s.finalizeJob(job, CronDispatchResult{
+				Status:  CronRunStatusFailed,
+				Error:   "scheduled task run lost active run id",
+				Summary: "scheduled task run lost active run id",
+			}, now)
+			continue
+		}
+		result, err := s.dispatcher.Poll(ctx, job, now)
+		if err != nil {
+			s.finalizeJob(job, CronDispatchResult{
+				Status:  CronRunStatusFailed,
+				Error:   err.Error(),
+				Summary: err.Error(),
+			}, now)
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(result.Status), CronRunStatusRunning) || strings.TrimSpace(result.Status) == "" {
+			continue
+		}
+		s.finalizeJob(job, result, now)
+	}
+}
+
+func (s *CronService) finalizeJob(job CronJob, result CronDispatchResult, now time.Time) {
+	status := strings.ToLower(strings.TrimSpace(result.Status))
+	if !validCronRunStatus(status) || status == "" {
+		status = CronRunStatusCompleted
+	}
+	nextRun, err := nextCronRun(job.CronExpr, job.Timezone, now)
+	if err != nil {
+		return
+	}
+	job.ActiveRunID = ""
+	job.LastRunStatus = status
+	job.LastRunSummary = strings.TrimSpace(result.Summary)
+	job.LastRunError = strings.TrimSpace(result.Error)
+	job.LastRunAt = ptrTime(now)
+	job.NextRunAt = ptrTime(nextRun)
+	job.UpdatedAt = now
+	_ = s.store.Update(job)
 }
 
 func (s *CronService) newJobID() string {

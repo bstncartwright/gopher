@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,10 +53,14 @@ func TestSessionCronDispatcherInjectsUserMessageToSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSessionCronDispatcher() error: %v", err)
 	}
-	if err := dispatcher.Dispatch(context.Background(), CronJob{
-		ID:        "cron-1",
-		SessionID: string(session.ID),
-		Message:   "scheduled ping",
+	if _, err := dispatcher.Dispatch(context.Background(), CronJob{
+		ID:            "cron-1",
+		SessionID:     string(session.ID),
+		Title:         "Ping",
+		Message:       "scheduled ping",
+		Timezone:      "UTC",
+		Mode:          CronModeSession,
+		NotifyActorID: "agent:a",
 	}, time.Now().UTC()); err != nil {
 		t.Fatalf("Dispatch() error: %v", err)
 	}
@@ -84,5 +89,33 @@ func TestSessionCronDispatcherInjectsUserMessageToSession(t *testing.T) {
 	}
 	if !sawAgentReply {
 		t.Fatalf("expected injected user message to trigger agent reply")
+	}
+
+	events, err := store.List(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	var injected string
+	for _, event := range events {
+		if event.Type != sessionrt.EventMessage {
+			continue
+		}
+		msg, ok := event.Payload.(sessionrt.Message)
+		if !ok || msg.Role != sessionrt.RoleUser {
+			continue
+		}
+		injected = msg.Content
+	}
+	if !strings.Contains(injected, "[scheduled task]") {
+		t.Fatalf("expected scheduled task wrapper, got %q", injected)
+	}
+	if !strings.Contains(injected, "task_id: cron-1") {
+		t.Fatalf("expected task id in wrapper, got %q", injected)
+	}
+	if !strings.Contains(injected, "mode: session") {
+		t.Fatalf("expected session mode in wrapper, got %q", injected)
+	}
+	if !strings.Contains(injected, "Instructions:\nscheduled ping") {
+		t.Fatalf("expected instructions block, got %q", injected)
 	}
 }

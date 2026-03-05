@@ -170,6 +170,15 @@ func (s *FileCronStore) persistLocked() error {
 
 func cloneCronJob(in CronJob) CronJob {
 	out := in
+	if normalizedMode := normalizeCronMode(out.Mode); normalizedMode == "" {
+		out.Mode = CronModeSession
+	} else {
+		out.Mode = normalizedMode
+	}
+	out.LastRunStatus = strings.ToLower(strings.TrimSpace(out.LastRunStatus))
+	if !validCronRunStatus(out.LastRunStatus) {
+		out.LastRunStatus = ""
+	}
 	if in.LastRunAt != nil {
 		timestamp := in.LastRunAt.UTC()
 		out.LastRunAt = &timestamp

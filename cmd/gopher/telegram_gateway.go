@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/agentcore"
+	"github.com/bstncartwright/gopher/pkg/ai"
 	"github.com/bstncartwright/gopher/pkg/config"
 	"github.com/bstncartwright/gopher/pkg/gateway"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
@@ -606,15 +607,8 @@ func resolveTelegramModelAgentConfigPath(workspace string, runtime *gatewayAgent
 }
 
 func validateModelPolicy(raw string) error {
-	raw = strings.TrimSpace(raw)
-	parts := strings.SplitN(raw, ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid model policy %q: expected provider:model", raw)
-	}
-	if strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-		return fmt.Errorf("invalid model policy %q: provider and model are required", raw)
-	}
-	return nil
+	_, err := ai.ResolveModelPolicy(raw)
+	return err
 }
 
 func readAgentModelPolicy(configPath string) (string, error) {

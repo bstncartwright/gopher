@@ -148,19 +148,13 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 		"apply_patch_enabled", policies.ApplyPatchEnabled,
 	)
 
-	providerName, modelID, err := parseModelPolicy(config.ModelPolicy)
-	if err != nil {
-		slog.Error("load_agent: failed to parse model_policy", "model_policy", config.ModelPolicy, "error", err)
-		return nil, err
-	}
 	if shouldEnableApplyPatchForModelPolicy(config.ModelPolicy) {
 		policies.ApplyPatchEnabled = true
 	}
-	slog.Debug("load_agent: parsed model policy", "provider_name", providerName, "model_id", modelID)
-	model, ok := ai.GetModel(providerName, modelID)
-	if !ok {
-		slog.Error("load_agent: model not found", "provider_name", providerName, "model_id", modelID, "model_policy", config.ModelPolicy)
-		return nil, fmt.Errorf("model not found for model_policy %q", config.ModelPolicy)
+	model, err := ai.ResolveModelPolicy(config.ModelPolicy)
+	if err != nil {
+		slog.Error("load_agent: failed to resolve model_policy", "model_policy", config.ModelPolicy, "error", err)
+		return nil, err
 	}
 	slog.Info("load_agent: resolved model",
 		"provider", model.Provider,
@@ -325,19 +319,6 @@ func buildMemorySearchManager(workspaceAbs string, cfg AgentConfig, fileManager 
 		return disabled
 	}
 	return manager
-}
-
-func parseModelPolicy(raw string) (providerName string, modelID string, err error) {
-	parts := strings.SplitN(strings.TrimSpace(raw), ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid model_policy %q: expected provider:model", raw)
-	}
-	providerName = strings.TrimSpace(parts[0])
-	modelID = strings.TrimSpace(parts[1])
-	if providerName == "" || modelID == "" {
-		return "", "", fmt.Errorf("invalid model_policy %q: provider and model are required", raw)
-	}
-	return providerName, modelID, nil
 }
 
 func requireFile(path string) error {

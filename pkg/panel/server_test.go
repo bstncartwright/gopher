@@ -642,7 +642,8 @@ func TestPanelCronFragmentRendersJobs(t *testing.T) {
       "enabled": true,
       "created_by": "agent",
       "updated_at": "2026-03-05T00:00:00Z",
-      "next_run_at": "2026-03-06T09:00:00Z"
+      "next_run_at": "2026-03-06T09:00:00Z",
+      "last_run_status": "completed"
     }
   ]
 }`
@@ -673,6 +674,12 @@ func TestPanelCronFragmentRendersJobs(t *testing.T) {
 	}
 	if !strings.Contains(body, "Enabled: 1") {
 		t.Fatalf("expected enabled count, got: %s", body)
+	}
+	if !strings.Contains(body, "completed") {
+		t.Fatalf("expected last run status, got: %s", body)
+	}
+	if !strings.Contains(body, "2026-03-06") {
+		t.Fatalf("expected next run timestamp, got: %s", body)
 	}
 }
 

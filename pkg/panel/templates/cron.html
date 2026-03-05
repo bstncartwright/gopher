@@ -18,12 +18,13 @@
     <tr>
       <th>ID</th>
       <th>Session</th>
-      <th>Status</th>
+      <th>Schedule</th>
+      <th>Last Status</th>
+      <th>Next Run</th>
       <th>Cron</th>
       <th>Timezone</th>
       <th>Created By</th>
       <th>Updated</th>
-      <th>Next Run</th>
       <th>Last Run</th>
       <th>Message</th>
     </tr>
@@ -33,12 +34,13 @@
     <tr>
       <td class="node-id">{{.ID}}</td>
       <td class="node-id">{{.SessionID}}</td>
-      <td>{{.Status}}</td>
+      <td>{{.ScheduleState}}</td>
+      <td>{{.RunStatus}}</td>
+      <td>{{.NextRunAt}}</td>
       <td>{{.CronExpr}}</td>
       <td>{{.Timezone}}</td>
       <td>{{.CreatedBy}}</td>
       <td>{{.UpdatedAt}}</td>
-      <td>{{.NextRunAt}}</td>
       <td>{{.LastRunAt}}</td>
       <td>{{.Message}}</td>
     </tr>

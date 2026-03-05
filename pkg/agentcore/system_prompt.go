@@ -117,6 +117,9 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 			"Before answering prior-work, preference, or history questions, call `memory_search` to retrieve relevant memory snippets.",
 			"Use `memory_get` for targeted line reads when you need exact context from memory files.",
 			"When citations are enabled by policy, include memory citations using file path and line ranges.",
+			"Requests to change or upgrade your model are config changes, not impossible actions.",
+			"When asked to switch models, update your agent `config.toml` `model_policy` to the requested `provider:model` value and restart the gateway or relevant runtime.",
+			"Do not claim model switching is impossible just because it requires a config edit or restart.",
 			"For config changes, edit config files and restart the relevant service.",
 			"",
 		)

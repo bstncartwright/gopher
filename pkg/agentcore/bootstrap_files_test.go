@@ -104,6 +104,28 @@ func TestLoadBootstrapContextFilesMemoryInclusion(t *testing.T) {
 	}
 }
 
+func TestLoadBootstrapContextFilesSkipsTemplateUpdatesFile(t *testing.T) {
+	workspace := t.TempDir()
+	writeRequiredBootstrapFiles(t, workspace)
+	mustWriteFile(t, filepath.Join(workspace, "TEMPLATE_UPDATES.md"), "template update notice")
+
+	files, err := loadBootstrapContextFiles(workspace, PromptModeFull, DefaultBootstrapMaxChars, DefaultBootstrapTotalMaxChars)
+	if err != nil {
+		t.Fatalf("loadBootstrapContextFiles() error: %v", err)
+	}
+	if findBootstrapByName(files, "TEMPLATE_UPDATES.md") != nil {
+		t.Fatalf("did not expect TEMPLATE_UPDATES.md in full mode")
+	}
+
+	minimalFiles, err := loadBootstrapContextFiles(workspace, PromptModeMinimal, DefaultBootstrapMaxChars, DefaultBootstrapTotalMaxChars)
+	if err != nil {
+		t.Fatalf("loadBootstrapContextFiles() minimal mode error: %v", err)
+	}
+	if findBootstrapByName(minimalFiles, "TEMPLATE_UPDATES.md") != nil {
+		t.Fatalf("did not expect TEMPLATE_UPDATES.md in minimal mode")
+	}
+}
+
 func TestLoadBootstrapContextFilesSkipsMissingHeartbeatFile(t *testing.T) {
 	workspace := t.TempDir()
 	mustWriteFile(t, filepath.Join(workspace, "AGENTS.md"), "agents")

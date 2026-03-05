@@ -277,6 +277,9 @@ func discoverAgentWorkspaces(workspace string) (workspaces []string, err error) 
 				return nil, err
 			}
 			if ok {
+				if err := ensureWorkspaceTemplateUpdateInstructions(candidate); err != nil {
+					return nil, fmt.Errorf("ensure template update instructions for %s: %w", candidate, err)
+				}
 				if err := ensureSharedProfile(candidate); err != nil {
 					return nil, err
 				}

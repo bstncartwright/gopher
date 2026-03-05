@@ -155,6 +155,17 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		"",
 	)
 
+	if mode == PromptModeFull && workspaceHasPendingTemplateUpdates(input.Workspace) {
+		sections = append(sections,
+			"## Workspace Maintenance",
+			"Template updates are pending for this workspace.",
+			"Before normal task work, read `TEMPLATE_UPDATES.md` and apply file updates in this workspace.",
+			"Treat existing local files as source of truth and selectively merge useful new template guidance.",
+			"After completing the merge work, delete `TEMPLATE_UPDATES.md`.",
+			"",
+		)
+	}
+
 	timezone := resolvePromptTimezone(input.UserTimezone)
 	if timezone != "" {
 		now := time.Now().In(resolvePromptLocation(timezone))
@@ -173,8 +184,10 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 			"Never include raw reply tags in user-visible message text.",
 			"",
 			"## Heartbeats",
-			"If a heartbeat poll arrives and nothing needs attention, reply exactly: HEARTBEAT_OK",
-			"If something needs attention, reply with the alert and do not include HEARTBEAT_OK.",
+			"HEARTBEAT_OK is internal status only and should not produce user-visible content by itself.",
+			"If a heartbeat poll arrives and no user-facing action is needed, reply exactly: HEARTBEAT_OK",
+			"If user-facing action is needed, reply with one concise alert and do not include HEARTBEAT_OK.",
+			"When a user critiques \"that message\" after heartbeats, interpret it as feedback on the latest user-visible non-HEARTBEAT_OK alert.",
 			"",
 		)
 	}
@@ -270,6 +283,17 @@ func buildRuntimeSection(input systemPromptInput) string {
 		parts = append(parts, "repo="+repoRoot)
 	}
 	return strings.Join(parts, " | ")
+}
+
+func workspaceHasPendingTemplateUpdates(workspace string) bool {
+	if strings.TrimSpace(workspace) == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(workspace, "TEMPLATE_UPDATES.md"))
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 func buildReasoningLine(model ai.Model) string {

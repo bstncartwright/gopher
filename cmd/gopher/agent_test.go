@@ -247,3 +247,77 @@ func TestAgentCreateMainDefaultsCrossAgentFSTrue(t *testing.T) {
 		t.Fatalf("main allow_cross_agent_fs=%t, want true", got)
 	}
 }
+
+func TestReconcileWorkspaceTemplateStateWritesUpdateNoticeForChangedCustomizedFile(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("my custom instructions"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	initialDefaults := map[string]string{
+		"AGENTS.md": "old default",
+	}
+	if err := reconcileWorkspaceTemplateState(workspace, initialDefaults, now); err != nil {
+		t.Fatalf("initial reconcileWorkspaceTemplateState() error: %v", err)
+	}
+
+	updatedDefaults := map[string]string{
+		"AGENTS.md": "new default",
+	}
+	if err := reconcileWorkspaceTemplateState(workspace, updatedDefaults, now.Add(time.Hour)); err != nil {
+		t.Fatalf("updated reconcileWorkspaceTemplateState() error: %v", err)
+	}
+
+	noticePath := filepath.Join(workspace, templateUpdatesFileName)
+	noticeBlob, err := os.ReadFile(noticePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", noticePath, err)
+	}
+	notice := string(noticeBlob)
+	if !strings.Contains(notice, "`AGENTS.md` vs `"+templateDefaultsDirName+"/AGENTS.md`") {
+		t.Fatalf("expected AGENTS.md compare instruction in notice, got: %s", notice)
+	}
+
+	snapshotPath := filepath.Join(workspace, templateDefaultsDirName, "AGENTS.md")
+	snapshotBlob, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", snapshotPath, err)
+	}
+	if got := string(snapshotBlob); got != "new default" {
+		t.Fatalf("snapshot content = %q, want %q", got, "new default")
+	}
+}
+
+func TestReconcileWorkspaceTemplateStateSkipsNoticeWhenWorkspaceMatchesUpdatedDefault(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("old default"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	initialDefaults := map[string]string{
+		"AGENTS.md": "old default",
+	}
+	if err := reconcileWorkspaceTemplateState(workspace, initialDefaults, now); err != nil {
+		t.Fatalf("initial reconcileWorkspaceTemplateState() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("new default"), 0o644); err != nil {
+		t.Fatalf("write updated AGENTS.md: %v", err)
+	}
+
+	updatedDefaults := map[string]string{
+		"AGENTS.md": "new default",
+	}
+	if err := reconcileWorkspaceTemplateState(workspace, updatedDefaults, now.Add(time.Hour)); err != nil {
+		t.Fatalf("updated reconcileWorkspaceTemplateState() error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(workspace, templateUpdatesFileName)); !os.IsNotExist(err) {
+		t.Fatalf("did not expect %s when workspace already matches updated default, stat err=%v", templateUpdatesFileName, err)
+	}
+}

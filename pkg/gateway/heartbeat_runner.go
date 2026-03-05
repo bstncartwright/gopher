@@ -127,7 +127,7 @@ func normalizeHeartbeatSchedule(schedule HeartbeatSchedule) (HeartbeatSchedule, 
 	schedule.AgentID = agentID
 	schedule.Prompt = strings.TrimSpace(schedule.Prompt)
 	if schedule.Prompt == "" {
-		schedule.Prompt = "Run heartbeat checks. If no action is needed, reply exactly HEARTBEAT_OK."
+		schedule.Prompt = "Run heartbeat checks. HEARTBEAT_OK is internal status only (no user-facing message). If no user-facing action is needed, reply exactly HEARTBEAT_OK. If action is needed, send one concise alert and do not include HEARTBEAT_OK."
 	}
 	if schedule.AckMaxChars <= 0 {
 		schedule.AckMaxChars = heartbeatAckDefaultChars

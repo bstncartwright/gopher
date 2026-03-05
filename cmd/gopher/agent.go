@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -24,6 +25,12 @@ type agentRecord struct {
 }
 
 var validAgentIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+const (
+	templateStateFileName   = ".gopher-template-state.json"
+	templateUpdatesFileName = "TEMPLATE_UPDATES.md"
+	templateDefaultsDirName = ".template-defaults"
+)
 
 func runAgentSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 	finishLog := startCommandLog("agent", args)
@@ -412,7 +419,184 @@ func ensureAgentWorkspace(agentID, workspace string) error {
 	if err := ensureMemoryNotes(workspace, time.Now()); err != nil {
 		return err
 	}
+	if err := ensureWorkspaceTemplateUpdateInstructions(workspace); err != nil {
+		return err
+	}
 	return nil
+}
+
+type workspaceTemplateState struct {
+	TemplateHashes map[string]string `json:"template_hashes"`
+	CheckedAt      string            `json:"checked_at,omitempty"`
+}
+
+func defaultWorkspaceInstructionTemplates() map[string]string {
+	return map[string]string{
+		"AGENTS.md":    defaultAgentsTemplate(""),
+		"SOUL.md":      defaultSoulTemplate(),
+		"TOOLS.md":     defaultToolsTemplate(),
+		"IDENTITY.md":  defaultIdentityTemplate(),
+		"USER.md":      defaultUserTemplate(),
+		"HEARTBEAT.md": defaultHeartbeatTemplate(),
+		"BOOTSTRAP.md": defaultBootstrapTemplate(),
+	}
+}
+
+func ensureWorkspaceTemplateUpdateInstructions(workspace string) error {
+	defaults := defaultWorkspaceInstructionTemplates()
+	return reconcileWorkspaceTemplateState(workspace, defaults, time.Now().UTC())
+}
+
+func reconcileWorkspaceTemplateState(workspace string, defaults map[string]string, now time.Time) error {
+	if strings.TrimSpace(workspace) == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+	currentHashes := make(map[string]string, len(defaults))
+	for name, content := range defaults {
+		currentHashes[name] = workspaceTemplateHash(content)
+	}
+
+	statePath := filepath.Join(workspace, templateStateFileName)
+	previous, stateExists, err := readWorkspaceTemplateState(statePath)
+	if err != nil {
+		return err
+	}
+	if !stateExists {
+		return writeWorkspaceTemplateState(statePath, workspaceTemplateState{
+			TemplateHashes: currentHashes,
+			CheckedAt:      now.Format(time.RFC3339Nano),
+		})
+	}
+
+	changedTemplates := make([]string, 0, len(currentHashes))
+	for name, currentHash := range currentHashes {
+		previousHash, ok := previous.TemplateHashes[name]
+		if !ok || previousHash == "" {
+			continue
+		}
+		if previousHash != currentHash {
+			changedTemplates = append(changedTemplates, name)
+		}
+	}
+	sort.Strings(changedTemplates)
+
+	if len(changedTemplates) > 0 {
+		needsReview := make([]string, 0, len(changedTemplates))
+		for _, name := range changedTemplates {
+			path := filepath.Join(workspace, name)
+			blob, err := os.ReadFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return fmt.Errorf("read workspace template %s: %w", path, err)
+			}
+			if string(blob) == defaults[name] {
+				continue
+			}
+			needsReview = append(needsReview, name)
+		}
+
+		if len(needsReview) > 0 {
+			if err := writeTemplateDefaultSnapshots(workspace, defaults, needsReview); err != nil {
+				return err
+			}
+			if err := writeTemplateUpdatesNotice(workspace, needsReview, now); err != nil {
+				return err
+			}
+		}
+	}
+
+	return writeWorkspaceTemplateState(statePath, workspaceTemplateState{
+		TemplateHashes: currentHashes,
+		CheckedAt:      now.Format(time.RFC3339Nano),
+	})
+}
+
+func readWorkspaceTemplateState(path string) (workspaceTemplateState, bool, error) {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return workspaceTemplateState{}, false, nil
+		}
+		return workspaceTemplateState{}, false, fmt.Errorf("read template state %s: %w", path, err)
+	}
+	if strings.TrimSpace(string(blob)) == "" {
+		return workspaceTemplateState{}, false, nil
+	}
+	state := workspaceTemplateState{}
+	if err := json.Unmarshal(blob, &state); err != nil {
+		return workspaceTemplateState{}, false, fmt.Errorf("decode template state %s: %w", path, err)
+	}
+	if state.TemplateHashes == nil {
+		state.TemplateHashes = map[string]string{}
+	}
+	return state, true, nil
+}
+
+func writeWorkspaceTemplateState(path string, state workspaceTemplateState) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create template state directory %s: %w", filepath.Dir(path), err)
+	}
+	blob, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode template state %s: %w", path, err)
+	}
+	blob = append(blob, '\n')
+	if err := os.WriteFile(path, blob, 0o644); err != nil {
+		return fmt.Errorf("write template state %s: %w", path, err)
+	}
+	return nil
+}
+
+func writeTemplateDefaultSnapshots(workspace string, defaults map[string]string, files []string) error {
+	snapshotDir := filepath.Join(workspace, templateDefaultsDirName)
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		return fmt.Errorf("create template defaults directory %s: %w", snapshotDir, err)
+	}
+	for _, name := range files {
+		content, ok := defaults[name]
+		if !ok {
+			continue
+		}
+		path := filepath.Join(snapshotDir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write template default snapshot %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func writeTemplateUpdatesNotice(workspace string, files []string, now time.Time) error {
+	if len(files) == 0 {
+		return nil
+	}
+	var body strings.Builder
+	body.WriteString("# TEMPLATE_UPDATES.md - Template Drift Notice\n\n")
+	body.WriteString("Default workspace templates changed in this gopher version.\n\n")
+	body.WriteString("Your existing files are the source of truth. Keep your current intent and customizations, then selectively pull in useful new guidance from updated defaults.\n\n")
+	body.WriteString("Review these files:\n\n")
+	for _, name := range files {
+		body.WriteString(fmt.Sprintf("- `%s` vs `%s/%s`\n", name, templateDefaultsDirName, name))
+	}
+	body.WriteString("\n")
+	body.WriteString("Recommended merge rule:\n\n")
+	body.WriteString("1. Preserve local behavior and voice.\n")
+	body.WriteString("2. Add missing safety/clarity improvements from the default snapshot.\n")
+	body.WriteString("3. Do not wholesale replace your current file.\n\n")
+	body.WriteString(fmt.Sprintf("Generated: %s\n", now.Format(time.RFC3339)))
+	body.WriteString("Delete this file after review is complete.\n")
+
+	path := filepath.Join(workspace, templateUpdatesFileName)
+	if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {
+		return fmt.Errorf("write template updates notice %s: %w", path, err)
+	}
+	return nil
+}
+
+func workspaceTemplateHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func ensureMemoryNotes(workspace string, now time.Time) error {

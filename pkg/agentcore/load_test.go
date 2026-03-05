@@ -524,6 +524,24 @@ func TestLoadAgentHeartbeatConfigParsesEveryPromptAndAckLimit(t *testing.T) {
 	}
 }
 
+func TestLoadAgentHeartbeatConfigUsesDefaultPromptWhenUnset(t *testing.T) {
+	config := defaultConfig()
+	config.Heartbeat = HeartbeatConfig{
+		Every: "10m",
+	}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if !strings.Contains(agent.Heartbeat.Prompt, "HEARTBEAT_OK is internal status only") {
+		t.Fatalf("heartbeat default prompt missing internal-status guidance: %q", agent.Heartbeat.Prompt)
+	}
+	if !strings.Contains(agent.Heartbeat.Prompt, "reply exactly HEARTBEAT_OK") {
+		t.Fatalf("heartbeat default prompt missing HEARTBEAT_OK directive: %q", agent.Heartbeat.Prompt)
+	}
+}
+
 func TestLoadAgentHeartbeatConfigParsesSessionAndActiveHours(t *testing.T) {
 	config := defaultConfig()
 	config.Heartbeat = HeartbeatConfig{

@@ -1,6 +1,8 @@
 package agentcore
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -186,5 +188,32 @@ func TestBuildAgentSystemPromptDoesNotInstructRawReplyTagEmission(t *testing.T) 
 	}
 	if strings.Contains(prompt, "[[reply_to_current]]") {
 		t.Fatalf("prompt should not include raw reply tag marker, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "HEARTBEAT_OK is internal status only") {
+		t.Fatalf("expected heartbeat internal-status guidance, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "latest user-visible non-HEARTBEAT_OK alert") {
+		t.Fatalf("expected heartbeat feedback interpretation guidance, got: %s", prompt)
+	}
+}
+
+func TestBuildAgentSystemPromptIncludesTemplateMaintenanceWhenUpdatesArePending(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "TEMPLATE_UPDATES.md"), []byte("pending updates"), 0o644); err != nil {
+		t.Fatalf("write TEMPLATE_UPDATES.md: %v", err)
+	}
+
+	prompt, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:  workspace,
+		PromptMode: PromptModeFull,
+	})
+	if err != nil {
+		t.Fatalf("buildAgentSystemPrompt() error: %v", err)
+	}
+	if !strings.Contains(prompt, "## Workspace Maintenance") {
+		t.Fatalf("expected workspace maintenance section, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "read `TEMPLATE_UPDATES.md`") {
+		t.Fatalf("expected template updates instruction, got: %s", prompt)
 	}
 }

@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	defaultHeartbeatPrompt      = "Run heartbeat checks using HEARTBEAT.md when available. If no user-facing action is required, reply exactly HEARTBEAT_OK."
+	defaultHeartbeatPrompt      = "Run heartbeat checks using HEARTBEAT.md when available. HEARTBEAT_OK is internal status only (no user-facing message). If no user-facing action is required, reply exactly HEARTBEAT_OK. If user-facing action is required, send one concise alert and do not include HEARTBEAT_OK."
 	defaultHeartbeatAckMaxChars = 300
 )
 

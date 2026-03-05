@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -740,6 +741,34 @@ func TestHeartbeatRunnerAllowsEmptySchedules(t *testing.T) {
 	}
 	if len(runner.schedulesSnapshot()) != 0 {
 		t.Fatalf("schedule count = %d, want 0", len(runner.schedulesSnapshot()))
+	}
+}
+
+func TestHeartbeatRunnerAppliesDefaultPromptWhenUnset(t *testing.T) {
+	now := time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC)
+	runner, err := NewHeartbeatRunner(HeartbeatRunnerOptions{
+		Manager: &recordingSessionManager{sessions: map[sessionrt.SessionID]*sessionrt.Session{}},
+		Pipeline: &DMPipeline{
+			conversations: NewConversationSessionMap(),
+			routes:        map[string]conversationRoute{},
+		},
+		Schedules: []HeartbeatSchedule{
+			{AgentID: "agent:a", Every: time.Minute},
+		},
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewHeartbeatRunner() error: %v", err)
+	}
+	schedules := runner.schedulesSnapshot()
+	if len(schedules) != 1 {
+		t.Fatalf("schedule count = %d, want 1", len(schedules))
+	}
+	if schedules[0].Prompt == "" {
+		t.Fatalf("expected default prompt")
+	}
+	if got := schedules[0].Prompt; !strings.Contains(got, "HEARTBEAT_OK is internal status only") {
+		t.Fatalf("default prompt missing internal-status guidance: %q", got)
 	}
 }
 

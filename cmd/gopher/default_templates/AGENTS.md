@@ -124,7 +124,13 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 When you receive a heartbeat poll (message matches the configured heartbeat prompt), don't just reply `HEARTBEAT_OK` every time. Use heartbeats productively!
 
 Default heartbeat prompt:
-`Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.`
+`Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. HEARTBEAT_OK is internal status only (no user-facing message). If nothing needs attention, reply HEARTBEAT_OK. If attention is needed, send one concise alert without HEARTBEAT_OK.`
+
+Important heartbeat semantics:
+
+- `HEARTBEAT_OK` is internal/no-op status; your human usually sees nothing for that cycle
+- User-facing messages happen on non-OK heartbeat outcomes (actual signal/alert)
+- If your human says "that message was weird," they're referring to the last user-visible signal message, not `HEARTBEAT_OK`
 
 You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it small to limit token burn.
 

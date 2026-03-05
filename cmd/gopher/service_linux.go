@@ -467,7 +467,7 @@ func readGatewayNodeStatusLines(ctx context.Context, cfg config.GatewayConfig, c
 	if addr == "" {
 		addr = "127.0.0.1:29329"
 	}
-	url := fmt.Sprintf("http://%s/_gopher/panel/nodes", addr)
+	url := fmt.Sprintf("http://%s/admin/nodes", addr)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return []string{"known nodes:    unknown"}, fmt.Sprintf("nodes warning: invalid panel request (%v)", err)

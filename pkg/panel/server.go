@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +28,8 @@ const (
 	defaultRetryBackoff = 500 * time.Millisecond
 	maxRetryBackoff     = 30 * time.Second
 	sseKeepaliveEvery   = 15 * time.Second
+	adminRoot           = "/admin"
+	legacyPanelRoot     = "/_gopher/panel"
 )
 
 //go:embed templates/*.html assets/*
@@ -90,6 +93,7 @@ type Server struct {
 type pageData struct {
 	HasSessionStore bool
 	ActiveTab       string
+	PanelRoot       string
 }
 
 type overviewNode struct {
@@ -377,20 +381,34 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 
 func (s *Server) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /_gopher/panel", s.handlePage)
-	mux.HandleFunc("GET /_gopher/panel/tab/{tab}", s.handlePageTab)
-	mux.HandleFunc("GET /_gopher/panel/health", s.handleHealth)
-	mux.HandleFunc("GET /_gopher/panel/nodes", s.handleNodes)
-	mux.HandleFunc("GET /_gopher/panel/fragments/control", s.handleControl)
-	mux.HandleFunc("GET /_gopher/panel/fragments/nodes-table", s.handleNodesFragment)
-	mux.HandleFunc("GET /_gopher/panel/fragments/control-actions", s.handleControlActions)
-	mux.HandleFunc("GET /_gopher/panel/fragments/cron", s.handleCron)
-	mux.HandleFunc("GET /_gopher/panel/fragments/overview", s.handleOverview)
-	mux.HandleFunc("GET /_gopher/panel/fragments/sessions", s.handleSessions)
-	mux.HandleFunc("GET /_gopher/panel/fragments/session/{sessionID}", s.handleSessionDetail)
-	mux.HandleFunc("GET /_gopher/panel/fragments/agents", s.handleAgents)
-	mux.HandleFunc("GET /_gopher/panel/stream/session/{sessionID}", s.handleSessionStream)
-	mux.HandleFunc("GET /_gopher/panel/assets/panel.css", s.handleCSS)
+	mux.HandleFunc("GET "+adminRoot, s.handlePage)
+	mux.HandleFunc("GET "+adminRoot+"/health", s.handleHealth)
+	mux.HandleFunc("GET "+adminRoot+"/nodes", s.handleNodes)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/control", s.handleControl)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/nodes-table", s.handleNodesFragment)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/control-actions", s.handleControlActions)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/cron", s.handleCron)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/overview", s.handleOverview)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/sessions", s.handleSessions)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/session/{sessionID}", s.handleSessionDetail)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/agents", s.handleAgents)
+	mux.HandleFunc("GET "+adminRoot+"/stream/session/{sessionID}", s.handleSessionStream)
+	mux.HandleFunc("GET "+adminRoot+"/assets/panel.css", s.handleCSS)
+
+	mux.HandleFunc("GET "+legacyPanelRoot, s.handleLegacyPage)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/tab/{tab}", s.handleLegacyPageTab)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/health", s.handleHealth)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/nodes", s.handleNodes)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/control", s.handleControl)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/nodes-table", s.handleNodesFragment)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/control-actions", s.handleControlActions)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/cron", s.handleCron)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/overview", s.handleOverview)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/sessions", s.handleSessions)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/session/{sessionID}", s.handleSessionDetail)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/agents", s.handleAgents)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/stream/session/{sessionID}", s.handleSessionStream)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/assets/panel.css", s.handleCSS)
 	return mux
 }
 
@@ -402,18 +420,35 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "page.html", pageData{
 		HasSessionStore: s.store != nil,
 		ActiveTab:       tab,
+		PanelRoot:       adminRoot,
 	})
 }
 
-func (s *Server) handlePageTab(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLegacyPage(w http.ResponseWriter, r *http.Request) {
+	s.redirectToCanonicalPage(w, r, "")
+}
+
+func (s *Server) handleLegacyPageTab(w http.ResponseWriter, r *http.Request) {
 	tab := normalizePanelTab(r.PathValue("tab"))
-	if tab == "" {
-		tab = "control"
+	s.redirectToCanonicalPage(w, r, tab)
+}
+
+func (s *Server) redirectToCanonicalPage(w http.ResponseWriter, r *http.Request, tab string) {
+	params := urlValuesClone(r)
+	normalized := normalizePanelTab(tab)
+	if normalized == "" {
+		normalized = normalizePanelTab(params.Get("tab"))
 	}
-	s.renderTemplate(w, "page.html", pageData{
-		HasSessionStore: s.store != nil,
-		ActiveTab:       tab,
-	})
+	if normalized != "" && normalized != "control" {
+		params.Set("tab", normalized)
+	} else {
+		params.Del("tab")
+	}
+	target := adminRoot
+	if encoded := params.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	http.Redirect(w, r, target, http.StatusPermanentRedirect)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -543,6 +578,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sort.Slice(records, func(i, j int) bool {
+		if records[i].InFlight != records[j].InFlight {
+			return records[i].InFlight
+		}
 		return records[i].UpdatedAt.After(records[j].UpdatedAt)
 	})
 
@@ -1511,4 +1549,17 @@ func normalizePanelTab(value string) string {
 	default:
 		return ""
 	}
+}
+
+func urlValuesClone(r *http.Request) url.Values {
+	if r == nil || r.URL == nil {
+		return url.Values{}
+	}
+	out := url.Values{}
+	for key, values := range r.URL.Query() {
+		copied := make([]string, len(values))
+		copy(copied, values)
+		out[key] = copied
+	}
+	return out
 }

@@ -172,3 +172,19 @@ func TestBuildAgentSystemPromptSelfUpdateInstructionsAreExplicit(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildAgentSystemPromptDoesNotInstructRawReplyTagEmission(t *testing.T) {
+	prompt, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:  "/tmp/workspace",
+		PromptMode: PromptModeFull,
+		Heartbeat: AgentHeartbeat{
+			Enabled: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildAgentSystemPrompt() error: %v", err)
+	}
+	if strings.Contains(prompt, "[[reply_to_current]]") {
+		t.Fatalf("prompt should not include raw reply tag marker, got: %s", prompt)
+	}
+}

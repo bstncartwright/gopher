@@ -48,7 +48,7 @@ func (s *gatewayMessageToolService) SendMessage(ctx context.Context, req agentco
 		return agentcore.MessageSendResult{}, fmt.Errorf("conversation is not bound for session %q", sessionID)
 	}
 
-	text := strings.TrimSpace(req.Text)
+	text := stripReplyToCurrentTag(strings.TrimSpace(req.Text))
 	attachments := make([]transport.OutboundAttachment, 0, len(req.Attachments))
 	for idx, attachment := range req.Attachments {
 		pathValue := strings.TrimSpace(attachment.Path)
@@ -104,7 +104,7 @@ func (s *gatewayMessageToolService) SendMessageDraft(ctx context.Context, req ag
 	if !ok || strings.TrimSpace(conversationID) == "" {
 		return agentcore.MessageDraftResult{}, fmt.Errorf("conversation is not bound for session %q", sessionID)
 	}
-	text := strings.TrimSpace(req.Text)
+	text := stripReplyToCurrentTag(strings.TrimSpace(req.Text))
 	if text == "" {
 		return agentcore.MessageDraftResult{}, fmt.Errorf("text is required")
 	}
@@ -211,4 +211,12 @@ func (s *gatewayMessageToolService) clearSessionDraft(sessionID sessionrt.Sessio
 	s.draftMu.Lock()
 	delete(s.draftBySession, sessionID)
 	s.draftMu.Unlock()
+}
+
+func stripReplyToCurrentTag(text string) string {
+	cleaned := strings.TrimSpace(text)
+	for strings.HasPrefix(cleaned, "[[reply_to_current]]") {
+		cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, "[[reply_to_current]]"))
+	}
+	return cleaned
 }

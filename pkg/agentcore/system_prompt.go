@@ -170,7 +170,7 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		sections = append(sections,
 			"## Reply Tags",
 			"Use reply tags only when the active channel supports them.",
-			"Preferred form: [[reply_to_current]] as the first token.",
+			"Never include raw reply tags in user-visible message text.",
 			"",
 			"## Heartbeats",
 			"If a heartbeat poll arrives and nothing needs attention, reply exactly: HEARTBEAT_OK",

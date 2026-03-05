@@ -101,6 +101,32 @@ func TestGatewayMessageToolServiceSendsToBoundConversation(t *testing.T) {
 	}
 }
 
+func TestGatewayMessageToolServiceStripsReplyTagBeforeSending(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+		senderByConversation:  map[string]string{"telegram:123": "telegram-bot"},
+	}
+	tr := &fakeGatewayMessageTransport{}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	result, err := service.SendMessage(context.Background(), agentcore.MessageSendRequest{
+		SessionID: "sess-1",
+		Text:      "[[reply_to_current]] hello",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if result.Text != "hello" {
+		t.Fatalf("result text = %q, want hello", result.Text)
+	}
+	if len(tr.sent) != 1 {
+		t.Fatalf("transport send count = %d, want 1", len(tr.sent))
+	}
+	if tr.sent[0].Text != "hello" {
+		t.Fatalf("transport text = %q, want hello", tr.sent[0].Text)
+	}
+}
+
 func TestGatewayMessageToolServiceFailsWithoutBoundConversation(t *testing.T) {
 	service := &gatewayMessageToolService{
 		pipeline:  &fakeGatewayMessagePipeline{conversationBySession: map[sessionrt.SessionID]string{}},
@@ -159,6 +185,31 @@ func TestGatewayMessageToolServiceStreamsDraftToBoundConversation(t *testing.T) 
 	}
 	if tr.drafts[0].DraftID != result.DraftID {
 		t.Fatalf("transport draft id = %d, want %d", tr.drafts[0].DraftID, result.DraftID)
+	}
+}
+
+func TestGatewayMessageToolServiceStripsReplyTagBeforeDrafting(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+	}
+	tr := &fakeGatewayMessageTransport{}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	result, err := service.SendMessageDraft(context.Background(), agentcore.MessageDraftRequest{
+		SessionID: "sess-1",
+		Text:      "[[reply_to_current]] drafting",
+	})
+	if err != nil {
+		t.Fatalf("SendMessageDraft() error: %v", err)
+	}
+	if result.Text != "drafting" {
+		t.Fatalf("result text = %q, want drafting", result.Text)
+	}
+	if len(tr.drafts) != 1 {
+		t.Fatalf("transport draft count = %d, want 1", len(tr.drafts))
+	}
+	if tr.drafts[0].Text != "drafting" {
+		t.Fatalf("transport text = %q, want drafting", tr.drafts[0].Text)
 	}
 }
 

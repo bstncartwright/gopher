@@ -369,6 +369,84 @@ func TestSessionRuntimeAdapterStepEmitsStatePatch(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeAdapterHydratesHistoryOnFirstTurn(t *testing.T) {
+	config := defaultConfig()
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonStop
+	assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "fresh reply"}}
+	provider := &mockProvider{
+		rounds: []mockRound{
+			{assistant: assistant},
+		},
+	}
+	agent.Provider = provider
+
+	adapter := NewSessionRuntimeAdapter(agent)
+	now := time.Now().UTC()
+	_, err = adapter.Step(context.Background(), sessionrt.AgentInput{
+		SessionID: "sess-restart",
+		ActorID:   sessionrt.ActorID(agent.ID),
+		History: []sessionrt.Event{
+			{
+				Type:      sessionrt.EventMessage,
+				From:      "user:me",
+				Timestamp: now.Add(-3 * time.Minute),
+				Seq:       1,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleUser,
+					Content: "earlier question",
+				},
+			},
+			{
+				Type:      sessionrt.EventMessage,
+				From:      sessionrt.ActorID(agent.ID),
+				Timestamp: now.Add(-2 * time.Minute),
+				Seq:       2,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: "earlier answer",
+				},
+			},
+			{
+				Type:      sessionrt.EventMessage,
+				From:      "user:me",
+				Timestamp: now.Add(-1 * time.Minute),
+				Seq:       3,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleUser,
+					Content: "latest prompt",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Step() error: %v", err)
+	}
+
+	if len(provider.contexts) != 1 {
+		t.Fatalf("provider contexts = %d, want 1", len(provider.contexts))
+	}
+	messages := provider.contexts[0].Messages
+	if len(messages) != 3 {
+		t.Fatalf("provider message count = %d, want 3", len(messages))
+	}
+	if messages[0].Role != ai.RoleUser || strings.TrimSpace(messages[0].Content.(string)) != "earlier question" {
+		t.Fatalf("message[0] mismatch: %#v", messages[0])
+	}
+	if messages[1].Role != ai.RoleAssistant || strings.TrimSpace(messages[1].Content.(string)) != "earlier answer" {
+		t.Fatalf("message[1] mismatch: %#v", messages[1])
+	}
+	if messages[2].Role != ai.RoleUser || strings.TrimSpace(messages[2].Content.(string)) != "latest prompt" {
+		t.Fatalf("message[2] mismatch: %#v", messages[2])
+	}
+}
+
 func hasEventType(events []sessionrt.Event, target sessionrt.EventType) bool {
 	for _, event := range events {
 		if event.Type == target {

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bstncartwright/gopher/pkg/ai"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
@@ -39,19 +40,12 @@ func NewSessionRuntimeAdapterWithOptions(agent *Agent, opts SessionRuntimeAdapte
 }
 
 func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
-	userMsg, ok := latestPromptMessage(input.History, input.ActorID)
+	userMsg, promptIdx, ok := latestPromptMessageWithIndex(input.History, input.ActorID)
 	if !ok {
 		return sessionrt.AgentOutput{}, nil
 	}
 
-	a.mu.Lock()
-	sessionData, exists := a.sessions[input.SessionID]
-	if !exists {
-		sessionData = a.agent.NewSession()
-		sessionData.ID = string(input.SessionID)
-		a.sessions[input.SessionID] = sessionData
-	}
-	a.mu.Unlock()
+	sessionData := a.getOrInitSession(input.SessionID, input.ActorID, input.History, promptIdx)
 
 	turnCtx, cancel := withTurnTimeout(ctx)
 	defer cancel()
@@ -83,19 +77,12 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 }
 
 func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.AgentInput, emit sessionrt.AgentEventEmitter) error {
-	userMsg, ok := latestPromptMessage(input.History, input.ActorID)
+	userMsg, promptIdx, ok := latestPromptMessageWithIndex(input.History, input.ActorID)
 	if !ok {
 		return nil
 	}
 
-	a.mu.Lock()
-	sessionData, exists := a.sessions[input.SessionID]
-	if !exists {
-		sessionData = a.agent.NewSession()
-		sessionData.ID = string(input.SessionID)
-		a.sessions[input.SessionID] = sessionData
-	}
-	a.mu.Unlock()
+	sessionData := a.getOrInitSession(input.SessionID, input.ActorID, input.History, promptIdx)
 
 	turnCtx, cancel := withTurnTimeout(ctx)
 	defer cancel()
@@ -143,6 +130,11 @@ func withTurnTimeout(ctx context.Context) (context.Context, context.CancelFunc) 
 }
 
 func latestPromptMessage(events []sessionrt.Event, actorID sessionrt.ActorID) (sessionrt.Message, bool) {
+	msg, _, ok := latestPromptMessageWithIndex(events, actorID)
+	return msg, ok
+}
+
+func latestPromptMessageWithIndex(events []sessionrt.Event, actorID sessionrt.ActorID) (sessionrt.Message, int, bool) {
 	targetActor := strings.TrimSpace(string(actorID))
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
@@ -154,7 +146,7 @@ func latestPromptMessage(events []sessionrt.Event, actorID sessionrt.ActorID) (s
 			continue
 		}
 		if payload.Role == sessionrt.RoleUser {
-			return payload, true
+			return payload, i, true
 		}
 		if payload.Role != sessionrt.RoleAgent {
 			continue
@@ -166,9 +158,9 @@ func latestPromptMessage(events []sessionrt.Event, actorID sessionrt.ActorID) (s
 		if targetActor != "" && target != targetActor {
 			continue
 		}
-		return payload, true
+		return payload, i, true
 	}
-	return sessionrt.Message{}, false
+	return sessionrt.Message{}, -1, false
 }
 
 func promptMessageFromPayload(payload any) (sessionrt.Message, bool) {
@@ -220,6 +212,149 @@ func clonePayloadMap(payload any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func (a *SessionRuntimeAdapter) getOrInitSession(sessionID sessionrt.SessionID, actorID sessionrt.ActorID, history []sessionrt.Event, promptIdx int) *Session {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if sessionData, exists := a.sessions[sessionID]; exists {
+		return sessionData
+	}
+
+	sessionData := a.agent.NewSession()
+	sessionData.ID = string(sessionID)
+	bootstrapHistory := history
+	if promptIdx >= 0 && promptIdx <= len(history) {
+		bootstrapHistory = history[:promptIdx]
+	}
+	hydrateSessionMessagesFromHistory(sessionData, bootstrapHistory, actorID, a.agent.Config.MaxContextMessages)
+	a.sessions[sessionID] = sessionData
+	return sessionData
+}
+
+func hydrateSessionMessagesFromHistory(sessionData *Session, history []sessionrt.Event, actorID sessionrt.ActorID, maxMessages int) {
+	if sessionData == nil || len(history) == 0 {
+		return
+	}
+	targetActor := strings.TrimSpace(string(actorID))
+	messages := make([]Message, 0, len(history))
+	for _, event := range history {
+		switch event.Type {
+		case sessionrt.EventMessage:
+			msg, ok := promptMessageFromPayload(event.Payload)
+			if !ok {
+				continue
+			}
+			mappedRole, include := mapSessionEventRole(msg, event.From, targetActor)
+			if !include {
+				continue
+			}
+			messages = append(messages, Message{
+				Role:      mappedRole,
+				Content:   msg.Content,
+				Timestamp: eventTimestampMillis(event),
+			})
+		case sessionrt.EventToolResult:
+			if targetActor != "" {
+				fromActor := strings.TrimSpace(string(event.From))
+				if fromActor != "" && fromActor != targetActor {
+					continue
+				}
+			}
+			toolMsg, ok := toolResultMessageFromPayload(event)
+			if !ok {
+				continue
+			}
+			messages = append(messages, toolMsg)
+		}
+	}
+	if len(messages) > 0 {
+		sessionData.Messages = boundMessages(messages, maxMessages)
+	}
+}
+
+func mapSessionEventRole(msg sessionrt.Message, from sessionrt.ActorID, targetActor string) (ai.MessageRole, bool) {
+	switch msg.Role {
+	case sessionrt.RoleUser:
+		return ai.RoleUser, true
+	case sessionrt.RoleSystem:
+		return "", false
+	case sessionrt.RoleAgent:
+		target := strings.TrimSpace(string(msg.TargetActorID))
+		if target != "" {
+			if targetActor != "" && target != targetActor {
+				return "", false
+			}
+			// A targeted agent message is an inbound prompt for this actor.
+			return ai.RoleUser, true
+		}
+		if targetActor != "" {
+			fromActor := strings.TrimSpace(string(from))
+			if fromActor != "" && fromActor != targetActor {
+				return "", false
+			}
+		}
+		return ai.RoleAssistant, true
+	default:
+		return "", false
+	}
+}
+
+func toolResultMessageFromPayload(event sessionrt.Event) (Message, bool) {
+	payload, ok := event.Payload.(map[string]any)
+	if !ok || payload == nil {
+		return Message{}, false
+	}
+	toolName := strings.TrimSpace(asString(payload["name"]))
+	if toolName == "" {
+		return Message{}, false
+	}
+	toolCallID := strings.TrimSpace(asString(payload["tool_call_id"]))
+	if toolCallID == "" {
+		toolCallID = strings.TrimSpace(asString(payload["id"]))
+	}
+	if toolCallID == "" {
+		toolCallID = string(event.ID)
+	}
+	if toolCallID == "" {
+		toolCallID = toolName
+	}
+	status := ToolStatus(strings.TrimSpace(strings.ToLower(asString(payload["status"]))))
+	toolText, _ := formatToolResultTextForContext(ToolOutput{
+		Status: status,
+		Result: payload["result"],
+	})
+	if toolText == "" {
+		toolText = "{}"
+	}
+	msg := ai.NewToolResultMessage(
+		toolCallID,
+		toolName,
+		[]ai.ContentBlock{{Type: ai.ContentTypeText, Text: toolText}},
+		status == ToolStatusError,
+	)
+	msg.Timestamp = eventTimestampMillis(event)
+	return msg, true
+}
+
+func eventTimestampMillis(event sessionrt.Event) int64 {
+	if !event.Timestamp.IsZero() {
+		return event.Timestamp.UnixMilli()
+	}
+	if event.Seq > 0 {
+		return int64(event.Seq)
+	}
+	return 0
+}
+
+func asString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	default:
+		return ""
+	}
 }
 
 func (a *SessionRuntimeAdapter) mapEvent(event Event) (sessionrt.Event, bool) {

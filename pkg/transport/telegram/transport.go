@@ -143,6 +143,8 @@ type telegramAPIError struct {
 	Method      string
 	Description string
 	ErrorCode   int
+	HTTPStatus  string
+	RawBody     string
 }
 
 func (e *telegramAPIError) Error() string {
@@ -154,11 +156,23 @@ func (e *telegramAPIError) Error() string {
 		method = "request"
 	}
 	detail := strings.TrimSpace(e.Description)
+	status := strings.TrimSpace(e.HTTPStatus)
+	if detail == "" {
+		detail = strings.TrimSpace(e.RawBody)
+	}
 	switch {
+	case detail == "" && status != "" && e.ErrorCode > 0:
+		return fmt.Sprintf("telegram %s status=%s returned ok=false (error_code=%d)", method, status, e.ErrorCode)
+	case detail == "" && status != "":
+		return fmt.Sprintf("telegram %s status=%s returned ok=false", method, status)
 	case detail == "" && e.ErrorCode > 0:
 		return fmt.Sprintf("telegram %s returned ok=false (error_code=%d)", method, e.ErrorCode)
 	case detail == "":
 		return fmt.Sprintf("telegram %s returned ok=false", method)
+	case status != "" && e.ErrorCode > 0:
+		return fmt.Sprintf("telegram %s status=%s returned ok=false (error_code=%d): %s", method, status, e.ErrorCode, detail)
+	case status != "":
+		return fmt.Sprintf("telegram %s status=%s returned ok=false: %s", method, status, detail)
 	case e.ErrorCode > 0:
 		return fmt.Sprintf("telegram %s returned ok=false (error_code=%d): %s", method, e.ErrorCode, detail)
 	default:
@@ -173,6 +187,17 @@ var (
 	telegramBoldPattern            = regexp.MustCompile(`\*\*(.+?)\*\*|__(.+?)__`)
 	telegramMarkdownHeaderPattern  = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*$`)
 	telegramHeaderSuffixPattern    = regexp.MustCompile(`\s+#+\s*$`)
+	// Telegram Bot API only accepts this fixed set of built-in emoji reactions.
+	telegramSupportedReactionEmojis = map[string]struct{}{
+		"❤": {}, "👍": {}, "👎": {}, "🔥": {}, "🥰": {}, "👏": {}, "😁": {}, "🤔": {}, "🤯": {}, "😱": {},
+		"🤬": {}, "😢": {}, "🎉": {}, "🤩": {}, "🤮": {}, "💩": {}, "🙏": {}, "👌": {}, "🕊": {}, "🤡": {},
+		"🥱": {}, "🥴": {}, "😍": {}, "🐳": {}, "❤‍🔥": {}, "🌚": {}, "🌭": {}, "💯": {}, "🤣": {}, "⚡": {},
+		"🍌": {}, "🏆": {}, "💔": {}, "🤨": {}, "😐": {}, "🍓": {}, "🍾": {}, "💋": {}, "🖕": {}, "😈": {},
+		"😴": {}, "😭": {}, "🤓": {}, "👻": {}, "👨‍💻": {}, "👀": {}, "🎃": {}, "🙈": {}, "😇": {}, "😨": {},
+		"🤝": {}, "✍": {}, "🫡": {}, "🎅": {}, "🎄": {}, "☃": {}, "💅": {}, "🤪": {}, "🗿": {},
+		"🆒": {}, "💘": {}, "🙉": {}, "🦄": {}, "😘": {}, "💊": {}, "🙊": {}, "😎": {}, "👾": {}, "🤷‍♂": {},
+		"🤷": {}, "🤷‍♀": {}, "😡": {},
+	}
 )
 
 func New(opts Options) (*Transport, error) {
@@ -393,9 +418,12 @@ func (t *Transport) SendReaction(ctx context.Context, reaction transport.Outboun
 	if err != nil {
 		return err
 	}
-	emoji := strings.TrimSpace(reaction.Emoji)
+	emoji := normalizeTelegramReactionEmoji(strings.TrimSpace(reaction.Emoji))
 	if emoji == "" {
 		return fmt.Errorf("emoji is required")
+	}
+	if _, ok := telegramSupportedReactionEmojis[emoji]; !ok {
+		return fmt.Errorf("unsupported telegram reaction emoji %q", strings.TrimSpace(reaction.Emoji))
 	}
 	payload := map[string]any{
 		"chat_id":    chatID,
@@ -407,8 +435,31 @@ func (t *Transport) SendReaction(ctx context.Context, reaction transport.Outboun
 			},
 		},
 	}
-	slog.Debug("telegram transport: sending reaction", "conversation_id", reaction.ConversationID, "chat_id", chatID, "target_event_id", reaction.TargetEventID)
-	return t.sendAPI(ctx, "setMessageReaction", payload)
+	slog.Debug(
+		"telegram transport: sending reaction",
+		"conversation_id", reaction.ConversationID,
+		"chat_id", chatID,
+		"message_id", messageID,
+		"target_event_id", reaction.TargetEventID,
+		"emoji", emoji,
+	)
+	if err := t.sendAPI(ctx, "setMessageReaction", payload); err != nil {
+		slog.Warn(
+			"telegram transport: reaction send failed",
+			"conversation_id", reaction.ConversationID,
+			"chat_id", chatID,
+			"message_id", messageID,
+			"target_event_id", reaction.TargetEventID,
+			"emoji", emoji,
+			"error", err,
+		)
+		return err
+	}
+	return nil
+}
+
+func normalizeTelegramReactionEmoji(emoji string) string {
+	return strings.ReplaceAll(strings.TrimSpace(emoji), "\uFE0F", "")
 }
 
 func (t *Transport) SetCommands(ctx context.Context, commands []BotCommand) error {
@@ -604,11 +655,22 @@ func (t *Transport) sendAPI(ctx context.Context, method string, payload map[stri
 		return fmt.Errorf("send telegram %s request: %w", method, err)
 	}
 	defer response.Body.Close()
+	body, err = io.ReadAll(io.LimitReader(response.Body, 32<<10))
+	if err != nil {
+		return fmt.Errorf("read telegram %s response: %w", method, err)
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("telegram %s status: %s", method, response.Status)
+		if apiErr := parseTelegramAPIError(method, response.Status, body); apiErr != nil {
+			return apiErr
+		}
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			return fmt.Errorf("telegram %s status: %s", method, response.Status)
+		}
+		return fmt.Errorf("telegram %s status: %s body: %s", method, response.Status, detail)
 	}
 	var parsed sendResponse
-	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
+	if err := json.Unmarshal(body, &parsed); err != nil {
 		return fmt.Errorf("decode telegram %s response: %w", method, err)
 	}
 	if !parsed.OK {
@@ -616,10 +678,33 @@ func (t *Transport) sendAPI(ctx context.Context, method string, payload map[stri
 			Method:      method,
 			Description: strings.TrimSpace(parsed.Description),
 			ErrorCode:   parsed.ErrorCode,
+			HTTPStatus:  response.Status,
+			RawBody:     strings.TrimSpace(string(body)),
 		}
 	}
 	slog.Debug("telegram transport: api request successful", "method", method, "payload_keys", mapKeys(payload))
 	return nil
+}
+
+func parseTelegramAPIError(method, httpStatus string, body []byte) error {
+	trimmedBody := strings.TrimSpace(string(body))
+	if trimmedBody == "" {
+		return nil
+	}
+	var parsed sendResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	if parsed.OK && strings.TrimSpace(parsed.Description) == "" && parsed.ErrorCode == 0 {
+		return nil
+	}
+	return &telegramAPIError{
+		Method:      method,
+		Description: strings.TrimSpace(parsed.Description),
+		ErrorCode:   parsed.ErrorCode,
+		HTTPStatus:  strings.TrimSpace(httpStatus),
+		RawBody:     trimmedBody,
+	}
 }
 
 func (t *Transport) sendMultipartAPI(ctx context.Context, method string, body *bytes.Buffer, contentType string) error {

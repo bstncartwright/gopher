@@ -553,6 +553,107 @@ func TestSendReactionCallsTelegramAPI(t *testing.T) {
 	}
 }
 
+func TestSendReactionIncludesTelegramErrorBodyOnHTTPFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: reaction emoji invalid"}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	err = tr.SendReaction(context.Background(), transport.OutboundReaction{
+		ConversationID: "telegram:777",
+		TargetEventID:  "42",
+		Emoji:          "👍",
+	})
+	if err == nil {
+		t.Fatalf("expected SendReaction() error")
+	}
+	if !strings.Contains(err.Error(), "400 Bad Request") {
+		t.Fatalf("error = %q, want HTTP status detail", err.Error())
+	}
+	if !strings.Contains(err.Error(), "reaction emoji invalid") {
+		t.Fatalf("error = %q, want telegram response detail", err.Error())
+	}
+}
+
+func TestSendReactionRejectsUnsupportedEmojiBeforeAPICall(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	err = tr.SendReaction(context.Background(), transport.OutboundReaction{
+		ConversationID: "telegram:777",
+		TargetEventID:  "42",
+		Emoji:          "✅",
+	})
+	if err == nil {
+		t.Fatalf("expected SendReaction() error")
+	}
+	if !strings.Contains(err.Error(), `unsupported telegram reaction emoji "✅"`) {
+		t.Fatalf("error = %q, want unsupported emoji detail", err.Error())
+	}
+	if requests != 0 {
+		t.Fatalf("request count = %d, want 0", requests)
+	}
+}
+
+func TestSendReactionNormalizesVariationSelectors(t *testing.T) {
+	var requestPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestPayload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendReaction(context.Background(), transport.OutboundReaction{
+		ConversationID: "telegram:777",
+		TargetEventID:  "42",
+		Emoji:          "❤️",
+	}); err != nil {
+		t.Fatalf("SendReaction() error: %v", err)
+	}
+	reactions, ok := requestPayload["reaction"].([]any)
+	if !ok || len(reactions) != 1 {
+		t.Fatalf("reaction payload malformed: %#v", requestPayload["reaction"])
+	}
+	first, ok := reactions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("reaction entry malformed: %#v", reactions[0])
+	}
+	if gotEmoji, _ := first["emoji"].(string); gotEmoji != "❤" {
+		t.Fatalf("emoji = %q, want ❤", gotEmoji)
+	}
+}
+
 func TestSendMessageDoesNotRetryOnNonParseTelegramError(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

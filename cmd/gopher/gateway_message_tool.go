@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,7 +162,23 @@ func (s *gatewayMessageToolService) SendReaction(ctx context.Context, req agentc
 		TargetEventID:  targetEventID,
 		Emoji:          emoji,
 	}); err != nil {
-		return agentcore.ReactionSendResult{}, err
+		slog.Warn(
+			"gateway_message_tool: send reaction failed",
+			"session_id", sessionID,
+			"conversation_id", strings.TrimSpace(conversationID),
+			"target_event_id", targetEventID,
+			"sender_id", strings.TrimSpace(senderID),
+			"emoji", emoji,
+			"error", err,
+		)
+		return agentcore.ReactionSendResult{}, fmt.Errorf(
+			"send reaction %q for session %q to %s/%s: %w",
+			emoji,
+			sessionID,
+			strings.TrimSpace(conversationID),
+			targetEventID,
+			err,
+		)
 	}
 
 	return agentcore.ReactionSendResult{

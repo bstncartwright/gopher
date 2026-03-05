@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
-	"path/filepath"
 	"strings"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -314,112 +312,6 @@ func (a *Agent) InspectContext(ctx context.Context, s *Session, in TurnInput) (c
 	return diagnostics, err
 }
 
-func (a *Agent) retrieveLongTermMemory(ctx context.Context, s *Session, userMessage string) []memory.MemoryRecord {
-	if a == nil {
-		return nil
-	}
-	if a.MemorySearch != nil {
-		resp, err := a.MemorySearch.Search(ctx, memory.MemorySearchRequest{
-			Query:      userMessage,
-			MaxResults: a.Config.MemorySearch.MaxResultsValue(),
-			MinScore:   a.Config.MemorySearch.MinScoreValue(),
-			SessionKey: s.ID,
-		})
-		if err == nil {
-			out := make([]memory.MemoryRecord, 0, len(resp.Results))
-			for _, item := range resp.Results {
-				if strings.TrimSpace(item.Snippet) == "" {
-					continue
-				}
-				metadata := map[string]string{
-					"path":       item.Path,
-					"start_line": fmt.Sprintf("%d", item.StartLine),
-					"end_line":   fmt.Sprintf("%d", item.EndLine),
-					"score":      fmt.Sprintf("%.4f", item.Score),
-					"source":     item.Source,
-				}
-				if citation := strings.TrimSpace(item.Citation); citation != "" {
-					if citationsEnabledForPrompt(a.Config.Memory.CitationsModeValue()) {
-						metadata["citation"] = citation
-					}
-				}
-				out = append(out, memory.MemoryRecord{
-					ID:        item.ID,
-					Type:      memory.MemorySemantic,
-					Scope:     memory.ScopeGlobal,
-					SessionID: s.ID,
-					AgentID:   a.ID,
-					Content:   item.Snippet,
-					Metadata:  metadata,
-				})
-			}
-			if len(out) > 0 {
-				if s != nil {
-					if status, statusErr := a.MemorySearch.Status(ctx); statusErr == nil {
-						s.LastContextDiagnostics.MemorySearchMode = status.RetrievalMode()
-						s.LastContextDiagnostics.MemoryProvider = status.Provider
-						s.LastContextDiagnostics.MemoryFallbackReason = status.FallbackReason
-						s.LastContextDiagnostics.MemoryUnavailableReason = status.UnavailableReason
-					}
-				}
-				return out
-			}
-		}
-	}
-	if a.LongTermMemory == nil {
-		return nil
-	}
-
-	scopes := []memory.MemoryScope{
-		memory.ScopeGlobal,
-		memory.AgentScope(a.ID),
-		memory.SessionScope(s.ID),
-	}
-	projectName := strings.TrimSpace(filepath.Base(a.Workspace))
-	if projectName != "" {
-		scopes = append(scopes, memory.ProjectScope(projectName))
-	}
-
-	typeQuota := []struct {
-		Type  memory.MemoryType
-		Limit int
-	}{
-		{Type: memory.MemorySemantic, Limit: 3},
-		{Type: memory.MemoryProcedural, Limit: 2},
-		{Type: memory.MemoryEpisodic, Limit: 2},
-		{Type: memory.MemoryTool, Limit: 1},
-	}
-
-	out := make([]memory.MemoryRecord, 0, 8)
-	seen := map[string]struct{}{}
-	for _, item := range typeQuota {
-		records, err := a.LongTermMemory.Retrieve(ctx, memory.MemoryQuery{
-			SessionID: s.ID,
-			AgentID:   a.ID,
-			Topic:     userMessage,
-			Keywords:  memory.ExtractKeywords(userMessage, 10),
-			Limit:     item.Limit,
-			Scopes:    scopes,
-			Types:     []memory.MemoryType{item.Type},
-		})
-		if err != nil {
-			continue
-		}
-		for _, record := range records {
-			key := dedupeMemoryKey(record)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, record)
-		}
-	}
-	if len(out) > 8 {
-		out = out[:8]
-	}
-	return out
-}
-
 func renderMemoryFallbackSection(records []memory.MemoryRecord) string {
 	if len(records) == 0 {
 		return ""
@@ -454,15 +346,6 @@ func hasTool(registry ToolRegistry, name string) bool {
 	return ok
 }
 
-func citationsEnabledForPrompt(mode string) bool {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "off":
-		return false
-	default:
-		return true
-	}
-}
-
 func marshalStableJSON(v any) ([]byte, error) {
 	return json.MarshalIndent(v, "", "  ")
 }
@@ -476,18 +359,6 @@ func cloneSessionMessages(in []Message) []Message {
 		out = append(out, msg.Clone())
 	}
 	return out
-}
-
-func dedupeMemoryKey(record memory.MemoryRecord) string {
-	id := strings.TrimSpace(record.ID)
-	if id != "" {
-		return id
-	}
-	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(strings.TrimSpace(record.Content)))
-	_, _ = hash.Write([]byte(record.Type.String()))
-	_, _ = hash.Write([]byte(strings.TrimSpace(record.AgentID)))
-	return fmt.Sprintf("hash:%x", hash.Sum64())
 }
 
 func estimateBootstrapTokens(files []BootstrapContextFile) int {

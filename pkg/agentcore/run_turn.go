@@ -127,9 +127,10 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 		hostedSearchMode := hostedWebSearchMode(conversation.Tools)
 		stream := a.Provider.Stream(a.model, conversation, &ai.SimpleStreamOptions{
 			StreamOptions: ai.StreamOptions{
-				RequestContext: ctx,
-				APIKey:         ai.GetEnvAPIKey(string(a.model.Provider)),
-				SessionID:      s.ID,
+				RequestContext:  ctx,
+				APIKey:          ai.GetEnvAPIKey(string(a.model.Provider)),
+				SessionID:       s.ID,
+				ProviderOptions: a.Config.ProviderOptionsValue(),
 			},
 			Reasoning: reasoningLevel,
 		})

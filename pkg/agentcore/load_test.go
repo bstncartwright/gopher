@@ -258,6 +258,31 @@ func TestAgentConfigNativeWebSearchModeDefaultsToCachedForSupportedProviders(t *
 	}
 }
 
+func TestLoadAgentParsesProviderOptionsFromTOML(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	if err := os.Remove(filepath.Join(workspace, "config.json")); err != nil {
+		t.Fatalf("remove config.json: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(workspace, "config.toml"), `agent_id = "agent-test"
+name = "Test Agent"
+role = "coder"
+model_policy = "openai-codex:gpt-5.3-codex"
+reasoning_level = "medium"
+enabled_tools = ["group:fs", "group:runtime"]
+
+[provider_options]
+service_tier = "fast"
+`)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if got := agent.Config.ProviderOptions["service_tier"]; got != "fast" {
+		t.Fatalf("provider_options.service_tier = %#v, want %q", got, "fast")
+	}
+}
+
 func TestLoadAgentDefaultsLegacyMissingShellPolicy(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{

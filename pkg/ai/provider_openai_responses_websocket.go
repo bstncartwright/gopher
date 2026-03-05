@@ -15,7 +15,7 @@ func resolveOpenAIResponsesTransport(model Model, options *OpenAIResponsesOption
 	if options != nil && options.Transport != "" {
 		return options.Transport
 	}
-	if options != nil && strings.TrimSpace(options.SessionID) != "" && supportsOpenAIResponsesWebSocketByDefault(model) {
+	if supportsOpenAIResponsesWebSocketByDefault(model) {
 		return TransportAuto
 	}
 	return TransportSSE

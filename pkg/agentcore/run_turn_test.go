@@ -171,6 +171,36 @@ func TestRunTurnUsesConfiguredReasoningLevel(t *testing.T) {
 	}
 }
 
+func TestRunTurnForwardsProviderOptions(t *testing.T) {
+	config := defaultConfig()
+	config.ProviderOptions = map[string]any{"service_tier": "fast"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	assistant := ai.NewAssistantMessage(agent.model)
+	assistant.StopReason = ai.StopReasonStop
+	assistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+
+	provider := &mockProvider{
+		rounds: []mockRound{{assistant: assistant}},
+	}
+	agent.Provider = provider
+
+	if _, err := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "test"}); err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+
+	if len(provider.options) == 0 {
+		t.Fatalf("expected at least one provider call option")
+	}
+	if got := provider.options[0].ProviderOptions["service_tier"]; got != "fast" {
+		t.Fatalf("provider options service_tier=%#v, want %q", got, "fast")
+	}
+}
+
 func TestRunTurnReturnsErrorOnProviderErrorStopReason(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	agent, err := LoadAgent(workspace)

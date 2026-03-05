@@ -184,6 +184,9 @@ func TestBuildAgentSystemPromptSelfUpdateInstructionsAreExplicit(t *testing.T) {
 		"Do not replace a requested self-update with memory updates, policy notes, or future-intent promises.",
 		"Memory retrieval is tool-driven: do not assume retrieved-memory snippets are auto-injected into context.",
 		"Before answering prior-work, preference, or history questions, call `memory_search` to retrieve relevant memory snippets.",
+		"Requests to change or upgrade your model are config changes, not impossible actions.",
+		"When asked to switch models, update your agent `config.toml` `model_policy` to the requested `provider:model` value and restart the gateway or relevant runtime.",
+		"Do not claim model switching is impossible just because it requires a config edit or restart.",
 	}
 	for _, needle := range required {
 		if !strings.Contains(prompt, needle) {

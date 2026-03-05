@@ -53,6 +53,23 @@ func TestDefaultSoulTemplateSetsPeerVoicePresence(t *testing.T) {
 	}
 }
 
+func TestDefaultAgentsTemplateIncludesModelSwitchRuntimeGuidance(t *testing.T) {
+	template := defaultAgentsTemplate("main")
+
+	required := []string{
+		"## Runtime Config",
+		"When asked to change your model, treat it as a local config change.",
+		"Update your agent `config.toml` `model_policy` to the requested `provider:model` value.",
+		"Restart the gateway or relevant runtime so the new model actually takes effect.",
+		"Don't tell the user model switching is impossible if the real work is just config edit + restart.",
+	}
+	for _, needle := range required {
+		if !strings.Contains(template, needle) {
+			t.Fatalf("default agents template missing %q", needle)
+		}
+	}
+}
+
 func TestDefaultBootstrapTemplateEncouragesNaturalTaskFirstOnboarding(t *testing.T) {
 	template := defaultBootstrapTemplate()
 

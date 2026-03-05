@@ -119,6 +119,13 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 
 **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 
+## Runtime Config
+
+- When asked to change your model, treat it as a local config change.
+- Update your agent `config.toml` `model_policy` to the requested `provider:model` value.
+- Restart the gateway or relevant runtime so the new model actually takes effect.
+- Don't tell the user model switching is impossible if the real work is just config edit + restart.
+
 ## 💓 Heartbeats - Be Proactive!
 
 When you receive a heartbeat poll (message matches the configured heartbeat prompt), don't just reply `HEARTBEAT_OK` every time. Use heartbeats productively!

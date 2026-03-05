@@ -20,6 +20,7 @@ type AgentConfig struct {
 	Role                    string                  `json:"role" toml:"role"`
 	ModelPolicy             string                  `json:"model_policy" toml:"model_policy"`
 	ReasoningLevel          string                  `json:"reasoning_level,omitempty" toml:"reasoning_level,omitempty"`
+	ProviderOptions         map[string]any          `json:"provider_options,omitempty" toml:"provider_options,omitempty"`
 	Execution               ExecutionConfig         `json:"execution" toml:"execution"`
 	Policies                *AgentPolicies          `json:"policies,omitempty" toml:"policies,omitempty"`
 	EnabledTools            []string                `json:"enabled_tools" toml:"enabled_tools"`
@@ -447,6 +448,17 @@ func (c MemorySearchConfig) Validate() error {
 
 func (c AgentConfig) ReasoningLevelValue() ai.ThinkingLevel {
 	return normalizeReasoningLevel(c.ReasoningLevel)
+}
+
+func (c AgentConfig) ProviderOptionsValue() map[string]any {
+	if len(c.ProviderOptions) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(c.ProviderOptions))
+	for key, value := range c.ProviderOptions {
+		out[key] = value
+	}
+	return out
 }
 
 func normalizeReasoningLevel(raw string) ai.ThinkingLevel {

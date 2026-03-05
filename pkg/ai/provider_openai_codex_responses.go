@@ -23,6 +23,7 @@ type OpenAICodexResponsesOptions struct {
 	StreamOptions
 	ReasoningEffort  ThinkingLevel `json:"reasoningEffort,omitempty"`
 	ReasoningSummary string        `json:"reasoningSummary,omitempty"`
+	ServiceTier      string        `json:"serviceTier,omitempty"`
 	TextVerbosity    string        `json:"textVerbosity,omitempty"`
 }
 
@@ -50,6 +51,7 @@ type codexRequestBody struct {
 	ToolChoice        string           `json:"tool_choice,omitempty"`
 	ParallelToolCalls bool             `json:"parallel_tool_calls,omitempty"`
 	Temperature       *float64         `json:"temperature,omitempty"`
+	ServiceTier       string           `json:"service_tier,omitempty"`
 	Reasoning         map[string]any   `json:"reasoning,omitempty"`
 	Text              map[string]any   `json:"text,omitempty"`
 	Include           []string         `json:"include,omitempty"`
@@ -70,6 +72,7 @@ func StreamOpenAICodexResponses(model Model, conversation Context, options *Stre
 	opts := &OpenAICodexResponsesOptions{}
 	if options != nil {
 		opts.StreamOptions = *options
+		opts.ServiceTier = resolveOpenAIServiceTierOption(options.ProviderOptions)
 	}
 	return streamOpenAICodexResponses(model, conversation, opts)
 }
@@ -97,6 +100,7 @@ func StreamSimpleOpenAICodexResponses(model Model, conversation Context, options
 	return streamOpenAICodexResponses(model, conversation, &OpenAICodexResponsesOptions{
 		StreamOptions:   *base,
 		ReasoningEffort: reasoningEffort,
+		ServiceTier:     resolveOpenAIServiceTierOption(base.ProviderOptions),
 	})
 }
 
@@ -104,6 +108,9 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 	stream := CreateAssistantMessageEventStream()
 	if options == nil {
 		options = &OpenAICodexResponsesOptions{}
+	}
+	if options.ServiceTier == "" {
+		options.ServiceTier = resolveOpenAIServiceTierOption(options.ProviderOptions)
 	}
 	ctx := resolveRequestContext(&options.StreamOptions)
 
@@ -184,7 +191,10 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 				continue
 			}
 			payload := mapCodexResponsesEvent(decodeJSON(ev.Data))
-			if err := processResponsesStreamEvent(payload, &output, stream, model, state, nil); err != nil {
+			if err := processResponsesStreamEvent(payload, &output, stream, model, state, &openAIResponsesStreamOptions{
+				ServiceTier:             options.ServiceTier,
+				ApplyServiceTierPricing: applyServiceTierPricing,
+			}); err != nil {
 				output.StopReason = StopReasonError
 				output.ErrorMessage = err.Error()
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -231,6 +241,9 @@ func buildCodexRequestBody(model Model, conversation Context, options *OpenAICod
 		ToolChoice:        "auto",
 		ParallelToolCalls: true,
 	}
+	if options.ServiceTier != "" {
+		body.ServiceTier = options.ServiceTier
+	}
 	if options.Temperature != nil {
 		body.Temperature = options.Temperature
 	}
@@ -270,6 +283,28 @@ func clampCodexReasoningEffort(modelID string, effort ThinkingLevel) string {
 		return "medium"
 	}
 	return string(effort)
+}
+
+func resolveOpenAIServiceTierOption(providerOptions map[string]any) string {
+	if len(providerOptions) == 0 {
+		return ""
+	}
+	for _, key := range []string{"service_tier", "serviceTier"} {
+		raw, ok := providerOptions[key]
+		if !ok {
+			continue
+		}
+		value := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
+		switch value {
+		case "", "default", "off", "standard":
+			return ""
+		case "fast", "priority":
+			return "priority"
+		default:
+			return value
+		}
+	}
+	return ""
 }
 
 func resolveCodexURL(baseURL string) string {
@@ -512,7 +547,10 @@ func processCodexWebSocket(ctx context.Context, wsURL string, body codexRequestB
 		if t == "response.completed" {
 			sawCompletion = true
 		}
-		if err := processResponsesStreamEvent(event, output, stream, model, state, nil); err != nil {
+		if err := processResponsesStreamEvent(event, output, stream, model, state, &openAIResponsesStreamOptions{
+			ServiceTier:             options.ServiceTier,
+			ApplyServiceTierPricing: applyServiceTierPricing,
+		}); err != nil {
 			keep = false
 			return err
 		}

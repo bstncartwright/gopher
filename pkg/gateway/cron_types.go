@@ -10,29 +10,49 @@ import (
 
 const (
 	defaultCronTimezone = "UTC"
+	CronModeSession     = "session"
+	CronModeIsolated    = "isolated"
+
+	CronRunStatusRunning   = "running"
+	CronRunStatusCompleted = "completed"
+	CronRunStatusFailed    = "failed"
 )
 
 type CronJob struct {
-	ID        string `json:"id"`
-	SessionID string `json:"session_id"`
-	Message   string `json:"message"`
-	CronExpr  string `json:"cron_expr"`
-	Timezone  string `json:"timezone"`
-	Enabled   bool   `json:"enabled"`
-	CreatedBy string `json:"created_by"`
+	ID            string `json:"id"`
+	SessionID     string `json:"session_id"`
+	Title         string `json:"title,omitempty"`
+	Message       string `json:"message"`
+	CronExpr      string `json:"cron_expr"`
+	Timezone      string `json:"timezone"`
+	Mode          string `json:"mode,omitempty"`
+	NotifyActorID string `json:"notify_actor_id,omitempty"`
+	TargetAgent   string `json:"target_agent,omitempty"`
+	ModelPolicy   string `json:"model_policy,omitempty"`
+	ActiveRunID   string `json:"active_run_id,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	CreatedBy     string `json:"created_by"`
 
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	LastRunAt *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt      *time.Time `json:"next_run_at,omitempty"`
+	LastRunStatus  string     `json:"last_run_status,omitempty"`
+	LastRunSummary string     `json:"last_run_summary,omitempty"`
+	LastRunError   string     `json:"last_run_error,omitempty"`
 }
 
 type CronCreateInput struct {
-	SessionID string
-	Message   string
-	CronExpr  string
-	Timezone  string
-	CreatedBy string
+	SessionID     string
+	Title         string
+	Message       string
+	CronExpr      string
+	Timezone      string
+	Mode          string
+	NotifyActorID string
+	TargetAgent   string
+	ModelPolicy   string
+	CreatedBy     string
 }
 
 func normalizeCronTimezone(raw string) string {
@@ -41,6 +61,26 @@ func normalizeCronTimezone(raw string) string {
 		return defaultCronTimezone
 	}
 	return value
+}
+
+func normalizeCronMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", CronModeSession:
+		return CronModeSession
+	case CronModeIsolated:
+		return CronModeIsolated
+	default:
+		return ""
+	}
+}
+
+func validCronRunStatus(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", CronRunStatusRunning, CronRunStatusCompleted, CronRunStatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func loadCronLocation(raw string) (*time.Location, error) {

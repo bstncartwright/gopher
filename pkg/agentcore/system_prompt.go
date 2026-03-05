@@ -370,7 +370,7 @@ func buildToolUsageHints(registry ToolRegistry) string {
 		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`,`summary`}; `create` requires `message`, accepts optional `target_agent` (omitting target auto-creates a subagent), and accepts optional `model_policy` for ephemeral workers. `create` returns after spawn; do not `sleep`/busy-wait and do not call `list`/`log`/`summary` in the same turn to wait for completion. Treat execution as async and continue when `delegation.completed`/`delegation.failed`/`delegation.cancelled` arrives (or inspect with `summary`/`list`/`log` only in a later turn when needed).")
 	}
 	if toolRegistryHas(registry, "cron") {
-		lines = append(lines, "- `cron` manages scheduled reminders/checks; omit `session_id` only when the current session should be used.")
+		lines = append(lines, "- `cron` manages scheduled reminders and scheduled tasks. Use `mode:\"session\"` for reminders, nudges, or context-dependent follow-ups that should arrive inside the current thread. Use `mode:\"isolated\"` for scheduled work that should run independently and report back later. Example: \"Remind me tomorrow to email Summer\" => `mode:\"session\"`. Example: \"Every morning, scan overnight updates and tell me if anything matters\" => `mode:\"isolated\"`. Omit `session_id` only when the current session should be used. Scheduled task result messages are internal follow-up signals; decide whether to send any user-visible announcement.")
 	}
 	if toolRegistryHas(registry, "heartbeat") {
 		lines = append(lines, "- `heartbeat` manages this agent's heartbeat schedule (`get`, `set`, `disable`) without manual config file edits.")

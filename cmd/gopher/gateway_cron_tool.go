@@ -21,11 +21,16 @@ func newGatewayCronToolService(service *gateway.CronService) *gatewayCronToolSer
 
 func (s *gatewayCronToolService) CreateCronJob(ctx context.Context, req agentcore.CronCreateRequest) (agentcore.CronJob, error) {
 	job, err := s.service.Create(ctx, gateway.CronCreateInput{
-		SessionID: req.SessionID,
-		Message:   req.Message,
-		CronExpr:  req.CronExpr,
-		Timezone:  req.Timezone,
-		CreatedBy: req.CreatedBy,
+		SessionID:     req.SessionID,
+		Title:         req.Title,
+		Message:       req.Message,
+		CronExpr:      req.CronExpr,
+		Timezone:      req.Timezone,
+		Mode:          req.Mode,
+		NotifyActorID: req.NotifyActorID,
+		TargetAgent:   req.TargetAgent,
+		ModelPolicy:   req.ModelPolicy,
+		CreatedBy:     req.CreatedBy,
 	})
 	if err != nil {
 		return agentcore.CronJob{}, err
@@ -67,15 +72,23 @@ func (s *gatewayCronToolService) ResumeCronJob(ctx context.Context, jobID string
 
 func toAgentCronJob(job gateway.CronJob) agentcore.CronJob {
 	out := agentcore.CronJob{
-		ID:        job.ID,
-		SessionID: job.SessionID,
-		Message:   job.Message,
-		CronExpr:  job.CronExpr,
-		Timezone:  job.Timezone,
-		Enabled:   job.Enabled,
-		CreatedBy: job.CreatedBy,
-		CreatedAt: job.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt: job.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:             job.ID,
+		SessionID:      job.SessionID,
+		Title:          job.Title,
+		Message:        job.Message,
+		CronExpr:       job.CronExpr,
+		Timezone:       job.Timezone,
+		Mode:           job.Mode,
+		NotifyActorID:  job.NotifyActorID,
+		TargetAgent:    job.TargetAgent,
+		ModelPolicy:    job.ModelPolicy,
+		Enabled:        job.Enabled,
+		CreatedBy:      job.CreatedBy,
+		CreatedAt:      job.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:      job.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		LastRunStatus:  job.LastRunStatus,
+		LastRunSummary: job.LastRunSummary,
+		LastRunError:   job.LastRunError,
 	}
 	if job.LastRunAt != nil {
 		value := job.LastRunAt.UTC().Format(time.RFC3339Nano)

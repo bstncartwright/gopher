@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -15,15 +16,20 @@ type fakeCronToolService struct {
 func (s *fakeCronToolService) CreateCronJob(_ context.Context, req CronCreateRequest) (CronJob, error) {
 	s.lastCreate = req
 	job := CronJob{
-		ID:        "cron-1",
-		SessionID: req.SessionID,
-		Message:   req.Message,
-		CronExpr:  req.CronExpr,
-		Timezone:  req.Timezone,
-		Enabled:   true,
-		CreatedBy: req.CreatedBy,
-		CreatedAt: "2026-02-17T10:00:00Z",
-		UpdatedAt: "2026-02-17T10:00:00Z",
+		ID:            "cron-1",
+		SessionID:     req.SessionID,
+		Title:         req.Title,
+		Message:       req.Message,
+		CronExpr:      req.CronExpr,
+		Timezone:      req.Timezone,
+		Mode:          req.Mode,
+		NotifyActorID: req.NotifyActorID,
+		TargetAgent:   req.TargetAgent,
+		ModelPolicy:   req.ModelPolicy,
+		Enabled:       true,
+		CreatedBy:     req.CreatedBy,
+		CreatedAt:     "2026-02-17T10:00:00Z",
+		UpdatedAt:     "2026-02-17T10:00:00Z",
 	}
 	s.jobs = append(s.jobs, job)
 	return job, nil
@@ -103,6 +109,34 @@ func TestCronToolCreateUsesCurrentSessionID(t *testing.T) {
 	if fake.lastCreate.SessionID != "sess-123" {
 		t.Fatalf("session id = %q, want sess-123", fake.lastCreate.SessionID)
 	}
+	if fake.lastCreate.NotifyActorID != agent.ID {
+		t.Fatalf("notify actor id = %q, want %q", fake.lastCreate.NotifyActorID, agent.ID)
+	}
+	if fake.lastCreate.Mode != "" {
+		t.Fatalf("mode = %q, want empty default input", fake.lastCreate.Mode)
+	}
+}
+
+func TestCronToolSchemaMentionsModeSelectionExamples(t *testing.T) {
+	schema := (&cronTool{}).Schema()
+	if !strings.Contains(schema.Description, "scheduled reminders and scheduled tasks") {
+		t.Fatalf("schema description = %q", schema.Description)
+	}
+	properties, ok := schema.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected schema properties")
+	}
+	mode, ok := properties["mode"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mode schema")
+	}
+	description, _ := mode["description"].(string)
+	if !strings.Contains(description, "\"Remind me tomorrow to email Summer\"") {
+		t.Fatalf("mode description missing reminder example: %q", description)
+	}
+	if !strings.Contains(description, "\"Every morning, scan overnight updates and tell me if anything matters\"") {
+		t.Fatalf("mode description missing isolated example: %q", description)
+	}
 }
 
 func TestCronToolListAndDelete(t *testing.T) {
@@ -142,6 +176,48 @@ func TestCronToolListAndDelete(t *testing.T) {
 	}
 	if deleteOut.Status != ToolStatusOK {
 		t.Fatalf("delete status = %q, want ok", deleteOut.Status)
+	}
+}
+
+func TestCronToolCreatePassesScheduledTaskFields(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"cron"}
+	policies := defaultPolicies()
+	workspace := createTestWorkspace(t, config, policies)
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	fake := &fakeCronToolService{}
+	agent.Cron = fake
+	runner := NewToolRunner(agent)
+	session := agent.NewSession()
+	session.ID = "sess-123"
+
+	_, err = runner.Run(context.Background(), session, toolCall("cron", map[string]any{
+		"action":       "create",
+		"title":        "Morning scan",
+		"cron_expr":    "0 9 * * *",
+		"timezone":     "America/Denver",
+		"mode":         "isolated",
+		"target_agent": "worker",
+		"model_policy": "fast",
+		"message":      "Summarize overnight updates.",
+	}))
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if fake.lastCreate.Title != "Morning scan" {
+		t.Fatalf("title = %q", fake.lastCreate.Title)
+	}
+	if fake.lastCreate.Mode != "isolated" {
+		t.Fatalf("mode = %q, want isolated", fake.lastCreate.Mode)
+	}
+	if fake.lastCreate.TargetAgent != "worker" {
+		t.Fatalf("target agent = %q, want worker", fake.lastCreate.TargetAgent)
+	}
+	if fake.lastCreate.ModelPolicy != "fast" {
+		t.Fatalf("model policy = %q, want fast", fake.lastCreate.ModelPolicy)
 	}
 }
 

@@ -165,23 +165,24 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	kickoff := buildDelegationKickoffMessage(displayTargetAgentID, message)
 	announcement := buildDelegationAnnouncement(displayTargetAgentID, string(createdSession.ID))
 	record := map[string]any{
-		"ts":                       now,
-		"event":                    "created",
-		"delegation_id":            strings.TrimSpace(string(createdSession.ID)),
-		"source_session_id":        strings.TrimSpace(string(sourceSessionID)),
-		"source_agent_id":          strings.TrimSpace(string(sourceAgentID)),
-		"target_agent_id":          strings.TrimSpace(displayTargetAgentID),
-		"resolved_target_agent_id": strings.TrimSpace(string(resolvedTargetAgentID)),
-		"title":                    strings.TrimSpace(req.Title),
-		"kickoff_message":          kickoff,
-		"status":                   "active",
-		"created_at":               now,
-		"updated_at":               now,
-		"ephemeral":                createdEphemeral != nil,
-		"workspace_mode":           "isolated_temp",
-		"merge_mode":               "diff_for_approval",
-		"diff_artifact_path":       diffArtifactPath,
-		"model_policy":             requestedModelPolicy,
+		"ts":                        now,
+		"event":                     "created",
+		"delegation_id":             strings.TrimSpace(string(createdSession.ID)),
+		"source_session_id":         strings.TrimSpace(string(sourceSessionID)),
+		"source_agent_id":           strings.TrimSpace(string(sourceAgentID)),
+		"target_agent_id":           strings.TrimSpace(displayTargetAgentID),
+		"resolved_target_agent_id":  strings.TrimSpace(string(resolvedTargetAgentID)),
+		"title":                     strings.TrimSpace(req.Title),
+		"kickoff_message":           kickoff,
+		"status":                    "active",
+		"created_at":                now,
+		"updated_at":                now,
+		"ephemeral":                 createdEphemeral != nil,
+		"workspace_mode":            "isolated_temp",
+		"merge_mode":                "diff_for_approval",
+		"diff_artifact_path":        diffArtifactPath,
+		"model_policy":              requestedModelPolicy,
+		"suppress_terminal_message": req.SuppressTerminalMessage,
 	}
 	s.appendDelegationRecord(record)
 	s.startDelegationLifecycleMonitor(
@@ -401,7 +402,7 @@ func (s *gatewaySessionDelegationToolService) handleDelegationTerminalState(
 	}
 	s.sendDelegationControlEventAsync(sourceSessionID, action, metadata)
 	sourceAgentID = sessionrt.ActorID(strings.TrimSpace(string(sourceAgentID)))
-	if sourceAgentID != "" {
+	if sourceAgentID != "" && !boolFromMap(record, "suppress_terminal_message") {
 		terminalMessage := strings.TrimSpace(terminalResponse)
 		if terminalMessage == "" {
 			terminalMessage = buildDelegationTerminalMessage(targetAgent, delegationID, status, reason, diffArtifactPath)

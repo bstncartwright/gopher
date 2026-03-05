@@ -16,7 +16,7 @@ func (t *cronTool) Name() string {
 func (t *cronTool) Schema() ToolSchema {
 	return ToolSchema{
 		Name:        t.Name(),
-		Description: "Manage gateway cron jobs that inject user messages into sessions.",
+		Description: "Manage gateway cron jobs for scheduled reminders and scheduled tasks. Use `mode:\"session\"` for in-thread reminders or context-dependent follow-ups, and `mode:\"isolated\"` for independent scheduled work that should report back later.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -25,10 +25,30 @@ func (t *cronTool) Schema() ToolSchema {
 					"enum": []any{"create", "list", "delete", "pause", "resume"},
 				},
 				"session_id": map[string]any{"type": "string"},
+				"title":      map[string]any{"type": "string"},
 				"cron_expr":  map[string]any{"type": "string"},
 				"timezone":   map[string]any{"type": "string"},
-				"message":    map[string]any{"type": "string"},
-				"job_id":     map[string]any{"type": "string"},
+				"mode": map[string]any{
+					"type":        "string",
+					"enum":        []any{"session", "isolated"},
+					"description": "Scheduling mode. Use `session` for reminders like \"Remind me tomorrow to email Summer\". Use `isolated` for work like \"Every morning, scan overnight updates and tell me if anything matters\".",
+				},
+				"target_agent": map[string]any{
+					"type":        "string",
+					"description": "Optional isolated-mode target worker. Omit to auto-create an ephemeral worker when delegation is available.",
+				},
+				"model_policy": map[string]any{
+					"type":        "string",
+					"description": "Optional isolated-mode model override for delegated workers.",
+				},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "Task instructions to run when the schedule fires.",
+				},
+				"job_id": map[string]any{
+					"type":        "string",
+					"description": "Required for `delete`, `pause`, and `resume`.",
+				},
 			},
 			"required": []any{"action"},
 		},
@@ -59,6 +79,7 @@ func (t *cronTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error)
 		if strings.TrimSpace(sessionID) == "" && input.Session != nil {
 			sessionID = strings.TrimSpace(input.Session.ID)
 		}
+		title, _ := optionalStringArg(input.Args, "title")
 		message, err := requiredStringArg(input.Args, "message")
 		if err != nil {
 			slog.Error("cron_tool: message arg required for create")
@@ -70,18 +91,28 @@ func (t *cronTool) Run(ctx context.Context, input ToolInput) (ToolOutput, error)
 			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
 		}
 		timezone, _ := optionalStringArg(input.Args, "timezone")
+		mode, _ := optionalStringArg(input.Args, "mode")
+		targetAgent, _ := optionalStringArg(input.Args, "target_agent")
+		modelPolicy, _ := optionalStringArg(input.Args, "model_policy")
 		slog.Debug("cron_tool: creating cron job",
 			"session_id", sessionID,
 			"cron_expr", cronExpr,
 			"timezone", timezone,
+			"mode", mode,
+			"target_agent", targetAgent,
 			"message_length", len(message),
 		)
 		job, createErr := input.Agent.Cron.CreateCronJob(ctx, CronCreateRequest{
-			SessionID: sessionID,
-			Message:   message,
-			CronExpr:  cronExpr,
-			Timezone:  timezone,
-			CreatedBy: "agent:" + input.Agent.ID,
+			SessionID:     sessionID,
+			Title:         title,
+			Message:       message,
+			CronExpr:      cronExpr,
+			Timezone:      timezone,
+			Mode:          mode,
+			NotifyActorID: strings.TrimSpace(input.Agent.ID),
+			TargetAgent:   targetAgent,
+			ModelPolicy:   modelPolicy,
+			CreatedBy:     "agent:" + input.Agent.ID,
 		})
 		if createErr != nil {
 			slog.Error("cron_tool: failed to create cron job", "error", createErr)

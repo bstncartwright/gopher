@@ -46,6 +46,23 @@ func TestBuildToolUsageHintsDelegateMentionsOmittedTarget(t *testing.T) {
 	}
 }
 
+func TestBuildToolUsageHintsCronMentionsModeSelectionExamples(t *testing.T) {
+	registry := NewToolRegistry([]Tool{&cronTool{}})
+	hints := buildToolUsageHints(registry)
+	if !strings.Contains(hints, "Use `mode:\"session\"` for reminders, nudges, or context-dependent follow-ups") {
+		t.Fatalf("expected session mode guidance, got: %s", hints)
+	}
+	if !strings.Contains(hints, "Use `mode:\"isolated\"` for scheduled work that should run independently") {
+		t.Fatalf("expected isolated mode guidance, got: %s", hints)
+	}
+	if !strings.Contains(hints, "\"Remind me tomorrow to email Summer\" => `mode:\"session\"`") {
+		t.Fatalf("expected reminder example, got: %s", hints)
+	}
+	if !strings.Contains(hints, "\"Every morning, scan overnight updates and tell me if anything matters\" => `mode:\"isolated\"`") {
+		t.Fatalf("expected isolated example, got: %s", hints)
+	}
+}
+
 func TestBuildCollaborationSectionMultiAgentMentionsAsyncDelegationCompletion(t *testing.T) {
 	registry := NewToolRegistry([]Tool{&delegateTool{}})
 	section := buildCollaborationSection(systemPromptInput{

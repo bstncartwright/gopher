@@ -3,12 +3,13 @@ package agentcore
 import "context"
 
 type DelegationCreateRequest struct {
-	SourceSessionID string
-	SourceAgentID   string
-	TargetAgentID   string
-	ModelPolicy     string
-	Message         string
-	Title           string
+	SourceSessionID         string
+	SourceAgentID           string
+	TargetAgentID           string
+	ModelPolicy             string
+	Message                 string
+	Title                   string
+	SuppressTerminalMessage bool
 }
 
 type DelegationSession struct {

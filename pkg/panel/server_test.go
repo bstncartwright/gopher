@@ -141,7 +141,7 @@ func TestPanelMainPageRenders(t *testing.T) {
 		t.Fatalf("NewServer() error: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -151,13 +151,13 @@ func TestPanelMainPageRenders(t *testing.T) {
 	}
 }
 
-func TestPanelPathTabRendersActiveTab(t *testing.T) {
+func TestPanelSessionsTabRendersActiveTab(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/tab/sessions", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin?tab=sessions", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -173,7 +173,7 @@ func TestPanelQueryTabNormalizesActiveTab(t *testing.T) {
 		t.Fatalf("NewServer() error: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel?tab=control-actions", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin?tab=control-actions", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -183,13 +183,13 @@ func TestPanelQueryTabNormalizesActiveTab(t *testing.T) {
 	}
 }
 
-func TestPanelPathCronTabRendersActiveTab(t *testing.T) {
+func TestPanelCronTabRendersActiveTab(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/tab/cron", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin?tab=cron", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -199,13 +199,29 @@ func TestPanelPathCronTabRendersActiveTab(t *testing.T) {
 	}
 }
 
+func TestPanelLegacyPageRedirectsToAdmin(t *testing.T) {
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/tab/sessions?session=sess-9&filter=tools", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusPermanentRedirect)
+	}
+	if location := rec.Header().Get("Location"); location != "/admin?filter=tools&session=sess-9&tab=sessions" {
+		t.Fatalf("location = %q, want redirected admin URL", location)
+	}
+}
+
 func TestPanelLimitedModeSessionsFragment(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/sessions", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/fragments/sessions", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -244,7 +260,7 @@ func TestPanelNodesEndpointReturnsSnapshot(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/nodes", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/nodes", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -314,7 +330,7 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	mux := srv.newMux()
 
 	sessionsRec := httptest.NewRecorder()
-	sessionsReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/sessions", nil)
+	sessionsReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/sessions", nil)
 	mux.ServeHTTP(sessionsRec, sessionsReq)
 	if sessionsRec.Code != http.StatusOK {
 		t.Fatalf("sessions status = %d, want 200", sessionsRec.Code)
@@ -336,7 +352,7 @@ func TestPanelSessionFragmentsRender(t *testing.T) {
 	}
 
 	detailRec := httptest.NewRecorder()
-	detailReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/session/sess-1", nil)
+	detailReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/session/sess-1", nil)
 	mux.ServeHTTP(detailRec, detailReq)
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail status = %d, want 200", detailRec.Code)
@@ -399,7 +415,7 @@ func TestPanelSessionsHideStaleByDefault(t *testing.T) {
 	mux := srv.newMux()
 
 	defaultRec := httptest.NewRecorder()
-	defaultReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/sessions", nil)
+	defaultReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/sessions", nil)
 	mux.ServeHTTP(defaultRec, defaultReq)
 	if defaultRec.Code != http.StatusOK {
 		t.Fatalf("default sessions status = %d, want 200", defaultRec.Code)
@@ -413,7 +429,7 @@ func TestPanelSessionsHideStaleByDefault(t *testing.T) {
 	}
 
 	includeRec := httptest.NewRecorder()
-	includeReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/sessions?include_stale=true", nil)
+	includeReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/sessions?include_stale=true", nil)
 	mux.ServeHTTP(includeRec, includeReq)
 	if includeRec.Code != http.StatusOK {
 		t.Fatalf("include stale sessions status = %d, want 200", includeRec.Code)
@@ -446,7 +462,7 @@ func TestPanelSessionsUseSessionDisplayNameFallback(t *testing.T) {
 		t.Fatalf("NewServer() error: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/session/sess-name", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/fragments/session/sess-name", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -544,7 +560,7 @@ func TestPanelAgentsFragmentRender(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/agents", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/fragments/agents", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -584,7 +600,7 @@ func TestPanelControlAndNodesFragmentsRender(t *testing.T) {
 	mux := srv.newMux()
 
 	controlRec := httptest.NewRecorder()
-	controlReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/control", nil)
+	controlReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/control", nil)
 	mux.ServeHTTP(controlRec, controlReq)
 	if controlRec.Code != http.StatusOK {
 		t.Fatalf("control status = %d, want 200", controlRec.Code)
@@ -594,7 +610,7 @@ func TestPanelControlAndNodesFragmentsRender(t *testing.T) {
 	}
 
 	nodesRec := httptest.NewRecorder()
-	nodesReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/nodes-table", nil)
+	nodesReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/nodes-table", nil)
 	mux.ServeHTTP(nodesRec, nodesReq)
 	if nodesRec.Code != http.StatusOK {
 		t.Fatalf("nodes status = %d, want 200", nodesRec.Code)
@@ -604,7 +620,7 @@ func TestPanelControlAndNodesFragmentsRender(t *testing.T) {
 	}
 
 	actionsRec := httptest.NewRecorder()
-	actionsReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/control-actions", nil)
+	actionsReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/control-actions", nil)
 	mux.ServeHTTP(actionsRec, actionsReq)
 	if actionsRec.Code != http.StatusOK {
 		t.Fatalf("actions status = %d, want 200", actionsRec.Code)
@@ -614,7 +630,7 @@ func TestPanelControlAndNodesFragmentsRender(t *testing.T) {
 	}
 
 	cronRec := httptest.NewRecorder()
-	cronReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/cron", nil)
+	cronReq := httptest.NewRequest(http.MethodGet, "/admin/fragments/cron", nil)
 	mux.ServeHTTP(cronRec, cronReq)
 	if cronRec.Code != http.StatusOK {
 		t.Fatalf("cron status = %d, want 200", cronRec.Code)
@@ -660,7 +676,7 @@ func TestPanelCronFragmentRendersJobs(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/cron", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/fragments/cron", nil)
 	srv.newMux().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -697,7 +713,7 @@ func TestPanelSessionStreamCatchupAndLive(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/stream/session/sess-2?after_seq=1", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/admin/stream/session/sess-2?after_seq=1", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {
@@ -749,7 +765,7 @@ func TestPanelRunWithRetryRecoversFromPortConflict(t *testing.T) {
 
 	_ = occupy.Close()
 	client := &http.Client{Timeout: 250 * time.Millisecond}
-	healthURL := fmt.Sprintf("http://%s/_gopher/panel/health", addr)
+	healthURL := fmt.Sprintf("http://%s/admin/health", addr)
 	healthy := false
 	deadline := time.After(4 * time.Second)
 	for !healthy {

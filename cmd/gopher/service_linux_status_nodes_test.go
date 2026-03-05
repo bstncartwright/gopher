@@ -16,7 +16,7 @@ import (
 
 func TestReadGatewayNodeStatusLinesListsKnownNodes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/_gopher/panel/nodes" {
+		if r.URL.Path != "/admin/nodes" {
 			http.NotFound(w, r)
 			return
 		}
@@ -61,7 +61,7 @@ func TestReadGatewayNodeStatusLinesListsKnownNodes(t *testing.T) {
 
 func TestReadGatewayNodeStatusLinesIncludesUnknownVersionWhenMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/_gopher/panel/nodes" {
+		if r.URL.Path != "/admin/nodes" {
 			http.NotFound(w, r)
 			return
 		}

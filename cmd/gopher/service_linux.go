@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +75,13 @@ var releaseVersionPattern = regexp.MustCompile(`\bv\d+\.\d+\.\d+(?:[-+][0-9A-Za-
 
 type serviceSystemdScope struct {
 	user bool
+}
+
+type serviceIdentity struct {
+	User  string
+	Group string
+	UID   int
+	GID   int
 }
 
 func resolveServiceSystemdScope() serviceSystemdScope {
@@ -139,6 +147,10 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 		return err
 	}
 	workingDir := resolveServiceWorkingDir()
+	identity, err := resolveServiceInstallIdentity(scope)
+	if err != nil {
+		return err
+	}
 	var (
 		unit     string
 		unitName string
@@ -148,6 +160,8 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 		unitName = "gopher-gateway.service"
 		unit, err = service.RenderGatewayUnit(service.GatewayUnitConfig{
 			ExecStart:  fmt.Sprintf("%s gateway run --config %s", opts.BinaryPath, opts.ConfigPath),
+			User:       identity.User,
+			Group:      identity.Group,
 			WorkingDir: workingDir,
 			EnvFile:    opts.EnvPath,
 		})
@@ -155,6 +169,8 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 		unitName = "gopher-node.service"
 		unit, err = service.RenderNodeUnit(service.NodeUnitConfig{
 			ExecStart:  fmt.Sprintf("%s node run --config %s", opts.BinaryPath, opts.ConfigPath),
+			User:       identity.User,
+			Group:      identity.Group,
 			WorkingDir: workingDir,
 			EnvFile:    opts.EnvPath,
 		})
@@ -192,6 +208,21 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 			}
 		}
 	}
+	if identity.User != "" {
+		if err := ensureServiceOwnedPath(workingDir, identity); err != nil {
+			return err
+		}
+		if strings.TrimSpace(opts.EnvPath) != "" && !strings.HasPrefix(strings.TrimSpace(opts.EnvPath), workingDir+string(os.PathSeparator)) {
+			if err := ensureServiceOwnedPath(strings.TrimSpace(opts.EnvPath), identity); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(opts.ConfigPath) != "" && !strings.HasPrefix(strings.TrimSpace(opts.ConfigPath), workingDir+string(os.PathSeparator)) {
+			if err := ensureServiceOwnedPath(strings.TrimSpace(opts.ConfigPath), identity); err != nil {
+				return err
+			}
+		}
+	}
 	if err := os.WriteFile(filepath.Join(unitDir, unitName), []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
@@ -218,21 +249,54 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 }
 
 func resolveServiceWorkingDir() string {
+	return resolveServiceStateDir()
+}
+
+func resolveServiceInstallIdentity(scope serviceSystemdScope) (serviceIdentity, error) {
+	if scope.user {
+		return serviceIdentity{}, nil
+	}
 	sudoUser := strings.TrimSpace(os.Getenv("SUDO_USER"))
-	if sudoUser != "" {
-		if u, err := user.Lookup(sudoUser); err == nil {
-			home := strings.TrimSpace(u.HomeDir)
-			if home != "" {
-				return filepath.Join(home, ".gopher")
-			}
+	if sudoUser == "" {
+		return serviceIdentity{}, nil
+	}
+	u, err := user.Lookup(sudoUser)
+	if err != nil {
+		return serviceIdentity{}, fmt.Errorf("lookup sudo user %q: %w", sudoUser, err)
+	}
+	uid, err := strconv.Atoi(strings.TrimSpace(u.Uid))
+	if err != nil {
+		return serviceIdentity{}, fmt.Errorf("parse uid for %q: %w", sudoUser, err)
+	}
+	gid, err := strconv.Atoi(strings.TrimSpace(u.Gid))
+	if err != nil {
+		return serviceIdentity{}, fmt.Errorf("parse gid for %q: %w", sudoUser, err)
+	}
+	groupName := strings.TrimSpace(sudoUser)
+	if group, groupErr := user.LookupGroupId(strings.TrimSpace(u.Gid)); groupErr == nil && strings.TrimSpace(group.Name) != "" {
+		groupName = strings.TrimSpace(group.Name)
+	}
+	return serviceIdentity{
+		User:  strings.TrimSpace(sudoUser),
+		Group: groupName,
+		UID:   uid,
+		GID:   gid,
+	}, nil
+}
+
+func ensureServiceOwnedPath(path string, identity serviceIdentity) error {
+	if strings.TrimSpace(path) == "" || identity.User == "" {
+		return nil
+	}
+	return filepath.Walk(path, func(current string, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-	}
-
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".gopher")
-	}
-
-	return "/root/.gopher"
+		if err := os.Chown(current, identity.UID, identity.GID); err != nil {
+			return fmt.Errorf("chown %s to %s:%s: %w", current, identity.User, identity.Group, err)
+		}
+		return nil
+	})
 }
 
 func (r *linuxServiceRuntime) Uninstall(ctx context.Context) error {

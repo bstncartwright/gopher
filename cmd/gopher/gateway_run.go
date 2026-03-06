@@ -465,7 +465,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		return err
 	}
 
-	process, err := startGatewayProcessWithCapabilityResolver(ctx, cfg, client, agentRuntime.Executor, capabilityResolver, logger)
+	process, err := startGatewayProcessWithCapabilityResolver(ctx, cfg, client, agentRuntime.Executor, capabilityResolver, agentRuntime.AgentIDs, logger)
 	if err != nil {
 		slog.Error("gateway_run: failed to start gateway process", "error", err)
 		return err
@@ -476,7 +476,10 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	var telegramBridge *telegramDMBridge
 	if cfg.Telegram.Enabled {
 		slog.Info("gateway_run: telegram enabled, starting dm bridge")
-		telegramBridge, err = startTelegramDMBridgeWithRuntime(ctx, cfg, workspace, agentRuntime, process.executor, logger)
+		telegramBridge, err = startTelegramDMBridgeWithRuntime(ctx, cfg, workspace, agentRuntime, process.executor, func(actorID sessionrt.ActorID) bool {
+			_, ok := process.registry.FindNodeByAgent(string(actorID))
+			return ok
+		}, logger)
 		if err != nil {
 			slog.Error("gateway_run: failed to start telegram dm bridge", "error", err)
 			return err
@@ -532,6 +535,7 @@ func startGatewayProcessWithCapabilityResolver(
 	fabric fabricts.Fabric,
 	executor sessionrt.AgentExecutor,
 	resolver gateway.CapabilityResolver,
+	agentIDs []string,
 	logger *log.Logger,
 ) (*gatewayProcess, error) {
 	registry := scheduler.NewRegistry(0)
@@ -540,6 +544,7 @@ func startGatewayProcessWithCapabilityResolver(
 		IsGateway:    true,
 		Version:      currentBinaryVersion(),
 		Capabilities: cfg.Capabilities,
+		Agents:       append([]string(nil), agentIDs...),
 	})
 	schedulerInstance := scheduler.NewScheduler(cfg.GatewayNodeID, registry)
 
@@ -574,6 +579,9 @@ func startGatewayProcessWithCapabilityResolver(
 		Scheduler:          schedulerInstance,
 		Fabric:             fabric,
 		CapabilityResolver: resolver,
+		RemoteActorLocator: func(actorID sessionrt.ActorID) (scheduler.NodeInfo, bool) {
+			return registry.FindNodeByAgent(string(actorID))
+		},
 	})
 	if err != nil {
 		updater.Stop()
@@ -586,6 +594,7 @@ func startGatewayProcessWithCapabilityResolver(
 		IsGateway:         true,
 		Version:           currentBinaryVersion(),
 		Capabilities:      cfg.Capabilities,
+		Agents:            append([]string(nil), agentIDs...),
 		Fabric:            fabric,
 		Executor:          distributedExecutor,
 		HeartbeatInterval: cfg.HeartbeatInterval,

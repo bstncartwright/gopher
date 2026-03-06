@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -74,6 +75,7 @@ var shouldPromptSudoForService = isInteractiveTerminal
 var retryWithSudoForService = rerunServiceWithSudo
 var envLookupForService = os.Getenv
 var serviceGetEUID = os.Geteuid
+var serviceLookupUser = user.Lookup
 
 func runServiceSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 	finishLog := startCommandLog("service", args)
@@ -110,8 +112,8 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 	case "install":
 		flags := flag.NewFlagSet("service install", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
-		configPath := flags.String("config", defaultServiceGatewayConfigPath(), "gateway config path")
-		envPath := flags.String("env-file", defaultServiceEnvPath(), "service env file")
+		configPath := flags.String("config", "", "service config path")
+		envPath := flags.String("env-file", "", "service env file")
 		binaryPath := flags.String("binary-path", defaultServiceBinaryPath(), "binary path for service")
 		role := flags.String("role", "gateway", "service role (gateway|node)")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -124,16 +126,32 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 		if normalizedRole != "gateway" && normalizedRole != "node" {
 			return fmt.Errorf("invalid --role value: %s (expected gateway or node)", strings.TrimSpace(*role))
 		}
+		configPathValue := strings.TrimSpace(*configPath)
+		envPathValue := strings.TrimSpace(*envPath)
+		flags.Visit(func(f *flag.Flag) {
+			switch strings.TrimSpace(f.Name) {
+			case "config":
+				configPathValue = strings.TrimSpace(f.Value.String())
+			case "env-file":
+				envPathValue = strings.TrimSpace(f.Value.String())
+			}
+		})
+		if configPathValue == "" {
+			configPathValue = defaultServiceConfigPath(normalizedRole)
+		}
+		if envPathValue == "" {
+			envPathValue = defaultServiceEnvPath()
+		}
 		slog.Info(
 			"service: install requested",
 			"role", normalizedRole,
-			"config_path", strings.TrimSpace(*configPath),
-			"env_path", strings.TrimSpace(*envPath),
+			"config_path", configPathValue,
+			"env_path", envPathValue,
 			"binary_path", strings.TrimSpace(*binaryPath),
 		)
 		if err := runtimeImpl.Install(ctx, serviceInstallOptions{
-			ConfigPath: strings.TrimSpace(*configPath),
-			EnvPath:    strings.TrimSpace(*envPath),
+			ConfigPath: configPathValue,
+			EnvPath:    envPathValue,
 			BinaryPath: strings.TrimSpace(*binaryPath),
 			Role:       normalizedRole,
 		}); err != nil {
@@ -241,24 +259,44 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 	}
 }
 
-func defaultServiceGatewayConfigPath() string {
-	if serviceGetEUID() == 0 {
-		return "/etc/gopher/gopher.toml"
+func resolveServiceHomeDir() string {
+	sudoUser := strings.TrimSpace(os.Getenv("SUDO_USER"))
+	if sudoUser != "" && serviceLookupUser != nil {
+		if u, err := serviceLookupUser(sudoUser); err == nil {
+			home := strings.TrimSpace(u.HomeDir)
+			if home != "" {
+				return home
+			}
+		}
 	}
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".gopher", "gopher.toml")
+		return home
 	}
-	return "/etc/gopher/gopher.toml"
+	return "/root"
+}
+
+func resolveServiceStateDir() string {
+	return filepath.Join(resolveServiceHomeDir(), ".gopher")
+}
+
+func defaultServiceConfigPath(role string) string {
+	filename := "gopher.toml"
+	if strings.EqualFold(strings.TrimSpace(role), "node") {
+		filename = "node.toml"
+	}
+	return filepath.Join(resolveServiceStateDir(), filename)
+}
+
+func defaultServiceGatewayConfigPath() string {
+	return defaultServiceConfigPath("gateway")
+}
+
+func defaultServiceNodeConfigPath() string {
+	return defaultServiceConfigPath("node")
 }
 
 func defaultServiceEnvPath() string {
-	if serviceGetEUID() == 0 {
-		return "/etc/gopher/gopher.env"
-	}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".gopher", "gopher.env")
-	}
-	return "/etc/gopher/gopher.env"
+	return filepath.Join(resolveServiceStateDir(), "gopher.env")
 }
 
 func defaultServiceBinaryPath() string {

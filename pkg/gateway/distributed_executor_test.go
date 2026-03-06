@@ -248,3 +248,65 @@ func TestDistributedExecutorStepStreamRemoteEmitsReturnedEvents(t *testing.T) {
 		t.Fatalf("emitted event types = [%q %q], want [%q %q]", got[0].Type, got[1].Type, sessionrt.EventToolCall, sessionrt.EventToolResult)
 	}
 }
+
+func TestDistributedExecutorRoutesDirectlyToRemoteAdvertisedActor(t *testing.T) {
+	fabric := fabricts.NewInMemoryBus()
+	registry := scheduler.NewRegistry(0)
+	registry.Upsert(scheduler.NodeInfo{
+		NodeID:       "gateway",
+		IsGateway:    true,
+		Capabilities: []scheduler.Capability{{Kind: scheduler.CapabilityAgent, Name: "main"}},
+	})
+	registry.Upsert(scheduler.NodeInfo{
+		NodeID:        "node-browser",
+		Agents:        []string{"browser"},
+		LastHeartbeat: time.Now(),
+	})
+	sched := scheduler.NewScheduler("gateway", registry)
+
+	requests := make(chan node.ExecutionRequest, 1)
+	_, err := fabric.Subscribe(fabricts.NodeControlSubject("node-browser"), func(ctx context.Context, message fabricts.Message) {
+		var request node.ExecutionRequest
+		if err := json.Unmarshal(message.Data, &request); err != nil {
+			t.Errorf("unmarshal request: %v", err)
+			return
+		}
+		requests <- request
+		blob, _ := json.Marshal(node.ExecutionResponse{})
+		_ = fabric.Publish(ctx, fabricts.Message{Subject: message.Reply, Data: blob})
+	})
+	if err != nil {
+		t.Fatalf("subscribe remote node subject: %v", err)
+	}
+
+	distributed, err := NewDistributedExecutor(DistributedExecutorOptions{
+		GatewayNodeID: "gateway",
+		LocalExecutor: &failingLocalExecutor{},
+		Scheduler:     sched,
+		Fabric:        fabric,
+		RemoteActorLocator: func(actorID sessionrt.ActorID) (scheduler.NodeInfo, bool) {
+			return registry.FindNodeByAgent(string(actorID))
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDistributedExecutor() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := distributed.Step(ctx, sessionrt.AgentInput{
+		SessionID: "session-browser",
+		ActorID:   "browser",
+	}); err != nil {
+		t.Fatalf("distributed.Step() error: %v", err)
+	}
+
+	select {
+	case request := <-requests:
+		if request.ActorID != "browser" {
+			t.Fatalf("remote actor id = %q, want browser", request.ActorID)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for remote execution request: %v", ctx.Err())
+	}
+}

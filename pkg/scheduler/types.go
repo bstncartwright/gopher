@@ -27,6 +27,7 @@ type NodeInfo struct {
 	IsGateway     bool         `json:"is_gateway"`
 	Version       string       `json:"version,omitempty"`
 	Capabilities  []Capability `json:"capabilities"`
+	Agents        []string     `json:"agents,omitempty"`
 	LastHeartbeat time.Time    `json:"last_heartbeat"`
 }
 

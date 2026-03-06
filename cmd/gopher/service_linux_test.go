@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/user"
 	"strings"
 	"testing"
 )
@@ -79,10 +80,15 @@ func (f *fakeServiceRuntime) Logs(ctx context.Context, opts serviceLogsOptions) 
 func TestRunServiceSubcommandRoutesInstall(t *testing.T) {
 	prev := newServiceRuntime
 	prevGetEUID := serviceGetEUID
+	prevLookupUser := serviceLookupUser
 	defer func() { newServiceRuntime = prev }()
 	defer func() { serviceGetEUID = prevGetEUID }()
+	defer func() { serviceLookupUser = prevLookupUser }()
 	serviceGetEUID = func() int { return 1000 }
 	t.Setenv("HOME", "/tmp/gopher-home")
+	serviceLookupUser = func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	}
 	fake := &fakeServiceRuntime{}
 	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
 		_ = stdout
@@ -154,7 +160,13 @@ func TestRunServiceSubcommandRoutesLogs(t *testing.T) {
 
 func TestRunServiceSubcommandRoutesInstallNodeRole(t *testing.T) {
 	prev := newServiceRuntime
+	prevLookupUser := serviceLookupUser
 	defer func() { newServiceRuntime = prev }()
+	defer func() { serviceLookupUser = prevLookupUser }()
+	t.Setenv("HOME", "/tmp/gopher-home")
+	serviceLookupUser = func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	}
 	fake := &fakeServiceRuntime{}
 	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
 		_ = stdout
@@ -170,6 +182,12 @@ func TestRunServiceSubcommandRoutesInstallNodeRole(t *testing.T) {
 	}
 	if fake.installOpts.Role != "node" {
 		t.Fatalf("install role = %q, want node", fake.installOpts.Role)
+	}
+	if fake.installOpts.ConfigPath != defaultServiceNodeConfigPath() {
+		t.Fatalf("install config path = %q, want %q", fake.installOpts.ConfigPath, defaultServiceNodeConfigPath())
+	}
+	if fake.installOpts.EnvPath != defaultServiceEnvPath() {
+		t.Fatalf("install env path = %q, want %q", fake.installOpts.EnvPath, defaultServiceEnvPath())
 	}
 }
 
@@ -357,20 +375,47 @@ func TestRunServiceSubcommandRejectsInvalidStatusRole(t *testing.T) {
 }
 
 func TestDefaultServiceEnvPathForRoot(t *testing.T) {
-	prevGetEUID := serviceGetEUID
-	defer func() { serviceGetEUID = prevGetEUID }()
-	serviceGetEUID = func() int { return 0 }
-	if got := defaultServiceEnvPath(); got != "/etc/gopher/gopher.env" {
-		t.Fatalf("defaultServiceEnvPath() = %q, want /etc/gopher/gopher.env", got)
+	prevLookupUser := serviceLookupUser
+	defer func() { serviceLookupUser = prevLookupUser }()
+	t.Setenv("HOME", "/root")
+	serviceLookupUser = func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	}
+	if got := defaultServiceEnvPath(); got != "/root/.gopher/gopher.env" {
+		t.Fatalf("defaultServiceEnvPath() = %q, want /root/.gopher/gopher.env", got)
 	}
 }
 
 func TestDefaultServiceEnvPathForUser(t *testing.T) {
-	prevGetEUID := serviceGetEUID
-	defer func() { serviceGetEUID = prevGetEUID }()
-	serviceGetEUID = func() int { return 1000 }
+	prevLookupUser := serviceLookupUser
+	defer func() { serviceLookupUser = prevLookupUser }()
 	t.Setenv("HOME", "/tmp/gopher-user")
+	serviceLookupUser = func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	}
 	if got := defaultServiceEnvPath(); got != "/tmp/gopher-user/.gopher/gopher.env" {
 		t.Fatalf("defaultServiceEnvPath() = %q, want /tmp/gopher-user/.gopher/gopher.env", got)
+	}
+}
+
+func TestDefaultServicePathsPreferSudoUserHome(t *testing.T) {
+	prevLookupUser := serviceLookupUser
+	defer func() { serviceLookupUser = prevLookupUser }()
+	t.Setenv("SUDO_USER", "exedev")
+	t.Setenv("HOME", "/root")
+	serviceLookupUser = func(username string) (*user.User, error) {
+		if username != "exedev" {
+			return nil, user.UnknownUserError(username)
+		}
+		return &user.User{Username: "exedev", HomeDir: "/home/exedev"}, nil
+	}
+	if got := defaultServiceGatewayConfigPath(); got != "/home/exedev/.gopher/gopher.toml" {
+		t.Fatalf("defaultServiceGatewayConfigPath() = %q, want /home/exedev/.gopher/gopher.toml", got)
+	}
+	if got := defaultServiceNodeConfigPath(); got != "/home/exedev/.gopher/node.toml" {
+		t.Fatalf("defaultServiceNodeConfigPath() = %q, want /home/exedev/.gopher/node.toml", got)
+	}
+	if got := defaultServiceEnvPath(); got != "/home/exedev/.gopher/gopher.env" {
+		t.Fatalf("defaultServiceEnvPath() = %q, want /home/exedev/.gopher/gopher.env", got)
 	}
 }

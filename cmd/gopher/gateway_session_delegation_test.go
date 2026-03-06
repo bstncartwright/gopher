@@ -192,7 +192,7 @@ func newDynamicDelegationFixture(t *testing.T) (context.Context, *gatewaySession
 	dataDir := t.TempDir()
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo": sourceAgent,
-	}, dataDir, nil, router)
+	}, dataDir, nil, router, nil)
 	sourceAgent.Delegation = service
 	return ctx, service, store, router, sourceAgent, manager, sourceSession
 }
@@ -222,7 +222,7 @@ func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, dataDir, nil, nil)
+	}, dataDir, nil, nil, nil)
 
 	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
@@ -436,7 +436,7 @@ func TestGatewaySessionDelegationRejectsSelfTargetAgent(t *testing.T) {
 
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo": {},
-	}, t.TempDir(), nil, nil)
+	}, t.TempDir(), nil, nil, nil)
 	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
 		SourceAgentID:   "milo",
@@ -448,6 +448,48 @@ func TestGatewaySessionDelegationRejectsSelfTargetAgent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "source and target agents must be different") {
 		t.Fatalf("expected self-target validation error, got: %v", err)
+	}
+}
+
+func TestGatewaySessionDelegationUsesRemoteNamedTargetWithoutEphemeralWorker(t *testing.T) {
+	ctx := context.Background()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	source, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{{ID: "milo", Type: sessionrt.ActorAgent}},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo": {},
+	}, t.TempDir(), nil, nil, func(actorID sessionrt.ActorID) bool {
+		return actorID == "browser"
+	})
+	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(source.ID),
+		SourceAgentID:   "milo",
+		TargetAgentID:   "browser",
+		Message:         "Open example.com",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	if result.TargetAgentID != "browser" {
+		t.Fatalf("target = %q, want browser", result.TargetAgentID)
+	}
+	if result.Ephemeral {
+		t.Fatalf("expected remote named target to avoid ephemeral worker")
+	}
+	if _, exists := service.lookupAgent("browser"); exists {
+		t.Fatalf("expected browser to remain remote-only, not registered locally")
 	}
 }
 
@@ -598,7 +640,7 @@ func TestGatewaySessionDelegationCreateReturnsBeforeDelegatedTurnCompletes(t *te
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, t.TempDir(), nil, nil)
+	}, t.TempDir(), nil, nil, nil)
 
 	start := time.Now()
 	_, err = service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
@@ -646,7 +688,7 @@ func TestGatewaySessionDelegationCompletedAnnouncesToSourceSession(t *testing.T)
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, t.TempDir(), nil, nil)
+	}, t.TempDir(), nil, nil, nil)
 
 	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
@@ -714,7 +756,7 @@ func TestGatewaySessionDelegationAgentMessageAnnouncesToSourceSession(t *testing
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, t.TempDir(), nil, nil)
+	}, t.TempDir(), nil, nil, nil)
 
 	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
@@ -784,7 +826,7 @@ func TestGatewaySessionDelegationAgentMessageInvokesSourceAgent(t *testing.T) {
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, t.TempDir(), nil, nil)
+	}, t.TempDir(), nil, nil, nil)
 
 	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
@@ -837,7 +879,7 @@ func TestGatewaySessionDelegationSummaryActiveReturnsProgressDigest(t *testing.T
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, t.TempDir(), nil, nil)
+	}, t.TempDir(), nil, nil, nil)
 
 	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),
@@ -908,7 +950,7 @@ func TestGatewaySessionDelegationSummaryCompletedReturnsTerminalDigest(t *testin
 	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
 		"milo":   {},
 		"worker": {},
-	}, t.TempDir(), nil, nil)
+	}, t.TempDir(), nil, nil, nil)
 
 	created, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
 		SourceSessionID: string(source.ID),

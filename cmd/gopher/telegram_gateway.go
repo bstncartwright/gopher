@@ -61,6 +61,7 @@ func startTelegramDMBridgeWithRuntime(
 	workspace string,
 	agentRuntime *gatewayAgentRuntime,
 	executor sessionrt.AgentExecutor,
+	remoteAgentExists func(sessionrt.ActorID) bool,
 	logger *log.Logger,
 ) (*telegramDMBridge, error) {
 	var err error
@@ -120,7 +121,7 @@ func startTelegramDMBridgeWithRuntime(
 		agent.SessionMemoryFlusher = agentcore.NewStoreBackedSessionMemoryFlusher(store, agent.LongTermMemory, agent.ID)
 	}
 
-	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router)
+	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router, remoteAgentExists)
 	for _, agent := range agentRuntime.Agents {
 		agent.Delegation = delegationTool
 	}

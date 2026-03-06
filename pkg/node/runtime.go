@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type CapabilityAnnouncement struct {
 	IsGateway    bool                   `json:"is_gateway"`
 	Version      string                 `json:"version,omitempty"`
 	Capabilities []scheduler.Capability `json:"capabilities"`
+	Agents       []string               `json:"agents,omitempty"`
 	Timestamp    time.Time              `json:"timestamp"`
 }
 
@@ -42,6 +44,7 @@ type Heartbeat struct {
 	IsGateway    bool                   `json:"is_gateway"`
 	Version      string                 `json:"version,omitempty"`
 	Capabilities []scheduler.Capability `json:"capabilities"`
+	Agents       []string               `json:"agents,omitempty"`
 	Timestamp    time.Time              `json:"timestamp"`
 }
 
@@ -50,6 +53,7 @@ type RuntimeOptions struct {
 	IsGateway         bool
 	Version           string
 	Capabilities      []scheduler.Capability
+	Agents            []string
 	Fabric            fabricts.Fabric
 	Executor          sessionrt.AgentExecutor
 	AdminHandler      AdminHandler
@@ -68,6 +72,7 @@ type Runtime struct {
 
 	cfgMu          sync.RWMutex
 	capabilities   []scheduler.Capability
+	agents         []string
 	interval       time.Duration
 	heartbeatReset chan struct{}
 
@@ -117,6 +122,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		isGateway:      opts.IsGateway,
 		version:        version,
 		capabilities:   append([]scheduler.Capability(nil), opts.Capabilities...),
+		agents:         normalizeAgents(opts.Agents),
 		fabric:         opts.Fabric,
 		executor:       opts.Executor,
 		adminHandler:   opts.AdminHandler,
@@ -227,6 +233,7 @@ func (r *Runtime) publishCapabilities(ctx context.Context) error {
 		IsGateway:    r.isGateway,
 		Version:      r.version,
 		Capabilities: capabilities,
+		Agents:       r.currentAgents(),
 		Timestamp:    r.now().UTC(),
 	}
 	blob, err := json.Marshal(announcement)
@@ -252,6 +259,7 @@ func (r *Runtime) publishHeartbeat(ctx context.Context) error {
 		IsGateway:    r.isGateway,
 		Version:      r.version,
 		Capabilities: capabilities,
+		Agents:       r.currentAgents(),
 		Timestamp:    r.now().UTC(),
 	}
 	blob, err := json.Marshal(heartbeat)
@@ -389,6 +397,32 @@ func (r *Runtime) currentCapabilities() []scheduler.Capability {
 	r.cfgMu.RLock()
 	defer r.cfgMu.RUnlock()
 	return append([]scheduler.Capability(nil), r.capabilities...)
+}
+
+func (r *Runtime) currentAgents() []string {
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	return append([]string(nil), r.agents...)
+}
+
+func normalizeAgents(agents []string) []string {
+	if len(agents) == 0 {
+		return []string{}
+	}
+	set := make(map[string]struct{}, len(agents))
+	for _, agent := range agents {
+		normalized := strings.TrimSpace(agent)
+		if normalized == "" {
+			continue
+		}
+		set[normalized] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for agent := range set {
+		out = append(out, agent)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (r *Runtime) heartbeatInterval() time.Duration {

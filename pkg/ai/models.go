@@ -41,6 +41,7 @@ func loadGeneratedModels() {
 			if model.Provider == "" {
 				model.Provider = provider
 			}
+			model = applyDefaultResponsesCompat(model)
 			providerModels[id] = model
 		}
 		out[provider] = providerModels
@@ -75,6 +76,31 @@ func loadGeneratedModels() {
 		},
 	}
 
+	// Temporary override until models.dev publishes this id.
+	if _, ok := out[ProviderOpenAICodex]; !ok {
+		out[ProviderOpenAICodex] = map[string]Model{}
+	}
+	out[ProviderOpenAICodex]["gpt-5.4"] = Model{
+		ID:        "gpt-5.4",
+		Name:      "GPT-5.4",
+		API:       APIOpenAICodexResponse,
+		Provider:  ProviderOpenAICodex,
+		BaseURL:   "https://chatgpt.com/backend-api",
+		Reasoning: true,
+		Input:     []string{"text", "image", "pdf"},
+		Cost: ModelCost{
+			Input:      1.75,
+			Output:     14,
+			CacheRead:  0.175,
+			CacheWrite: 0,
+		},
+		ContextWindow: 272000,
+		MaxTokens:     128000,
+		ResponsesCompat: &OpenAIResponsesCompat{
+			SupportsHostedWebSearch: boolPtr(true),
+		},
+	}
+
 	modelRegistry = out
 }
 
@@ -86,9 +112,26 @@ func SetModels(provider Provider, models map[string]Model) {
 	}
 	cp := make(map[string]Model, len(models))
 	for id, model := range models {
+		model = applyDefaultResponsesCompat(model)
 		cp[id] = model
 	}
 	modelRegistry[provider] = cp
+}
+
+func applyDefaultResponsesCompat(model Model) Model {
+	if model.API != APIOpenAIResponses && model.API != APIOpenAICodexResponse {
+		return model
+	}
+	if model.Provider != ProviderOpenAI && model.Provider != ProviderOpenAICodex {
+		return model
+	}
+	if model.ResponsesCompat == nil {
+		model.ResponsesCompat = &OpenAIResponsesCompat{}
+	}
+	if model.ResponsesCompat.SupportsHostedWebSearch == nil {
+		model.ResponsesCompat.SupportsHostedWebSearch = boolPtr(true)
+	}
+	return model
 }
 
 func GetModel(provider, modelID string) (Model, bool) {
@@ -167,7 +210,7 @@ func CalculateCost(model Model, usage *Usage) CostBreakdown {
 }
 
 func SupportsXHigh(model Model) bool {
-	if strings.Contains(model.ID, "gpt-5.2") || strings.Contains(model.ID, "gpt-5.3") {
+	if strings.Contains(model.ID, "gpt-5.2") || strings.Contains(model.ID, "gpt-5.3") || strings.Contains(model.ID, "gpt-5.4") {
 		return true
 	}
 	if model.API == APIAnthropicMessages {

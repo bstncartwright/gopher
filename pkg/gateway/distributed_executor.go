@@ -15,6 +15,7 @@ import (
 )
 
 type CapabilityResolver func(input sessionrt.AgentInput) []scheduler.Capability
+type RemoteActorLocator func(actorID sessionrt.ActorID) (scheduler.NodeInfo, bool)
 
 type DistributedExecutorOptions struct {
 	GatewayNodeID      string
@@ -22,6 +23,7 @@ type DistributedExecutorOptions struct {
 	Scheduler          *scheduler.Scheduler
 	Fabric             fabricts.Fabric
 	CapabilityResolver CapabilityResolver
+	RemoteActorLocator RemoteActorLocator
 	AuthEnvKeys        []string
 	EnvLookup          func(string) string
 }
@@ -32,6 +34,7 @@ type DistributedExecutor struct {
 	scheduler     *scheduler.Scheduler
 	fabric        fabricts.Fabric
 	resolve       CapabilityResolver
+	locateActor   RemoteActorLocator
 	authEnvKeys   []string
 	envLookup     func(string) string
 }
@@ -86,6 +89,7 @@ func NewDistributedExecutor(opts DistributedExecutorOptions) (*DistributedExecut
 		scheduler:     opts.Scheduler,
 		fabric:        opts.Fabric,
 		resolve:       resolver,
+		locateActor:   opts.RemoteActorLocator,
 		authEnvKeys:   authEnvKeys,
 		envLookup:     envLookup,
 	}, nil
@@ -126,6 +130,15 @@ func (e *DistributedExecutor) StepStream(ctx context.Context, input sessionrt.Ag
 }
 
 func (e *DistributedExecutor) selectTarget(input sessionrt.AgentInput) (scheduler.Selection, error) {
+	if e.locateActor != nil {
+		if nodeInfo, ok := e.locateActor(input.ActorID); ok {
+			location := scheduler.ExecNode
+			if nodeInfo.NodeID == "" || nodeInfo.NodeID == e.gatewayNodeID {
+				location = scheduler.ExecGateway
+			}
+			return scheduler.Selection{Location: location, NodeID: nodeInfo.NodeID}, nil
+		}
+	}
 	required := e.resolve(input)
 	return e.scheduler.Select(scheduler.SelectionRequest{RequiredCapabilities: required})
 }

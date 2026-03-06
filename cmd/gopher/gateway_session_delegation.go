@@ -44,6 +44,7 @@ type gatewaySessionDelegationToolService struct {
 	manager sessionrt.SessionManager
 	store   gatewaySessionDelegationStore
 	router  *agentcore.ActorExecutorRouter
+	remote  func(sessionrt.ActorID) bool
 
 	mu             sync.RWMutex
 	agents         map[sessionrt.ActorID]*agentcore.Agent
@@ -71,6 +72,7 @@ func newGatewaySessionDelegationToolService(
 	dataDir string,
 	logger *log.Logger,
 	router *agentcore.ActorExecutorRouter,
+	remoteAgentExists func(sessionrt.ActorID) bool,
 ) *gatewaySessionDelegationToolService {
 	if agents == nil {
 		agents = map[sessionrt.ActorID]*agentcore.Agent{}
@@ -79,6 +81,7 @@ func newGatewaySessionDelegationToolService(
 		manager:        manager,
 		store:          store,
 		router:         router,
+		remote:         remoteAgentExists,
 		agents:         agents,
 		ephemeral:      map[string]ephemeralDelegationState{},
 		reservedWorker: map[sessionrt.ActorID]struct{}{},
@@ -437,6 +440,9 @@ func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(ctx contex
 		if _, exists := s.lookupAgent(requestedTargetAgentID); exists {
 			return requestedTargetAgentID, strings.TrimSpace(string(requestedTargetAgentID)), nil, nil
 		}
+		if s.remoteAgentExists(requestedTargetAgentID) {
+			return requestedTargetAgentID, strings.TrimSpace(string(requestedTargetAgentID)), nil, nil
+		}
 	}
 
 	targetAlias := requestedTargetAgentID
@@ -448,6 +454,9 @@ func (s *gatewaySessionDelegationToolService) resolveDelegationTarget(ctx contex
 		}
 		if !s.reserveAlias(targetAlias) {
 			if _, exists := s.lookupAgent(targetAlias); exists {
+				return targetAlias, strings.TrimSpace(string(targetAlias)), nil, nil
+			}
+			if s.remoteAgentExists(targetAlias) {
 				return targetAlias, strings.TrimSpace(string(targetAlias)), nil, nil
 			}
 			return "", "", nil, fmt.Errorf("target agent %q is currently reserved", strings.TrimSpace(string(targetAlias)))
@@ -1125,6 +1134,17 @@ func (s *gatewaySessionDelegationToolService) lookupAgent(actorID sessionrt.Acto
 	defer s.mu.RUnlock()
 	agent, exists := s.agents[id]
 	return agent, exists
+}
+
+func (s *gatewaySessionDelegationToolService) remoteAgentExists(actorID sessionrt.ActorID) bool {
+	if s == nil || s.remote == nil {
+		return false
+	}
+	id := sessionrt.ActorID(strings.TrimSpace(string(actorID)))
+	if id == "" {
+		return false
+	}
+	return s.remote(id)
 }
 
 func (s *gatewaySessionDelegationToolService) reserveNextSubagentAlias() sessionrt.ActorID {

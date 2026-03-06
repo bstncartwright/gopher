@@ -19,7 +19,9 @@ type AgentConfig struct {
 	Name                    string                  `json:"name" toml:"name"`
 	Role                    string                  `json:"role" toml:"role"`
 	ModelPolicy             string                  `json:"model_policy" toml:"model_policy"`
+	NativeWebSearchMode     string                  `json:"native_web_search_mode,omitempty" toml:"native_web_search_mode,omitempty"`
 	ReasoningLevel          string                  `json:"reasoning_level,omitempty" toml:"reasoning_level,omitempty"`
+	ProviderOptions         map[string]any          `json:"provider_options,omitempty" toml:"provider_options,omitempty"`
 	Execution               ExecutionConfig         `json:"execution" toml:"execution"`
 	Policies                *AgentPolicies          `json:"policies,omitempty" toml:"policies,omitempty"`
 	EnabledTools            []string                `json:"enabled_tools" toml:"enabled_tools"`
@@ -50,6 +52,14 @@ type AgentACPRuntimeConfig struct {
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty" toml:"timeout_seconds,omitempty"`
 	Env            map[string]string `json:"env,omitempty" toml:"env,omitempty"`
 }
+
+type NativeWebSearchMode string
+
+const (
+	NativeWebSearchModeDisabled NativeWebSearchMode = "disabled"
+	NativeWebSearchModeCached   NativeWebSearchMode = "cached"
+	NativeWebSearchModeLive     NativeWebSearchMode = "live"
+)
 
 type ContextManagementConfig struct {
 	EnablePruning       *bool `json:"enable_pruning,omitempty" toml:"enable_pruning,omitempty"`
@@ -464,6 +474,44 @@ func (c AgentConfig) ReasoningLevelValue() ai.ThinkingLevel {
 	return normalizeReasoningLevel(c.ReasoningLevel)
 }
 
+func (c AgentConfig) NativeWebSearchModeValue(model ai.Model) NativeWebSearchMode {
+	mode, explicit, ok := normalizeNativeWebSearchMode(c.NativeWebSearchMode)
+	if explicit && ok {
+		if ai.SupportsHostedWebSearch(model) {
+			return mode
+		}
+		return NativeWebSearchModeDisabled
+	}
+	if ai.SupportsHostedWebSearch(model) {
+		return NativeWebSearchModeCached
+	}
+	return NativeWebSearchModeDisabled
+}
+
+func normalizeNativeWebSearchMode(raw string) (NativeWebSearchMode, bool, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	if normalized == "" {
+		return "", false, true
+	}
+	switch NativeWebSearchMode(normalized) {
+	case NativeWebSearchModeDisabled, NativeWebSearchModeCached, NativeWebSearchModeLive:
+		return NativeWebSearchMode(normalized), true, true
+	default:
+		return "", true, false
+	}
+}
+
+func (c AgentConfig) ProviderOptionsValue() map[string]any {
+	if len(c.ProviderOptions) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(c.ProviderOptions))
+	for key, value := range c.ProviderOptions {
+		out[key] = value
+	}
+	return out
+}
+
 func normalizeReasoningLevel(raw string) ai.ThinkingLevel {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "":
@@ -597,6 +645,7 @@ type SessionMemoryFlusher interface {
 }
 
 type Attachment struct {
+	Path     string
 	Name     string
 	MIMEType string
 	Text     string

@@ -2,10 +2,9 @@ package agentcore
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
-	"path/filepath"
 	"strings"
 
 	"github.com/bstncartwright/gopher/pkg/ai"
@@ -33,7 +32,7 @@ func (a *Agent) buildProviderContext(ctx context.Context, s *Session, userMessag
 	if len(modeOverride) > 0 {
 		mode = normalizePromptMode(modeOverride[0])
 	}
-	out, _, err := a.buildProviderContextDetailedWithOptions(ctx, s, userMessage, providerContextBuildOptions{
+	out, _, err := a.buildProviderContextDetailedWithAttachments(ctx, s, userMessage, nil, providerContextBuildOptions{
 		Mode:                         mode,
 		EnableModelCompactionSummary: true,
 	})
@@ -45,13 +44,17 @@ func (a *Agent) buildProviderContextDetailed(ctx context.Context, s *Session, us
 	if len(modeOverride) > 0 {
 		mode = normalizePromptMode(modeOverride[0])
 	}
-	return a.buildProviderContextDetailedWithOptions(ctx, s, userMessage, providerContextBuildOptions{
+	return a.buildProviderContextDetailedWithAttachments(ctx, s, userMessage, nil, providerContextBuildOptions{
 		Mode:                         mode,
 		EnableModelCompactionSummary: true,
 	})
 }
 
 func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *Session, userMessage string, opts providerContextBuildOptions) (ai.Context, ctxbundle.ContextDiagnostics, error) {
+	return a.buildProviderContextDetailedWithAttachments(ctx, s, userMessage, nil, opts)
+}
+
+func (a *Agent) buildProviderContextDetailedWithAttachments(ctx context.Context, s *Session, userMessage string, attachments []Attachment, opts providerContextBuildOptions) (ai.Context, ctxbundle.ContextDiagnostics, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,9 +114,13 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	if len(messages) > 0 {
 		userTimestamp = messages[len(messages)-1].Timestamp + 1
 	}
+	userContent := any(expandedUserMessage)
+	if len(attachments) > 0 {
+		userContent = buildInboundAttachmentContent(expandedUserMessage, attachments, a.model)
+	}
 	messages = append(messages, ai.Message{
 		Role:      ai.RoleUser,
-		Content:   expandedUserMessage,
+		Content:   userContent,
 		Timestamp: userTimestamp,
 	})
 
@@ -209,8 +216,111 @@ func (a *Agent) buildProviderContextDetailedWithOptions(ctx context.Context, s *
 	return ai.Context{
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
-		Tools:        toolSchemasToAITools(activeTools),
+		Tools:        buildProviderAITools(activeTools, a.model, a.Config, a.Policies, false),
 	}, diagnostics, nil
+}
+
+func buildInboundAttachmentContent(text string, attachments []Attachment, model ai.Model) any {
+	if len(attachments) == 0 {
+		return text
+	}
+
+	blocks := make([]ai.ContentBlock, 0, 1+len(attachments)*2)
+	if strings.TrimSpace(text) != "" {
+		blocks = append(blocks, ai.ContentBlock{Type: ai.ContentTypeText, Text: text})
+	}
+	for _, attachment := range attachments {
+		blocks = append(blocks, attachmentContentBlocks(attachment, model)...)
+	}
+	if len(blocks) == 0 {
+		return text
+	}
+	return blocks
+}
+
+func attachmentContentBlocks(attachment Attachment, model ai.Model) []ai.ContentBlock {
+	mimeType := strings.ToLower(strings.TrimSpace(attachment.MIMEType))
+	if strings.HasPrefix(mimeType, "image/") && len(attachment.Data) > 0 && modelSupportsInput(model, "image") {
+		blocks := []ai.ContentBlock{{
+			Type:     ai.ContentTypeImage,
+			MimeType: mimeType,
+			Data:     base64.StdEncoding.EncodeToString(attachment.Data),
+		}}
+		if text := strings.TrimSpace(attachment.Text); text != "" {
+			blocks = append(blocks, ai.ContentBlock{Type: ai.ContentTypeText, Text: formatInboundAttachmentText(attachment, text)})
+		} else if strings.TrimSpace(attachment.Path) != "" {
+			blocks = append(blocks, ai.ContentBlock{Type: ai.ContentTypeText, Text: formatInboundAttachmentSummary(attachment)})
+		}
+		return blocks
+	}
+	if text := strings.TrimSpace(attachment.Text); text != "" {
+		return []ai.ContentBlock{{Type: ai.ContentTypeText, Text: formatInboundAttachmentText(attachment, text)}}
+	}
+	return []ai.ContentBlock{{Type: ai.ContentTypeText, Text: formatInboundAttachmentSummary(attachment)}}
+}
+
+func formatInboundAttachmentSummary(attachment Attachment) string {
+	label := "file"
+	mimeType := strings.ToLower(strings.TrimSpace(attachment.MIMEType))
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		label = "image"
+	case strings.HasPrefix(mimeType, "audio/"):
+		label = "audio"
+	case strings.HasPrefix(mimeType, "video/"):
+		label = "video"
+	case mimeType == "application/pdf":
+		label = "pdf"
+	case mimeType != "":
+		label = mimeType
+	}
+
+	name := strings.TrimSpace(attachment.Name)
+	path := strings.TrimSpace(attachment.Path)
+	switch {
+	case name != "" && mimeType != "":
+		summary := fmt.Sprintf("Attached %s: %s (%s).", label, name, mimeType)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
+	case name != "":
+		summary := fmt.Sprintf("Attached %s: %s.", label, name)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
+	case mimeType != "":
+		summary := fmt.Sprintf("Attached %s (%s).", label, mimeType)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
+	default:
+		summary := fmt.Sprintf("Attached %s.", label)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
+	}
+}
+
+func formatInboundAttachmentText(attachment Attachment, text string) string {
+	summary := formatInboundAttachmentSummary(attachment)
+	return summary + "\n\n" + text
+}
+
+func modelSupportsInput(model ai.Model, inputType string) bool {
+	inputType = strings.TrimSpace(strings.ToLower(inputType))
+	if inputType == "" {
+		return false
+	}
+	for _, item := range model.Input {
+		if strings.EqualFold(strings.TrimSpace(item), inputType) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) InspectContext(ctx context.Context, s *Session, in TurnInput) (ctxbundle.ContextDiagnostics, error) {
@@ -219,112 +329,6 @@ func (a *Agent) InspectContext(ctx context.Context, s *Session, in TurnInput) (c
 	}
 	_, diagnostics, err := a.buildProviderContextDetailed(ctx, s, in.UserMessage, in.PromptMode)
 	return diagnostics, err
-}
-
-func (a *Agent) retrieveLongTermMemory(ctx context.Context, s *Session, userMessage string) []memory.MemoryRecord {
-	if a == nil {
-		return nil
-	}
-	if a.MemorySearch != nil {
-		resp, err := a.MemorySearch.Search(ctx, memory.MemorySearchRequest{
-			Query:      userMessage,
-			MaxResults: a.Config.MemorySearch.MaxResultsValue(),
-			MinScore:   a.Config.MemorySearch.MinScoreValue(),
-			SessionKey: s.ID,
-		})
-		if err == nil {
-			out := make([]memory.MemoryRecord, 0, len(resp.Results))
-			for _, item := range resp.Results {
-				if strings.TrimSpace(item.Snippet) == "" {
-					continue
-				}
-				metadata := map[string]string{
-					"path":       item.Path,
-					"start_line": fmt.Sprintf("%d", item.StartLine),
-					"end_line":   fmt.Sprintf("%d", item.EndLine),
-					"score":      fmt.Sprintf("%.4f", item.Score),
-					"source":     item.Source,
-				}
-				if citation := strings.TrimSpace(item.Citation); citation != "" {
-					if citationsEnabledForPrompt(a.Config.Memory.CitationsModeValue()) {
-						metadata["citation"] = citation
-					}
-				}
-				out = append(out, memory.MemoryRecord{
-					ID:        item.ID,
-					Type:      memory.MemorySemantic,
-					Scope:     memory.ScopeGlobal,
-					SessionID: s.ID,
-					AgentID:   a.ID,
-					Content:   item.Snippet,
-					Metadata:  metadata,
-				})
-			}
-			if len(out) > 0 {
-				if s != nil {
-					if status, statusErr := a.MemorySearch.Status(ctx); statusErr == nil {
-						s.LastContextDiagnostics.MemorySearchMode = status.RetrievalMode()
-						s.LastContextDiagnostics.MemoryProvider = status.Provider
-						s.LastContextDiagnostics.MemoryFallbackReason = status.FallbackReason
-						s.LastContextDiagnostics.MemoryUnavailableReason = status.UnavailableReason
-					}
-				}
-				return out
-			}
-		}
-	}
-	if a.LongTermMemory == nil {
-		return nil
-	}
-
-	scopes := []memory.MemoryScope{
-		memory.ScopeGlobal,
-		memory.AgentScope(a.ID),
-		memory.SessionScope(s.ID),
-	}
-	projectName := strings.TrimSpace(filepath.Base(a.Workspace))
-	if projectName != "" {
-		scopes = append(scopes, memory.ProjectScope(projectName))
-	}
-
-	typeQuota := []struct {
-		Type  memory.MemoryType
-		Limit int
-	}{
-		{Type: memory.MemorySemantic, Limit: 3},
-		{Type: memory.MemoryProcedural, Limit: 2},
-		{Type: memory.MemoryEpisodic, Limit: 2},
-		{Type: memory.MemoryTool, Limit: 1},
-	}
-
-	out := make([]memory.MemoryRecord, 0, 8)
-	seen := map[string]struct{}{}
-	for _, item := range typeQuota {
-		records, err := a.LongTermMemory.Retrieve(ctx, memory.MemoryQuery{
-			SessionID: s.ID,
-			AgentID:   a.ID,
-			Topic:     userMessage,
-			Keywords:  memory.ExtractKeywords(userMessage, 10),
-			Limit:     item.Limit,
-			Scopes:    scopes,
-			Types:     []memory.MemoryType{item.Type},
-		})
-		if err != nil {
-			continue
-		}
-		for _, record := range records {
-			key := dedupeMemoryKey(record)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, record)
-		}
-	}
-	if len(out) > 8 {
-		out = out[:8]
-	}
-	return out
 }
 
 func renderMemoryFallbackSection(records []memory.MemoryRecord) string {
@@ -361,15 +365,6 @@ func hasTool(registry ToolRegistry, name string) bool {
 	return ok
 }
 
-func citationsEnabledForPrompt(mode string) bool {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "off":
-		return false
-	default:
-		return true
-	}
-}
-
 func marshalStableJSON(v any) ([]byte, error) {
 	return json.MarshalIndent(v, "", "  ")
 }
@@ -383,18 +378,6 @@ func cloneSessionMessages(in []Message) []Message {
 		out = append(out, msg.Clone())
 	}
 	return out
-}
-
-func dedupeMemoryKey(record memory.MemoryRecord) string {
-	id := strings.TrimSpace(record.ID)
-	if id != "" {
-		return id
-	}
-	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(strings.TrimSpace(record.Content)))
-	_, _ = hash.Write([]byte(record.Type.String()))
-	_, _ = hash.Write([]byte(strings.TrimSpace(record.AgentID)))
-	return fmt.Sprintf("hash:%x", hash.Sum64())
 }
 
 func estimateBootstrapTokens(files []BootstrapContextFile) int {

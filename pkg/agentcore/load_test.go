@@ -234,6 +234,55 @@ historical_tool_result_chars = 240
 	}
 }
 
+func TestLoadAgentRejectsInvalidNativeWebSearchMode(t *testing.T) {
+	config := defaultConfig()
+	config.NativeWebSearchMode = "always"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected invalid native_web_search_mode error")
+	}
+	if !strings.Contains(err.Error(), "native_web_search_mode") {
+		t.Fatalf("expected native_web_search_mode in error, got: %v", err)
+	}
+}
+
+func TestAgentConfigNativeWebSearchModeDefaultsToCachedForSupportedProviders(t *testing.T) {
+	mode := defaultConfig().NativeWebSearchModeValue(ai.Model{
+		API:      ai.APIOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+	})
+	if mode != NativeWebSearchModeCached {
+		t.Fatalf("mode = %q, want cached", mode)
+	}
+}
+
+func TestLoadAgentParsesProviderOptionsFromTOML(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	if err := os.Remove(filepath.Join(workspace, "config.json")); err != nil {
+		t.Fatalf("remove config.json: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(workspace, "config.toml"), `agent_id = "agent-test"
+name = "Test Agent"
+role = "coder"
+model_policy = "openai-codex:gpt-5.3-codex"
+reasoning_level = "medium"
+enabled_tools = ["group:fs", "group:runtime"]
+
+[provider_options]
+service_tier = "fast"
+`)
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if got := agent.Config.ProviderOptions["service_tier"]; got != "fast" {
+		t.Fatalf("provider_options.service_tier = %#v, want %q", got, "fast")
+	}
+}
+
 func TestLoadAgentDefaultsLegacyMissingShellPolicy(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	mustWriteFile(t, filepath.Join(workspace, "policies.json"), `{

@@ -27,6 +27,7 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	var sawConversationID string
 	var sawSessionID string
 	var sawPromptCacheKey string
+	var sawServiceTier string
 	var sawStore any
 
 	oldClient := defaultHTTPClient
@@ -42,6 +43,7 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			sawPromptCacheKey = fmt.Sprint(body["prompt_cache_key"])
+			sawServiceTier = fmt.Sprint(body["service_tier"])
 			sawStore = body["store"]
 
 			events := []map[string]any{
@@ -83,7 +85,14 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	stream := StreamOpenAICodexResponses(
 		model,
 		Context{SystemPrompt: "You are helpful", Messages: []Message{{Role: RoleUser, Content: "hi", Timestamp: time.Now().UnixMilli()}}},
-		&StreamOptions{APIKey: token, SessionID: sessionID, RequestContext: ctx},
+		&StreamOptions{
+			APIKey:         token,
+			SessionID:      sessionID,
+			RequestContext: ctx,
+			ProviderOptions: map[string]any{
+				"service_tier": "fast",
+			},
+		},
 	)
 
 	result, err := stream.Result(ctx)
@@ -105,12 +114,40 @@ func TestStreamOpenAICodexResponsesSessionHeadersAndPayload(t *testing.T) {
 	if sawPromptCacheKey != sessionID {
 		t.Fatalf("expected prompt_cache_key %q, got %q", sessionID, sawPromptCacheKey)
 	}
+	if sawServiceTier != "priority" {
+		t.Fatalf("expected service_tier %q, got %q", "priority", sawServiceTier)
+	}
 	storeFlag, ok := sawStore.(bool)
 	if !ok {
 		t.Fatalf("expected store to be a boolean, got %#v", sawStore)
 	}
 	if storeFlag {
 		t.Fatalf("expected store=false, got true")
+	}
+}
+
+func TestBuildCodexRequestBodyIncludesHostedWebSearch(t *testing.T) {
+	body := buildCodexRequestBody(Model{
+		ID:       "gpt-5.1-codex",
+		API:      APIOpenAICodexResponse,
+		Provider: ProviderOpenAICodex,
+	}, Context{
+		Messages: []Message{{Role: RoleUser, Content: "hi"}},
+		Tools: []Tool{{
+			Kind:              ToolKindHostedWebSearch,
+			Name:              "web_search",
+			ExternalWebAccess: boolPtr(true),
+		}},
+	}, &OpenAICodexResponsesOptions{})
+
+	if len(body.Tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(body.Tools))
+	}
+	if got := body.Tools[0]["type"]; got != "web_search" {
+		t.Fatalf("type = %#v, want web_search", got)
+	}
+	if got, ok := body.Tools[0]["external_web_access"].(bool); !ok || !got {
+		t.Fatalf("expected external_web_access=true, got %#v", body.Tools[0]["external_web_access"])
 	}
 }
 
@@ -195,6 +232,16 @@ func TestStreamOpenAICodexResponsesAutoFallsBackAfterNormalWebSocketClosure(t *t
 	}
 	if wsAttempts.Load() == 0 {
 		t.Fatalf("expected at least one websocket attempt before SSE fallback")
+	}
+}
+
+func TestResolveOpenAICodexResponsesTransportDefaultsToAuto(t *testing.T) {
+	model := Model{
+		Provider: ProviderOpenAICodex,
+		BaseURL:  "https://chatgpt.com/backend-api",
+	}
+	if got := resolveOpenAICodexResponsesTransport(model, &OpenAICodexResponsesOptions{}); got != TransportAuto {
+		t.Fatalf("transport = %q, want %q", got, TransportAuto)
 	}
 }
 

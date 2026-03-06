@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const defaultAgentModelPolicy = "openai-codex:gpt-5.3-codex"
+const defaultAgentModelPolicy = "openai-codex:gpt-5.4"
 
 //go:embed default_templates/*.md
 var defaultTemplateFS embed.FS
@@ -71,6 +71,10 @@ name = %q
 role = "assistant"
 model_policy = %q
 reasoning_level = "medium"
+# Optional provider-specific request options. Leave unset by default.
+# For OpenAI Codex fast mode:
+# [provider_options]
+# service_tier = "fast"
 max_context_messages = 40
 
 [context_management]

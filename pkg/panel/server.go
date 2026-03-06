@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,9 +25,14 @@ import (
 )
 
 const (
-	defaultRetryBackoff = 500 * time.Millisecond
-	maxRetryBackoff     = 30 * time.Second
-	sseKeepaliveEvery   = 15 * time.Second
+	defaultRetryBackoff  = 500 * time.Millisecond
+	maxRetryBackoff      = 30 * time.Second
+	sseKeepaliveEvery    = 15 * time.Second
+	timelineInitialLimit = 10
+	timelinePageLimit    = 50
+	timelineStreamLimit  = 200
+	adminRoot            = "/admin"
+	legacyPanelRoot      = "/_gopher/panel"
 )
 
 //go:embed templates/*.html assets/*
@@ -36,6 +42,11 @@ type SessionStore interface {
 	List(ctx context.Context, sessionID sessionrt.SessionID) ([]sessionrt.Event, error)
 	Stream(ctx context.Context, sessionID sessionrt.SessionID) (<-chan sessionrt.Event, error)
 	ListSessions(ctx context.Context) ([]sessionrt.SessionRecord, error)
+}
+
+type sessionTimelinePageStore interface {
+	ListBefore(ctx context.Context, sessionID sessionrt.SessionID, beforeSeq uint64, limit int) ([]sessionrt.Event, bool, error)
+	ListAfter(ctx context.Context, sessionID sessionrt.SessionID, afterSeq uint64, limit int) ([]sessionrt.Event, error)
 }
 
 type SessionMetadata struct {
@@ -90,6 +101,7 @@ type Server struct {
 type pageData struct {
 	HasSessionStore bool
 	ActiveTab       string
+	PanelRoot       string
 }
 
 type overviewNode struct {
@@ -130,29 +142,31 @@ type cronData struct {
 }
 
 type cronJobRow struct {
-	ID        string
-	SessionID string
-	Status    string
-	CronExpr  string
-	Timezone  string
-	CreatedBy string
-	Message   string
-	LastRunAt string
-	NextRunAt string
-	UpdatedAt string
+	ID            string
+	SessionID     string
+	ScheduleState string
+	RunStatus     string
+	CronExpr      string
+	Timezone      string
+	CreatedBy     string
+	Message       string
+	LastRunAt     string
+	NextRunAt     string
+	UpdatedAt     string
 }
 
 type cronJobDisk struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"session_id"`
-	Message   string     `json:"message"`
-	CronExpr  string     `json:"cron_expr"`
-	Timezone  string     `json:"timezone"`
-	Enabled   bool       `json:"enabled"`
-	CreatedBy string     `json:"created_by"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	LastRunAt *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt *time.Time `json:"next_run_at,omitempty"`
+	ID            string     `json:"id"`
+	SessionID     string     `json:"session_id"`
+	Message       string     `json:"message"`
+	CronExpr      string     `json:"cron_expr"`
+	Timezone      string     `json:"timezone"`
+	Enabled       bool       `json:"enabled"`
+	CreatedBy     string     `json:"created_by"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt     *time.Time `json:"next_run_at,omitempty"`
+	LastRunStatus string     `json:"last_run_status,omitempty"`
 }
 
 type cronStoreDisk struct {
@@ -236,9 +250,19 @@ type sessionDetailData struct {
 	Title           string
 	ConversationID  string
 	Error           string
+	FirstSeq        uint64
 	LastSeq         uint64
+	HasOlder        bool
 	Events          []eventRow
 	ContextHealth   *contextHealthData
+}
+
+type sessionEventRowsData struct {
+	SessionID string
+	FirstSeq  uint64
+	LastSeq   uint64
+	HasOlder  bool
+	Events    []eventRow
 }
 
 type contextHealthData struct {
@@ -377,20 +401,36 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 
 func (s *Server) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /_gopher/panel", s.handlePage)
-	mux.HandleFunc("GET /_gopher/panel/tab/{tab}", s.handlePageTab)
-	mux.HandleFunc("GET /_gopher/panel/health", s.handleHealth)
-	mux.HandleFunc("GET /_gopher/panel/nodes", s.handleNodes)
-	mux.HandleFunc("GET /_gopher/panel/fragments/control", s.handleControl)
-	mux.HandleFunc("GET /_gopher/panel/fragments/nodes-table", s.handleNodesFragment)
-	mux.HandleFunc("GET /_gopher/panel/fragments/control-actions", s.handleControlActions)
-	mux.HandleFunc("GET /_gopher/panel/fragments/cron", s.handleCron)
-	mux.HandleFunc("GET /_gopher/panel/fragments/overview", s.handleOverview)
-	mux.HandleFunc("GET /_gopher/panel/fragments/sessions", s.handleSessions)
-	mux.HandleFunc("GET /_gopher/panel/fragments/session/{sessionID}", s.handleSessionDetail)
-	mux.HandleFunc("GET /_gopher/panel/fragments/agents", s.handleAgents)
-	mux.HandleFunc("GET /_gopher/panel/stream/session/{sessionID}", s.handleSessionStream)
-	mux.HandleFunc("GET /_gopher/panel/assets/panel.css", s.handleCSS)
+	mux.HandleFunc("GET "+adminRoot, s.handlePage)
+	mux.HandleFunc("GET "+adminRoot+"/health", s.handleHealth)
+	mux.HandleFunc("GET "+adminRoot+"/nodes", s.handleNodes)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/control", s.handleControl)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/nodes-table", s.handleNodesFragment)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/control-actions", s.handleControlActions)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/cron", s.handleCron)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/overview", s.handleOverview)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/sessions", s.handleSessions)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/session/{sessionID}", s.handleSessionDetail)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/session/{sessionID}/events", s.handleSessionEventRows)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/agents", s.handleAgents)
+	mux.HandleFunc("GET "+adminRoot+"/stream/session/{sessionID}", s.handleSessionStream)
+	mux.HandleFunc("GET "+adminRoot+"/assets/panel.css", s.handleCSS)
+
+	mux.HandleFunc("GET "+legacyPanelRoot, s.handleLegacyPage)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/tab/{tab}", s.handleLegacyPageTab)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/health", s.handleHealth)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/nodes", s.handleNodes)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/control", s.handleControl)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/nodes-table", s.handleNodesFragment)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/control-actions", s.handleControlActions)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/cron", s.handleCron)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/overview", s.handleOverview)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/sessions", s.handleSessions)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/session/{sessionID}", s.handleSessionDetail)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/session/{sessionID}/events", s.handleSessionEventRows)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/agents", s.handleAgents)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/stream/session/{sessionID}", s.handleSessionStream)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/assets/panel.css", s.handleCSS)
 	return mux
 }
 
@@ -402,18 +442,35 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "page.html", pageData{
 		HasSessionStore: s.store != nil,
 		ActiveTab:       tab,
+		PanelRoot:       adminRoot,
 	})
 }
 
-func (s *Server) handlePageTab(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLegacyPage(w http.ResponseWriter, r *http.Request) {
+	s.redirectToCanonicalPage(w, r, "")
+}
+
+func (s *Server) handleLegacyPageTab(w http.ResponseWriter, r *http.Request) {
 	tab := normalizePanelTab(r.PathValue("tab"))
-	if tab == "" {
-		tab = "control"
+	s.redirectToCanonicalPage(w, r, tab)
+}
+
+func (s *Server) redirectToCanonicalPage(w http.ResponseWriter, r *http.Request, tab string) {
+	params := urlValuesClone(r)
+	normalized := normalizePanelTab(tab)
+	if normalized == "" {
+		normalized = normalizePanelTab(params.Get("tab"))
 	}
-	s.renderTemplate(w, "page.html", pageData{
-		HasSessionStore: s.store != nil,
-		ActiveTab:       tab,
-	})
+	if normalized != "" && normalized != "control" {
+		params.Set("tab", normalized)
+	} else {
+		params.Del("tab")
+	}
+	target := adminRoot
+	if encoded := params.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	http.Redirect(w, r, target, http.StatusPermanentRedirect)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -500,6 +557,10 @@ func (s *Server) handleCron(w http.ResponseWriter, _ *http.Request) {
 	for _, job := range jobs {
 		data.TotalJobs++
 		status := "paused"
+		runStatus := strings.ToLower(strings.TrimSpace(job.LastRunStatus))
+		if runStatus == "" {
+			runStatus = "completed"
+		}
 		if job.Enabled {
 			status = "enabled"
 			data.EnabledJobs++
@@ -507,16 +568,17 @@ func (s *Server) handleCron(w http.ResponseWriter, _ *http.Request) {
 			data.PausedJobs++
 		}
 		rows = append(rows, cronJobRow{
-			ID:        strings.TrimSpace(job.ID),
-			SessionID: strings.TrimSpace(job.SessionID),
-			Status:    status,
-			CronExpr:  strings.TrimSpace(job.CronExpr),
-			Timezone:  strings.TrimSpace(job.Timezone),
-			CreatedBy: strings.TrimSpace(job.CreatedBy),
-			Message:   clipPanelText(strings.TrimSpace(job.Message), 180),
-			LastRunAt: formatOptionalTime(job.LastRunAt),
-			NextRunAt: formatOptionalTime(job.NextRunAt),
-			UpdatedAt: formatTime(job.UpdatedAt),
+			ID:            strings.TrimSpace(job.ID),
+			SessionID:     strings.TrimSpace(job.SessionID),
+			ScheduleState: status,
+			RunStatus:     runStatus,
+			CronExpr:      strings.TrimSpace(job.CronExpr),
+			Timezone:      strings.TrimSpace(job.Timezone),
+			CreatedBy:     strings.TrimSpace(job.CreatedBy),
+			Message:       clipPanelText(strings.TrimSpace(job.Message), 180),
+			LastRunAt:     formatOptionalTime(job.LastRunAt),
+			NextRunAt:     formatOptionalTime(job.NextRunAt),
+			UpdatedAt:     formatTime(job.UpdatedAt),
 		})
 	}
 	data.Jobs = rows
@@ -543,6 +605,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sort.Slice(records, func(i, j int) bool {
+		if records[i].InFlight != records[j].InFlight {
+			return records[i].InFlight
+		}
 		return records[i].UpdatedAt.After(records[j].UpdatedAt)
 	})
 
@@ -593,22 +658,29 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.store.List(r.Context(), sessionrt.SessionID(data.SessionID))
+	page, err := s.listSessionEventsBefore(r.Context(), sessionrt.SessionID(data.SessionID), 0, timelineInitialLimit)
 	if err != nil {
 		data.Error = fmt.Sprintf("Load session failed: %v", err)
 		s.renderTemplate(w, "session_detail.html", data)
 		return
 	}
-	data.Events = toEventRows(events)
-	data.ContextHealth = extractContextHealth(events)
-	if len(events) > 0 {
-		data.LastSeq = events[len(events)-1].Seq
+	data.Events = toEventRows(page.Events)
+	data.HasOlder = page.HasMoreBefore
+	if len(page.Events) > 0 {
+		data.FirstSeq = page.Events[0].Seq
+		data.LastSeq = page.Events[len(page.Events)-1].Seq
+	}
+	contextEvents, err := s.listSessionEventsBefore(r.Context(), sessionrt.SessionID(data.SessionID), 0, timelineStreamLimit)
+	if err == nil {
+		data.ContextHealth = extractContextHealth(contextEvents.Events)
 	}
 	metadata := s.lookupSessionMetadata(sessionrt.SessionID(data.SessionID))
 	data.ConversationID = metadata.ConversationID
 	if metadata.ConversationName != "" {
 		data.Title = metadata.ConversationName
-	} else if displayName := sessionrt.DisplayNameFromEvents(events); displayName != "" {
+	} else if displayName := s.lookupSessionDisplayName(r.Context(), sessionrt.SessionID(data.SessionID)); displayName != "" {
+		data.Title = displayName
+	} else if displayName := sessionrt.DisplayNameFromEvents(page.Events); displayName != "" {
 		data.Title = displayName
 	} else if metadata.ConversationID != "" {
 		data.Title = metadata.ConversationID
@@ -616,6 +688,65 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		data.Title = data.SessionID
 	}
 	s.renderTemplate(w, "session_detail.html", data)
+}
+
+func (s *Server) handleSessionEventRows(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "session runtime unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		http.Error(w, "sessionID is required", http.StatusBadRequest)
+		return
+	}
+	beforeSeq, err := parseSeqParam(r.URL.Query().Get("before_seq"), "before_seq")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	afterSeq, err := parseSeqParam(r.URL.Query().Get("after_seq"), "after_seq")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if beforeSeq > 0 && afterSeq > 0 {
+		http.Error(w, "before_seq and after_seq cannot be combined", http.StatusBadRequest)
+		return
+	}
+	limit, err := parseLimitParam(r.URL.Query().Get("limit"), timelinePageLimit, timelineStreamLimit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	data := sessionEventRowsData{SessionID: sessionID}
+	switch {
+	case afterSeq > 0:
+		page, err := s.listSessionEventsAfter(r.Context(), sessionrt.SessionID(sessionID), afterSeq, limit)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("load session: %v", err), http.StatusNotFound)
+			return
+		}
+		data.Events = toEventRows(page.Events)
+		if len(page.Events) > 0 {
+			data.FirstSeq = page.Events[0].Seq
+			data.LastSeq = page.Events[len(page.Events)-1].Seq
+		}
+	default:
+		page, err := s.listSessionEventsBefore(r.Context(), sessionrt.SessionID(sessionID), beforeSeq, limit)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("load session: %v", err), http.StatusNotFound)
+			return
+		}
+		data.Events = toEventRows(page.Events)
+		data.HasOlder = page.HasMoreBefore
+		if len(page.Events) > 0 {
+			data.FirstSeq = page.Events[0].Seq
+			data.LastSeq = page.Events[len(page.Events)-1].Seq
+		}
+	}
+	s.renderTemplate(w, "session_event_rows.html", data)
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
@@ -709,16 +840,13 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.store.List(r.Context(), sessionrt.SessionID(sessionID))
+	events, err := s.listSessionEventsAfter(r.Context(), sessionrt.SessionID(sessionID), afterSeq, timelineStreamLimit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("load session: %v", err), http.StatusNotFound)
 		return
 	}
 	lastSeq := afterSeq
-	for _, event := range events {
-		if event.Seq <= afterSeq {
-			continue
-		}
+	for _, event := range events.Events {
 		if err := writeSessionSSEEvent(w, sessionID, event); err != nil {
 			return
 		}
@@ -798,16 +926,130 @@ func writeJSON(w http.ResponseWriter, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func parseAfterSeq(raw string) (uint64, error) {
+func parseSeqParam(raw string, name string) (uint64, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return 0, nil
 	}
 	seq, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("after_seq must be an unsigned integer")
+		return 0, fmt.Errorf("%s must be an unsigned integer", name)
 	}
 	return seq, nil
+}
+
+func parseAfterSeq(raw string) (uint64, error) {
+	return parseSeqParam(raw, "after_seq")
+}
+
+func parseLimitParam(raw string, defaultValue int, maxValue int) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return defaultValue, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 0, fmt.Errorf("limit must be a positive integer")
+	}
+	if maxValue > 0 && limit > maxValue {
+		return maxValue, nil
+	}
+	return limit, nil
+}
+
+type sessionEventPage struct {
+	Events        []sessionrt.Event
+	HasMoreBefore bool
+}
+
+func (s *Server) listSessionEventsBefore(ctx context.Context, sessionID sessionrt.SessionID, beforeSeq uint64, limit int) (sessionEventPage, error) {
+	if pager, ok := s.store.(sessionTimelinePageStore); ok {
+		events, hasMore, err := pager.ListBefore(ctx, sessionID, beforeSeq, limit)
+		return sessionEventPage{Events: events, HasMoreBefore: hasMore}, err
+	}
+	events, err := s.store.List(ctx, sessionID)
+	if err != nil {
+		return sessionEventPage{}, err
+	}
+	if limit <= 0 || limit >= len(events) {
+		filtered := filterEventsBefore(events, beforeSeq)
+		return sessionEventPage{
+			Events:        filtered,
+			HasMoreBefore: beforeSeq > 0 && len(filtered) < len(events),
+		}, nil
+	}
+	filtered := filterEventsBefore(events, beforeSeq)
+	if len(filtered) <= limit {
+		return sessionEventPage{Events: filtered}, nil
+	}
+	start := len(filtered) - limit
+	return sessionEventPage{
+		Events:        append([]sessionrt.Event(nil), filtered[start:]...),
+		HasMoreBefore: start > 0,
+	}, nil
+}
+
+func (s *Server) listSessionEventsAfter(ctx context.Context, sessionID sessionrt.SessionID, afterSeq uint64, limit int) (sessionEventPage, error) {
+	if pager, ok := s.store.(sessionTimelinePageStore); ok {
+		events, err := pager.ListAfter(ctx, sessionID, afterSeq, limit)
+		return sessionEventPage{Events: events}, err
+	}
+	events, err := s.store.List(ctx, sessionID)
+	if err != nil {
+		return sessionEventPage{}, err
+	}
+	filtered := filterEventsAfter(events, afterSeq)
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return sessionEventPage{Events: filtered}, nil
+}
+
+func filterEventsBefore(events []sessionrt.Event, beforeSeq uint64) []sessionrt.Event {
+	if beforeSeq == 0 {
+		return append([]sessionrt.Event(nil), events...)
+	}
+	idx := len(events)
+	for i, event := range events {
+		if event.Seq >= beforeSeq {
+			idx = i
+			break
+		}
+	}
+	return append([]sessionrt.Event(nil), events[:idx]...)
+}
+
+func filterEventsAfter(events []sessionrt.Event, afterSeq uint64) []sessionrt.Event {
+	if afterSeq == 0 {
+		return append([]sessionrt.Event(nil), events...)
+	}
+	idx := len(events)
+	for i, event := range events {
+		if event.Seq > afterSeq {
+			idx = i
+			break
+		}
+	}
+	if idx >= len(events) {
+		return nil
+	}
+	return append([]sessionrt.Event(nil), events[idx:]...)
+}
+
+func (s *Server) lookupSessionDisplayName(ctx context.Context, sessionID sessionrt.SessionID) string {
+	if s.store == nil {
+		return ""
+	}
+	records, err := s.store.ListSessions(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, record := range records {
+		if record.SessionID == sessionID {
+			return strings.TrimSpace(record.DisplayName)
+		}
+	}
+	return ""
 }
 
 func writeSessionSSEEvent(w io.Writer, sessionID string, event sessionrt.Event) error {
@@ -1511,4 +1753,17 @@ func normalizePanelTab(value string) string {
 	default:
 		return ""
 	}
+}
+
+func urlValuesClone(r *http.Request) url.Values {
+	if r == nil || r.URL == nil {
+		return url.Values{}
+	}
+	out := url.Values{}
+	for key, values := range r.URL.Query() {
+		copied := make([]string, len(values))
+		copy(copied, values)
+		out[key] = copied
+	}
+	return out
 }

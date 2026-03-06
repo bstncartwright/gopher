@@ -99,6 +99,9 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	} else {
 		config.TimeFormat = "auto"
 	}
+	if _, explicit, ok := normalizeNativeWebSearchMode(config.NativeWebSearchMode); explicit && !ok {
+		return nil, fmt.Errorf("invalid native_web_search_mode %q: expected disabled, cached, or live", config.NativeWebSearchMode)
+	}
 	applyDefaultContextManagement(&config)
 	applyDefaultMemoryConfig(&config)
 	if err := applyDefaultRuntimeConfig(&config); err != nil {

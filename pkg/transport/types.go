@@ -2,6 +2,14 @@ package transport
 
 import "context"
 
+type InboundAttachment struct {
+	Path     string
+	Name     string
+	MIMEType string
+	Text     string
+	Data     []byte
+}
+
 type InboundMessage struct {
 	ConversationID   string
 	ConversationName string
@@ -10,6 +18,7 @@ type InboundMessage struct {
 	RecipientID      string
 	EventID          string
 	Text             string
+	Attachments      []InboundAttachment
 }
 
 type OutboundMessage struct {

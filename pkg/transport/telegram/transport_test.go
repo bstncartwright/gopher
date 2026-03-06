@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/transport"
 )
@@ -179,6 +180,127 @@ func TestDispatchEventMapsInboundFieldsWithMessageThread(t *testing.T) {
 	}
 }
 
+func TestDispatchEventIncludesInboundPhotoAttachment(t *testing.T) {
+	var requestedFileID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bottoken/getFile":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode getFile payload: %v", err)
+			}
+			requestedFileID, _ = payload["file_id"].(string)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_path":"photos/pic.jpg"}}`))
+		case "/file/bottoken/photos/pic.jpg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("jpeg-bytes"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	var got transport.InboundMessage
+	tr.SetInboundHandler(func(_ context.Context, inbound transport.InboundMessage) error {
+		got = inbound
+		return nil
+	})
+
+	event := telegramEvent{
+		UpdateID: 35,
+		Message: &telegramMessage{
+			MessageID: 735,
+			From:      &telegramUser{ID: 501, Username: "boss"},
+			Chat:      &telegramChat{ID: 777},
+			Caption:   "look at this",
+			Photo: []telegramPhotoSize{
+				{FileID: "small", FileSize: 10, Width: 10, Height: 10},
+				{FileID: "large", FileSize: 20, Width: 20, Height: 20},
+			},
+		},
+	}
+
+	if err := tr.dispatchEvent(context.Background(), event); err != nil {
+		t.Fatalf("dispatchEvent() error: %v", err)
+	}
+	if requestedFileID != "large" {
+		t.Fatalf("requested file id = %q, want large", requestedFileID)
+	}
+	if got.Text != "look at this" {
+		t.Fatalf("text = %q, want caption", got.Text)
+	}
+	if len(got.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(got.Attachments))
+	}
+	if got.Attachments[0].Name != "pic.jpg" {
+		t.Fatalf("attachment name = %q, want pic.jpg", got.Attachments[0].Name)
+	}
+	if got.Attachments[0].MIMEType != "image/jpeg" {
+		t.Fatalf("attachment mime = %q, want image/jpeg", got.Attachments[0].MIMEType)
+	}
+	if string(got.Attachments[0].Data) != "jpeg-bytes" {
+		t.Fatalf("attachment data = %q", string(got.Attachments[0].Data))
+	}
+}
+
+func TestDispatchEventIncludesTextDocumentAttachmentWithoutMessageText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bottoken/getFile":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_path":"docs/note.txt"}}`))
+		case "/file/bottoken/docs/note.txt":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("hello from attachment"))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	var got transport.InboundMessage
+	tr.SetInboundHandler(func(_ context.Context, inbound transport.InboundMessage) error {
+		got = inbound
+		return nil
+	})
+
+	event := telegramEvent{
+		UpdateID: 36,
+		Message: &telegramMessage{
+			MessageID: 736,
+			From:      &telegramUser{ID: 501, Username: "boss"},
+			Chat:      &telegramChat{ID: 777},
+			Document: &telegramFile{
+				FileID:   "doc-1",
+				FileName: "note.txt",
+				MimeType: "text/plain",
+			},
+		},
+	}
+
+	if err := tr.dispatchEvent(context.Background(), event); err != nil {
+		t.Fatalf("dispatchEvent() error: %v", err)
+	}
+	if got.Text != "" {
+		t.Fatalf("text = %q, want empty", got.Text)
+	}
+	if len(got.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(got.Attachments))
+	}
+	if got.Attachments[0].Text != "hello from attachment" {
+		t.Fatalf("attachment text = %q", got.Attachments[0].Text)
+	}
+}
+
 func TestRenderTelegramMessageTextConvertsMarkdown(t *testing.T) {
 	text := "Hey **Boston**\nUse `gopher` and [docs](https://example.com)\n\n```bash\necho hi\n```"
 	rendered, parseMode := renderTelegramMessageText(text)
@@ -326,6 +448,143 @@ func TestSendMessageIncludesMessageThreadID(t *testing.T) {
 	}
 }
 
+func TestSendMessageSplitsOversizedReplies(t *testing.T) {
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bottoken/sendMessage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode sendMessage payload: %v", err)
+		}
+		payloads = append(payloads, payload)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	text := strings.Repeat("a", telegramMessageChunkRunes+250)
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777:8",
+		Text:           text,
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+
+	if len(payloads) != 2 {
+		t.Fatalf("request count = %d, want 2", len(payloads))
+	}
+	for idx, payload := range payloads {
+		chunk, _ := payload["text"].(string)
+		if got := len([]rune(chunk)); got == 0 || got > telegramMaxMessageRunes {
+			t.Fatalf("chunk %d length = %d, want 1..%d", idx, got, telegramMaxMessageRunes)
+		}
+		if gotThread, _ := payload["message_thread_id"].(float64); gotThread != 8 {
+			t.Fatalf("chunk %d message_thread_id = %v, want 8", idx, payload["message_thread_id"])
+		}
+	}
+}
+
+func TestSendTypingSuppressesTelegramRateLimit(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/bottoken/sendChatAction" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 3","parameters":{"retry_after":3}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	now := time.Unix(10, 0)
+	tr.now = func() time.Time { return now }
+	tr.sleep = func(_ context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return nil
+	}
+
+	if err := tr.SendTyping(context.Background(), "telegram:777", true); err != nil {
+		t.Fatalf("SendTyping(first) error: %v", err)
+	}
+	if err := tr.SendTyping(context.Background(), "telegram:777", true); err != nil {
+		t.Fatalf("SendTyping(second) error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("request count after suppression = %d, want 1", requests)
+	}
+
+	now = now.Add(3 * time.Second)
+	if err := tr.SendTyping(context.Background(), "telegram:777", true); err != nil {
+		t.Fatalf("SendTyping(third) error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("request count after cooldown = %d, want 2", requests)
+	}
+}
+
+func TestSendMessageRetriesAfterTelegramRateLimit(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/bottoken/sendMessage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 2","parameters":{"retry_after":2}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	now := time.Unix(20, 0)
+	tr.now = func() time.Time { return now }
+	tr.sleep = func(_ context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return nil
+	}
+
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("request count = %d, want 2", requests)
+	}
+	if got := now.Unix(); got != 22 {
+		t.Fatalf("clock = %d, want 22", got)
+	}
+}
+
 func TestSendMessageDraftCallsTelegramAPI(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -432,6 +691,107 @@ func TestSendReactionCallsTelegramAPI(t *testing.T) {
 	}
 }
 
+func TestSendReactionIncludesTelegramErrorBodyOnHTTPFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: reaction emoji invalid"}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	err = tr.SendReaction(context.Background(), transport.OutboundReaction{
+		ConversationID: "telegram:777",
+		TargetEventID:  "42",
+		Emoji:          "👍",
+	})
+	if err == nil {
+		t.Fatalf("expected SendReaction() error")
+	}
+	if !strings.Contains(err.Error(), "400 Bad Request") {
+		t.Fatalf("error = %q, want HTTP status detail", err.Error())
+	}
+	if !strings.Contains(err.Error(), "reaction emoji invalid") {
+		t.Fatalf("error = %q, want telegram response detail", err.Error())
+	}
+}
+
+func TestSendReactionRejectsUnsupportedEmojiBeforeAPICall(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	err = tr.SendReaction(context.Background(), transport.OutboundReaction{
+		ConversationID: "telegram:777",
+		TargetEventID:  "42",
+		Emoji:          "✅",
+	})
+	if err == nil {
+		t.Fatalf("expected SendReaction() error")
+	}
+	if !strings.Contains(err.Error(), `unsupported telegram reaction emoji "✅"`) {
+		t.Fatalf("error = %q, want unsupported emoji detail", err.Error())
+	}
+	if requests != 0 {
+		t.Fatalf("request count = %d, want 0", requests)
+	}
+}
+
+func TestSendReactionNormalizesVariationSelectors(t *testing.T) {
+	var requestPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestPayload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{
+		BotToken:   "token",
+		APIBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if err := tr.SendReaction(context.Background(), transport.OutboundReaction{
+		ConversationID: "telegram:777",
+		TargetEventID:  "42",
+		Emoji:          "❤️",
+	}); err != nil {
+		t.Fatalf("SendReaction() error: %v", err)
+	}
+	reactions, ok := requestPayload["reaction"].([]any)
+	if !ok || len(reactions) != 1 {
+		t.Fatalf("reaction payload malformed: %#v", requestPayload["reaction"])
+	}
+	first, ok := reactions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("reaction entry malformed: %#v", reactions[0])
+	}
+	if gotEmoji, _ := first["emoji"].(string); gotEmoji != "❤" {
+		t.Fatalf("emoji = %q, want ❤", gotEmoji)
+	}
+}
+
 func TestSendMessageDoesNotRetryOnNonParseTelegramError(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -535,6 +895,59 @@ func TestSendMessageAttachmentRoutesUnknownTypeToSendDocument(t *testing.T) {
 		}},
 	}); err != nil {
 		t.Fatalf("SendMessage() error: %v", err)
+	}
+}
+
+func TestSendMessageAttachmentRetriesAfterTelegramRateLimit(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "archive.bin")
+	if err := os.WriteFile(attachmentPath, []byte("binary"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/bottoken/sendDocument" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			t.Fatalf("parse multipart form: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 2","parameters":{"retry_after":2}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tr, err := New(Options{BotToken: "token", APIBaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	now := time.Unix(30, 0)
+	tr.now = func() time.Time { return now }
+	tr.sleep = func(_ context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return nil
+	}
+
+	if err := tr.SendMessage(context.Background(), transport.OutboundMessage{
+		ConversationID: "telegram:777",
+		Attachments: []transport.OutboundAttachment{{
+			Path: attachmentPath,
+		}},
+	}); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("request count = %d, want 2", requests)
+	}
+	if got := now.Unix(); got != 32 {
+		t.Fatalf("clock = %d, want 32", got)
 	}
 }
 

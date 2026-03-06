@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -139,6 +140,21 @@ func TestLatestPromptMessageSkipsUntargetedAgentMessage(t *testing.T) {
 
 	if msg, ok := latestPromptMessage(events, "agent:writer"); ok {
 		t.Fatalf("expected no prompt message, got %+v", msg)
+	}
+}
+
+func TestToolResultMessageFromPayloadSkipsProviderNativeSearchResults(t *testing.T) {
+	msg, ok := toolResultMessageFromPayload(sessionrt.Event{
+		ID: "evt-1",
+		Payload: map[string]any{
+			"name":    "web_search",
+			"backend": "provider_native",
+			"status":  "ok",
+			"result":  map[string]any{"query": "weather"},
+		},
+	})
+	if ok {
+		t.Fatalf("expected provider-native web_search replay payload to be skipped, got %#v", msg)
 	}
 }
 
@@ -526,5 +542,35 @@ func TestSessionRuntimeAdapterACPRuntimeBuiltinOpenCodeUsesAgentPlaceholder(t *t
 	}
 	if msg.Content != "opencode" {
 		t.Fatalf("content = %q, want %q", msg.Content, "opencode")
+  }
+}
+func TestPromptMessageFromPayloadDecodesPersistedAttachments(t *testing.T) {
+	payload, err := json.Marshal(sessionrt.Message{
+		Role:    sessionrt.RoleUser,
+		Content: "",
+		Attachments: []sessionrt.Attachment{{
+			Name:     "photo.jpg",
+			MIMEType: "image/jpeg",
+			Data:     []byte("img"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+
+	msg, ok := promptMessageFromPayload(decoded)
+	if !ok {
+		t.Fatalf("expected promptMessageFromPayload() to succeed")
+	}
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(msg.Attachments))
+	}
+	if string(msg.Attachments[0].Data) != "img" {
+		t.Fatalf("attachment data = %q", string(msg.Attachments[0].Data))
 	}
 }

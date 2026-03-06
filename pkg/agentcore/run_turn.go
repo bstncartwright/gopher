@@ -98,6 +98,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 	runner := NewToolRunner(a)
 	overflowRetryUsed := 0
 	overflowFlushAttempted := false
+	hostedWebSearchFallbackUsed := false
 	reasoningLevel := a.Config.ReasoningLevelValue()
 	for round := 0; ; round++ {
 		roundStart := time.Now()
@@ -123,11 +124,13 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			"model", a.model.ID,
 			"provider", a.model.Provider,
 		)
+		hostedSearchMode := hostedWebSearchMode(conversation.Tools)
 		stream := a.Provider.Stream(a.model, conversation, &ai.SimpleStreamOptions{
 			StreamOptions: ai.StreamOptions{
-				RequestContext: ctx,
-				APIKey:         ai.GetEnvAPIKey(string(a.model.Provider)),
-				SessionID:      s.ID,
+				RequestContext:  ctx,
+				APIKey:          ai.GetEnvAPIKey(string(a.model.Provider)),
+				SessionID:       s.ID,
+				ProviderOptions: a.Config.ProviderOptionsValue(),
 			},
 			Reasoning: reasoningLevel,
 		})
@@ -186,6 +189,58 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 						"tool_id", event.ToolCall.ID,
 					)
 				}
+			case ai.EventWebSearchStart:
+				if event.WebSearch == nil {
+					continue
+				}
+				args := map[string]any{}
+				if strings.TrimSpace(event.WebSearch.Query) != "" {
+					args["query"] = event.WebSearch.Query
+				}
+				if len(event.WebSearch.Action) > 0 {
+					args["action"] = ai.CloneMap(event.WebSearch.Action)
+				}
+				payload := map[string]any{
+					"name":    "web_search",
+					"args":    args,
+					"backend": "provider_native",
+					"mode":    string(hostedSearchMode),
+				}
+				if err := emitter.Emit(EventTypeToolCall, payload); err != nil {
+					turnErr = err
+					return TurnResult{Events: emitter.Events()}, err
+				}
+			case ai.EventWebSearchEnd:
+				if event.WebSearch == nil {
+					continue
+				}
+				result := map[string]any{
+					"query":  event.WebSearch.Query,
+					"status": event.WebSearch.Status,
+				}
+				if len(event.WebSearch.Action) > 0 {
+					result["action"] = ai.CloneMap(event.WebSearch.Action)
+				}
+				status := ToolStatusOK
+				if strings.EqualFold(strings.TrimSpace(event.WebSearch.Status), "failed") {
+					status = ToolStatusError
+				}
+				if err := emitter.Emit(EventTypeToolResult, map[string]any{
+					"name":    "web_search",
+					"status":  status,
+					"result":  result,
+					"backend": "provider_native",
+					"mode":    string(hostedSearchMode),
+				}); err != nil {
+					turnErr = err
+					return TurnResult{Events: emitter.Events()}, err
+				}
+				toolObservations = append(toolObservations, toolObservation{
+					Name:   "web_search",
+					Args:   map[string]any{"query": event.WebSearch.Query},
+					Status: status,
+					Result: result,
+				})
 			case ai.EventError:
 				if event.Error == nil {
 					continue
@@ -339,6 +394,17 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				default:
 					providerErr = "provider returned error stop reason"
 				}
+			}
+			if shouldRetryHostedWebSearchFallback(providerErr, conversation.Tools, textDeltaCount, toolCalls, hostedWebSearchFallbackUsed) {
+				conversation.Tools = buildProviderAITools(activeToolRegistry(a.Tools, ToolInput{Agent: a, Session: s}), a.model, a.Config, a.Policies, true)
+				hostedWebSearchFallbackUsed = true
+				slog.Warn("run_turn: retrying with MCP web_search fallback",
+					"agent_id", a.ID,
+					"session_id", s.ID,
+					"round", round,
+					"provider_error", providerErr,
+				)
+				continue
 			}
 			err := fmt.Errorf("%s", providerErr)
 			slog.Warn("run_turn: provider returned terminal error stop reason",
@@ -508,11 +574,42 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 	}
 }
 
+func hostedWebSearchMode(tools []ai.Tool) NativeWebSearchMode {
+	for _, tool := range tools {
+		if !tool.IsHostedWebSearch() {
+			continue
+		}
+		if tool.ExternalWebAccess != nil && *tool.ExternalWebAccess {
+			return NativeWebSearchModeLive
+		}
+		return NativeWebSearchModeCached
+	}
+	return NativeWebSearchModeDisabled
+}
+
+func shouldRetryHostedWebSearchFallback(message string, tools []ai.Tool, textDeltaCount int, toolCalls []ai.ContentBlock, retryUsed bool) bool {
+	if retryUsed || textDeltaCount != 0 || len(toolCalls) != 0 || hostedWebSearchMode(tools) == NativeWebSearchModeDisabled {
+		return false
+	}
+	lowered := strings.ToLower(strings.TrimSpace(message))
+	if lowered == "" || !strings.Contains(lowered, "web_search") {
+		return false
+	}
+	return strings.Contains(lowered, "unsupported") ||
+		strings.Contains(lowered, "not supported") ||
+		strings.Contains(lowered, "invalid") ||
+		strings.Contains(lowered, "unknown") ||
+		strings.Contains(lowered, "unrecognized")
+}
+
 func (a *Agent) buildTurnProviderContext(ctx context.Context, s *Session, in TurnInput) (ai.Context, ctxbundle.ContextDiagnostics, error) {
 	primaryCtx, cancelPrimary := boundedContext(ctx, runTurnContextBuildTimeout)
 	defer cancelPrimary()
 
-	conversation, diagnostics, err := a.buildProviderContextDetailed(primaryCtx, s, in.UserMessage, in.PromptMode)
+	conversation, diagnostics, err := a.buildProviderContextDetailedWithAttachments(primaryCtx, s, in.UserMessage, in.Attachments, providerContextBuildOptions{
+		Mode:                         normalizePromptMode(in.PromptMode),
+		EnableModelCompactionSummary: true,
+	})
 	if err == nil {
 		return conversation, diagnostics, nil
 	}
@@ -531,10 +628,11 @@ func (a *Agent) buildTurnProviderContext(ctx context.Context, s *Session, in Tur
 
 	fallbackCtx, cancelFallback := boundedContext(ctx, runTurnContextBuildFallbackTimeout)
 	defer cancelFallback()
-	fallbackConversation, fallbackDiagnostics, fallbackErr := a.buildProviderContextDetailedWithOptions(
+	fallbackConversation, fallbackDiagnostics, fallbackErr := a.buildProviderContextDetailedWithAttachments(
 		fallbackCtx,
 		s,
 		in.UserMessage,
+		in.Attachments,
 		providerContextBuildOptions{
 			Mode:                         normalizePromptMode(in.PromptMode),
 			MaxMemories:                  2,

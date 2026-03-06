@@ -135,7 +135,25 @@ type OpenAICompletionsCompat struct {
 	SupportsStrictMode               *bool                 `json:"supportsStrictMode,omitempty"`
 }
 
-type OpenAIResponsesCompat struct{}
+type OpenAIResponsesCompat struct {
+	SupportsHostedWebSearch *bool `json:"supportsHostedWebSearch,omitempty"`
+}
+
+type ToolKind string
+
+const (
+	ToolKindFunction        ToolKind = "function"
+	ToolKindHostedWebSearch ToolKind = "hosted_web_search"
+)
+
+type HostedWebSearchAction map[string]any
+
+type HostedWebSearchCall struct {
+	ID     string                `json:"id,omitempty"`
+	Query  string                `json:"query,omitempty"`
+	Action HostedWebSearchAction `json:"action,omitempty"`
+	Status string                `json:"status,omitempty"`
+}
 
 type ModelCost struct {
 	Input      float64 `json:"input"`
@@ -161,9 +179,34 @@ type Model struct {
 }
 
 type Tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
+	Kind              ToolKind       `json:"kind,omitempty"`
+	Name              string         `json:"name"`
+	Description       string         `json:"description"`
+	Parameters        map[string]any `json:"parameters,omitempty"`
+	ExternalWebAccess *bool          `json:"externalWebAccess,omitempty"`
+}
+
+func (t Tool) KindValue() ToolKind {
+	switch t.Kind {
+	case ToolKindHostedWebSearch:
+		return ToolKindHostedWebSearch
+	default:
+		return ToolKindFunction
+	}
+}
+
+func (t Tool) IsHostedWebSearch() bool {
+	return t.KindValue() == ToolKindHostedWebSearch
+}
+
+func SupportsHostedWebSearch(model Model) bool {
+	if model.API != APIOpenAIResponses && model.API != APIOpenAICodexResponse {
+		return false
+	}
+	if model.ResponsesCompat != nil && model.ResponsesCompat.SupportsHostedWebSearch != nil {
+		return *model.ResponsesCompat.SupportsHostedWebSearch
+	}
+	return model.Provider == ProviderOpenAI || model.Provider == ProviderOpenAICodex
 }
 
 type ContentBlock struct {
@@ -390,18 +433,20 @@ func (m AssistantMessage) ToMessage() Message {
 type AssistantMessageEventType string
 
 const (
-	EventStart         AssistantMessageEventType = "start"
-	EventTextStart     AssistantMessageEventType = "text_start"
-	EventTextDelta     AssistantMessageEventType = "text_delta"
-	EventTextEnd       AssistantMessageEventType = "text_end"
-	EventThinkingStart AssistantMessageEventType = "thinking_start"
-	EventThinkingDelta AssistantMessageEventType = "thinking_delta"
-	EventThinkingEnd   AssistantMessageEventType = "thinking_end"
-	EventToolCallStart AssistantMessageEventType = "toolcall_start"
-	EventToolCallDelta AssistantMessageEventType = "toolcall_delta"
-	EventToolCallEnd   AssistantMessageEventType = "toolcall_end"
-	EventDone          AssistantMessageEventType = "done"
-	EventError         AssistantMessageEventType = "error"
+	EventStart          AssistantMessageEventType = "start"
+	EventTextStart      AssistantMessageEventType = "text_start"
+	EventTextDelta      AssistantMessageEventType = "text_delta"
+	EventTextEnd        AssistantMessageEventType = "text_end"
+	EventThinkingStart  AssistantMessageEventType = "thinking_start"
+	EventThinkingDelta  AssistantMessageEventType = "thinking_delta"
+	EventThinkingEnd    AssistantMessageEventType = "thinking_end"
+	EventToolCallStart  AssistantMessageEventType = "toolcall_start"
+	EventToolCallDelta  AssistantMessageEventType = "toolcall_delta"
+	EventToolCallEnd    AssistantMessageEventType = "toolcall_end"
+	EventWebSearchStart AssistantMessageEventType = "web_search_start"
+	EventWebSearchEnd   AssistantMessageEventType = "web_search_end"
+	EventDone           AssistantMessageEventType = "done"
+	EventError          AssistantMessageEventType = "error"
 )
 
 type AssistantMessageEvent struct {
@@ -410,6 +455,7 @@ type AssistantMessageEvent struct {
 	Delta        string                    `json:"delta,omitempty"`
 	Content      string                    `json:"content,omitempty"`
 	ToolCall     *ContentBlock             `json:"toolCall,omitempty"`
+	WebSearch    *HostedWebSearchCall      `json:"webSearch,omitempty"`
 	Partial      *AssistantMessage         `json:"partial,omitempty"`
 	Message      *AssistantMessage         `json:"message,omitempty"`
 	Error        *AssistantMessage         `json:"error,omitempty"`

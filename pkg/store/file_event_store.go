@@ -169,6 +169,49 @@ func (s *FileEventStore) List(ctx context.Context, sessionID sessionrt.SessionID
 	return out, nil
 }
 
+func (s *FileEventStore) ListBefore(ctx context.Context, sessionID sessionrt.SessionID, beforeSeq uint64, limit int) ([]sessionrt.Event, bool, error) {
+	events, err := s.List(ctx, sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	end := len(events)
+	if beforeSeq > 0 {
+		for i, event := range events {
+			if event.Seq >= beforeSeq {
+				end = i
+				break
+			}
+		}
+	}
+	if limit <= 0 || end <= limit {
+		return append([]sessionrt.Event(nil), events[:end]...), false, nil
+	}
+	start := end - limit
+	return append([]sessionrt.Event(nil), events[start:end]...), start > 0, nil
+}
+
+func (s *FileEventStore) ListAfter(ctx context.Context, sessionID sessionrt.SessionID, afterSeq uint64, limit int) ([]sessionrt.Event, error) {
+	events, err := s.List(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	start := len(events)
+	for i, event := range events {
+		if event.Seq > afterSeq {
+			start = i
+			break
+		}
+	}
+	if start >= len(events) {
+		return nil, nil
+	}
+	out := append([]sessionrt.Event(nil), events[start:]...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *FileEventStore) Stream(ctx context.Context, sessionID sessionrt.SessionID) (<-chan sessionrt.Event, error) {
 	if ctx == nil {
 		ctx = context.Background()

@@ -21,6 +21,7 @@ type agentRuntime struct {
 	Router         *agentcore.ActorExecutorRouter
 	DefaultActorID sessionrt.ActorID
 	Agents         map[sessionrt.ActorID]*agentcore.Agent
+	AgentIDs       []string
 }
 
 type agentRuntimeOptions struct {
@@ -110,6 +111,7 @@ func loadAgentRuntimeWithOptions(workspace string, opts agentRuntimeOptions) (*a
 		Router:         router,
 		DefaultActorID: defaultActorID,
 		Agents:         agents,
+		AgentIDs:       append([]string(nil), actorIDs...),
 	}, nil
 }
 

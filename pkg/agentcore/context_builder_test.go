@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
 	"strings"
 	"testing"
@@ -144,6 +145,92 @@ func TestContextBuilderIncludesMessageToolWhenServiceAvailable(t *testing.T) {
 	}
 }
 
+func TestContextBuilderPrefersHostedWebSearchForSupportedProviders(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:web"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	session := &Session{ID: "s-search"}
+
+	ctx, err := agent.buildProviderContext(context.Background(), session, "search")
+	if err != nil {
+		t.Fatalf("buildProviderContext() error: %v", err)
+	}
+	tool := contextToolByName(ctx, "web_search")
+	if tool == nil || !tool.IsHostedWebSearch() {
+		t.Fatalf("expected hosted web_search tool, got %#v", ctx.Tools)
+	}
+	if tool.ExternalWebAccess == nil || *tool.ExternalWebAccess {
+		t.Fatalf("expected cached hosted search")
+	}
+}
+
+func TestContextBuilderFallsBackToMCPWhenHostedSearchDisabled(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"group:web"}
+	config.NativeWebSearchMode = string(NativeWebSearchModeDisabled)
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	session := &Session{ID: "s-search-mcp"}
+
+	ctx, err := agent.buildProviderContext(context.Background(), session, "search")
+	if err != nil {
+		t.Fatalf("buildProviderContext() error: %v", err)
+	}
+	tool := contextToolByName(ctx, "web_search")
+	if tool == nil || tool.IsHostedWebSearch() {
+		t.Fatalf("expected MCP web_search tool, got %#v", ctx.Tools)
+	}
+}
+
+func TestBuildInboundAttachmentContentIncludesSavedWorkspacePath(t *testing.T) {
+	model := ai.Model{Input: []string{"text"}}
+	content := buildInboundAttachmentContent("save this", []Attachment{{
+		Path:     "/tmp/workspace/.gopher/inbound/file.pdf",
+		Name:     "file.pdf",
+		MIMEType: "application/pdf",
+		Data:     []byte("pdf"),
+	}}, model)
+	blocks, ok := content.([]ai.ContentBlock)
+	if !ok {
+		t.Fatalf("content type = %T, want []ai.ContentBlock", content)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("block count = %d, want 2", len(blocks))
+	}
+	if !strings.Contains(blocks[1].Text, "Saved in workspace at /tmp/workspace/.gopher/inbound/file.pdf.") {
+		t.Fatalf("attachment summary = %q", blocks[1].Text)
+	}
+}
+
+func TestAttachmentContentBlocksIncludeImageSummaryWhenSavedPathPresent(t *testing.T) {
+	model := ai.Model{Input: []string{"image"}}
+	blocks := attachmentContentBlocks(Attachment{
+		Path:     "/tmp/workspace/.gopher/inbound/photo.jpg",
+		Name:     "photo.jpg",
+		MIMEType: "image/jpeg",
+		Data:     []byte("img"),
+	}, model)
+	if len(blocks) != 2 {
+		t.Fatalf("block count = %d, want 2", len(blocks))
+	}
+	if blocks[0].Type != ai.ContentTypeImage {
+		t.Fatalf("first block type = %q, want image", blocks[0].Type)
+	}
+	if blocks[1].Type != ai.ContentTypeText {
+		t.Fatalf("second block type = %q, want text", blocks[1].Type)
+	}
+	if !strings.Contains(blocks[1].Text, "Saved in workspace at /tmp/workspace/.gopher/inbound/photo.jpg.") {
+		t.Fatalf("image summary = %q", blocks[1].Text)
+	}
+}
+
 func contextHasTool(ctx ai.Context, name string) bool {
 	for _, tool := range ctx.Tools {
 		if strings.TrimSpace(tool.Name) == name {
@@ -151,6 +238,15 @@ func contextHasTool(ctx ai.Context, name string) bool {
 		}
 	}
 	return false
+}
+
+func contextToolByName(ctx ai.Context, name string) *ai.Tool {
+	for i := range ctx.Tools {
+		if strings.TrimSpace(ctx.Tools[i].Name) == name {
+			return &ctx.Tools[i]
+		}
+	}
+	return nil
 }
 
 type testMessageToolService struct{}
@@ -173,4 +269,72 @@ func (s *testReactionToolService) SendReaction(_ context.Context, req ReactionSe
 		TargetEventID:  "1",
 		Emoji:          strings.TrimSpace(req.Emoji),
 	}, nil
+}
+
+func TestBuildTurnProviderContextIncludesImageAttachmentsAsBlocks(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	agent.model.Input = []string{"text", "image"}
+
+	ctx, _, err := agent.buildTurnProviderContext(context.Background(), &Session{ID: "s-image"}, TurnInput{
+		UserMessage: "describe this",
+		Attachments: []Attachment{{
+			Name:     "photo.jpg",
+			MIMEType: "image/jpeg",
+			Data:     []byte("img"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildTurnProviderContext() error: %v", err)
+	}
+
+	blocks, ok := ctx.Messages[len(ctx.Messages)-1].ContentBlocks()
+	if !ok {
+		t.Fatalf("expected user content blocks")
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("block count = %d, want 2", len(blocks))
+	}
+	if blocks[0].Type != ai.ContentTypeText || blocks[0].Text != "describe this" {
+		t.Fatalf("unexpected first block: %#v", blocks[0])
+	}
+	if blocks[1].Type != ai.ContentTypeImage {
+		t.Fatalf("unexpected second block type: %q", blocks[1].Type)
+	}
+	if blocks[1].Data != base64.StdEncoding.EncodeToString([]byte("img")) {
+		t.Fatalf("unexpected image payload: %q", blocks[1].Data)
+	}
+}
+
+func TestBuildTurnProviderContextFallsBackToTextForAudioAttachments(t *testing.T) {
+	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	ctx, _, err := agent.buildTurnProviderContext(context.Background(), &Session{ID: "s-audio"}, TurnInput{
+		Attachments: []Attachment{{
+			Name:     "voice.ogg",
+			MIMEType: "audio/ogg",
+			Data:     []byte("ogg"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildTurnProviderContext() error: %v", err)
+	}
+
+	blocks, ok := ctx.Messages[len(ctx.Messages)-1].ContentBlocks()
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("expected single text block, got %#v", ctx.Messages[len(ctx.Messages)-1].Content)
+	}
+	if blocks[0].Type != ai.ContentTypeText {
+		t.Fatalf("unexpected block type: %q", blocks[0].Type)
+	}
+	if !strings.Contains(blocks[0].Text, "voice.ogg") || !strings.Contains(blocks[0].Text, "audio/ogg") {
+		t.Fatalf("unexpected attachment summary: %q", blocks[0].Text)
+	}
 }

@@ -129,6 +129,10 @@ pkg/
 
 ```bash
 # build
+just build
+
+# if you prefer raw go commands, refresh the embedded model catalog first
+go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
 go build -o gopher ./cmd/gopher
 
 # init config (optional)
@@ -167,8 +171,8 @@ what it does:
 - downloads latest release asset for your linux arch
 - verifies checksums
 - installs binary to `/usr/local/bin/gopher`
-- initializes `/etc/gopher/gopher.toml` (if missing)
-- creates `/etc/gopher/gopher.env` (if missing)
+- initializes `~/.gopher/gopher.toml` (or `~/.gopher/node.toml` for nodes) if missing
+- creates `~/.gopher/gopher.env` if missing
 - installs/starts `gopher-gateway.service`
 
 use a specific release:
@@ -177,7 +181,7 @@ use a specific release:
 GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --version v0.1.0
 ```
 
-install a worker node (includes `/etc/gopher/node.toml` + `gopher-node.service`):
+install a worker node (includes `~/.gopher/node.toml` + `gopher-node.service`):
 
 ```bash
 GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --role node
@@ -198,23 +202,23 @@ default path resolution is:
 - `~/.gopher/gopher.env` (non-root)
 - `/etc/gopher/gopher.env` (root)
 
-for systemd service-managed installs, pass the system path explicitly:
+for systemd service-managed installs, use the service user's home-scoped env path by default:
 
 ```bash
 # list provider auth status (configured/missing)
-gopher auth list --env-file /etc/gopher/gopher.env
+gopher auth list --env-file ~/.gopher/gopher.env
 
 # list supported providers and env keys
 gopher auth providers
 
 # set provider key
-gopher auth set --env-file /etc/gopher/gopher.env --provider zai --api-key "$ZAI_API_KEY"
+gopher auth set --env-file ~/.gopher/gopher.env --provider zai --api-key "$ZAI_API_KEY"
 
 # run interactive oauth login for openai-codex
-gopher auth login --env-file /etc/gopher/gopher.env --provider openai-codex
+gopher auth login --env-file ~/.gopher/gopher.env --provider openai-codex
 
 # remove provider key
-gopher auth unset --env-file /etc/gopher/gopher.env --provider zai
+gopher auth unset --env-file ~/.gopher/gopher.env --provider zai
 ```
 
 openai-codex oauth login stores:
@@ -460,6 +464,8 @@ dm control commands:
 ## releases
 
 gopher now includes a github actions release workflow at `.github/workflows/release.yml`.
+
+the release build refreshes `pkg/ai/models_generated.go` from `https://models.dev/api.json` before running tests and building the binary.
 
 - trigger: push a tag like `v0.1.0` (or run manual dispatch with a `v*` tag)
 - build outputs:

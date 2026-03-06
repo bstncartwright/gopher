@@ -98,9 +98,10 @@ Do not include chain-of-thought.`)
 
 	stream := a.Provider.Stream(a.model, conversation, &ai.SimpleStreamOptions{
 		StreamOptions: ai.StreamOptions{
-			RequestContext: ctx,
-			APIKey:         ai.GetEnvAPIKey(string(a.model.Provider)),
-			SessionID:      compactionSummarySessionID(s),
+			RequestContext:  ctx,
+			APIKey:          ai.GetEnvAPIKey(string(a.model.Provider)),
+			SessionID:       compactionSummarySessionID(s),
+			ProviderOptions: a.Config.ProviderOptionsValue(),
 		},
 		Reasoning: a.Config.ReasoningLevelValue(),
 	})

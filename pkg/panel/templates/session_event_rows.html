@@ -1,0 +1,3 @@
+<div data-timeline-page data-session-id="{{.SessionID}}" data-first-seq="{{.FirstSeq}}" data-last-seq="{{.LastSeq}}" data-has-older="{{if .HasOlder}}true{{else}}false{{end}}">
+  {{template "event_rows" .Events}}
+</div>

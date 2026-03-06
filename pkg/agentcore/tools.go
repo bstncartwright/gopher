@@ -139,12 +139,63 @@ func toolSchemasToAITools(registry ToolRegistry) []ai.Tool {
 	out := make([]ai.Tool, 0, len(schemas))
 	for _, schema := range schemas {
 		out = append(out, ai.Tool{
+			Kind:        ai.ToolKindFunction,
 			Name:        schema.Name,
 			Description: schema.Description,
 			Parameters:  schema.Parameters,
 		})
 	}
 	return out
+}
+
+func buildProviderAITools(registry ToolRegistry, model ai.Model, config AgentConfig, policies AgentPolicies, forceMCP bool) []ai.Tool {
+	schemas := registry.Schemas()
+	out := make([]ai.Tool, 0, len(schemas))
+	for _, schema := range schemas {
+		if schema.Name == "web_search" {
+			if !policies.Network.Enabled {
+				continue
+			}
+			if tool, ok := selectWebSearchTool(schema, model, config, forceMCP); ok {
+				out = append(out, tool)
+			}
+			continue
+		}
+		out = append(out, ai.Tool{
+			Kind:        ai.ToolKindFunction,
+			Name:        schema.Name,
+			Description: schema.Description,
+			Parameters:  schema.Parameters,
+		})
+	}
+	return out
+}
+
+func selectWebSearchTool(schema ToolSchema, model ai.Model, config AgentConfig, forceMCP bool) (ai.Tool, bool) {
+	if !forceMCP {
+		switch config.NativeWebSearchModeValue(model) {
+		case NativeWebSearchModeCached:
+			return ai.Tool{
+				Kind:              ai.ToolKindHostedWebSearch,
+				Name:              schema.Name,
+				Description:       schema.Description,
+				ExternalWebAccess: boolPtr(false),
+			}, true
+		case NativeWebSearchModeLive:
+			return ai.Tool{
+				Kind:              ai.ToolKindHostedWebSearch,
+				Name:              schema.Name,
+				Description:       schema.Description,
+				ExternalWebAccess: boolPtr(true),
+			}, true
+		}
+	}
+	return ai.Tool{
+		Kind:        ai.ToolKindFunction,
+		Name:        schema.Name,
+		Description: schema.Description,
+		Parameters:  schema.Parameters,
+	}, true
 }
 
 func activeToolRegistry(registry ToolRegistry, input ToolInput) ToolRegistry {

@@ -352,6 +352,49 @@ runtime guardrails for `opencode` via `exec`:
 - blocks `background=true` for `opencode`
 - returns actionable preflight error when `opencode` is not found on `PATH`
 
+
+
+### acp agent runtime (experimental)
+
+You can run an agent workspace through an ACP harness by setting `runtime.type` to `acp` in `config.json` or `config.toml`.
+
+Built-in ACP harness targets are now:
+- `codex`
+- `opencode`
+
+Use `runtime.acp.builtin` to select either built-in target (it sets `runtime.acp.agent` automatically).
+
+```json
+{
+  "agent_id": "codex",
+  "name": "codex",
+  "role": "assistant",
+  "model_policy": "openai:gpt-4o-mini",
+  "runtime": {
+    "type": "acp",
+    "acp": {
+      "builtin": "codex",
+      "command": "acpx",
+      "args": ["run", "--agent", "{agent}", "--prompt", "{prompt}"],
+      "timeout_seconds": 300,
+      "env": {
+        "ACP_SESSION_ID": "{session_id}"
+      }
+    }
+  }
+}
+```
+
+For OpenCode, set `"builtin": "opencode"`.
+
+Supported placeholders in `runtime.acp.args[]` and `runtime.acp.env` values:
+- `{agent}`
+- `{prompt}`
+- `{session_id}`
+- `{actor_id}`
+
+When `runtime.type=acp`, the session runtime invokes the configured ACP command per turn and returns stdout as the agent reply.
+
 troubleshooting:
 - `exec denied: command "opencode" is not in shell_allowlist`:
   add `opencode` to `shell_allowlist` (only applies when you enable allowlist mode).

@@ -502,3 +502,76 @@ func TestPromptMessageFromPayloadDecodesPersistedAttachments(t *testing.T) {
 		t.Fatalf("attachment data = %q", string(msg.Attachments[0].Data))
 	}
 }
+
+func TestSessionRuntimeAdapterACPRuntimeExecutesCommand(t *testing.T) {
+	config := defaultConfig()
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	agent.Config.Runtime.Type = "acp"
+	agent.Config.Runtime.ACP.Agent = "codex"
+	agent.Config.Runtime.ACP.Command = "python3"
+	agent.Config.Runtime.ACP.Args = []string{"-c", "import os;print('acp:'+os.getenv('ACP_PROMPT',''))"}
+	agent.Config.Runtime.ACP.Env = map[string]string{"ACP_PROMPT": "{prompt}"}
+
+	adapter := NewSessionRuntimeAdapter(agent)
+	output, err := adapter.Step(context.Background(), sessionrt.AgentInput{
+		SessionID: "sess-acp",
+		ActorID:   "main",
+		History: []sessionrt.Event{{
+			Type:    sessionrt.EventMessage,
+			Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "ship it"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Step() error: %v", err)
+	}
+	if len(output.Events) == 0 {
+		t.Fatalf("expected response events")
+	}
+	msg, ok := output.Events[0].Payload.(sessionrt.Message)
+	if !ok {
+		t.Fatalf("payload type = %T, want sessionrt.Message", output.Events[0].Payload)
+	}
+	if msg.Content != "acp:ship it" {
+		t.Fatalf("content = %q, want %q", msg.Content, "acp:ship it")
+	}
+}
+
+func TestSessionRuntimeAdapterACPRuntimeBuiltinOpenCodeUsesAgentPlaceholder(t *testing.T) {
+	config := defaultConfig()
+	config.Runtime.Type = "acp"
+	config.Runtime.ACP.Builtin = "opencode"
+	config.Runtime.ACP.Command = "python3"
+	config.Runtime.ACP.Args = []string{"-c", "import sys;print(sys.argv[1])", "{agent}"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	adapter := NewSessionRuntimeAdapter(agent)
+	output, err := adapter.Step(context.Background(), sessionrt.AgentInput{
+		SessionID: "sess-acp",
+		ActorID:   "main",
+		History: []sessionrt.Event{{
+			Type:    sessionrt.EventMessage,
+			Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "ship it"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Step() error: %v", err)
+	}
+	if len(output.Events) == 0 {
+		t.Fatalf("expected response events")
+	}
+	msg, ok := output.Events[0].Payload.(sessionrt.Message)
+	if !ok {
+		t.Fatalf("payload type = %T, want sessionrt.Message", output.Events[0].Payload)
+	}
+	if msg.Content != "opencode" {
+		t.Fatalf("content = %q, want %q", msg.Content, "opencode")
+	}
+}

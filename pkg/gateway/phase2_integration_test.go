@@ -261,16 +261,3 @@ func waitForNode(ctx context.Context, registry *scheduler.Registry, nodeID strin
 		}
 	}
 }
-
-func anyToControl(payload any) (sessionrt.ControlPayload, bool) {
-	switch value := payload.(type) {
-	case sessionrt.ControlPayload:
-		return value, true
-	case map[string]any:
-		action, _ := value["action"].(string)
-		reason, _ := value["reason"].(string)
-		return sessionrt.ControlPayload{Action: action, Reason: reason}, action != ""
-	default:
-		return sessionrt.ControlPayload{}, false
-	}
-}

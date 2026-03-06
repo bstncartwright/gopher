@@ -279,6 +279,7 @@ func runNodeWithContext(ctx context.Context, cfg config.NodeConfig, sources []st
 		IsGateway:         false,
 		Version:           currentBinaryVersion(),
 		Capabilities:      cfg.Capabilities,
+		Agents:            append([]string(nil), runtimeExecutor.AgentIDs...),
 		Fabric:            client,
 		Executor:          runtimeExecutor.Executor,
 		AdminHandler:      adminService,

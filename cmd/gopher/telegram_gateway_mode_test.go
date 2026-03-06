@@ -137,7 +137,7 @@ func TestStartTelegramDMBridgeAssignsSessionMemoryFlusher(t *testing.T) {
 			PollTimeout:  time.Second,
 		},
 		Cron: config.CronConfig{Enabled: false},
-	}, workspace, runtime, runtime.Executor, log.New(io.Discard, "", 0))
+	}, workspace, runtime, runtime.Executor, nil, log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatalf("startTelegramDMBridgeWithRuntime() error: %v", err)
 	}

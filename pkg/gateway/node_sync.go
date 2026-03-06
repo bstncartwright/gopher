@@ -128,8 +128,8 @@ func (s *NodeRegistrySync) handleCapabilities(ctx context.Context, message fabri
 	if at.IsZero() {
 		at = s.now().UTC()
 	}
-	s.registry.SetCapabilities(announcement.NodeID, announcement.Capabilities, announcement.IsGateway, announcement.Version, at)
-	s.registry.RecordHeartbeat(announcement.NodeID, announcement.IsGateway, announcement.Version, at)
+	s.registry.SetCapabilities(announcement.NodeID, announcement.Capabilities, announcement.Agents, announcement.IsGateway, announcement.Version, at)
+	s.registry.RecordHeartbeat(announcement.NodeID, announcement.Agents, announcement.IsGateway, announcement.Version, at)
 	_ = ctx
 }
 
@@ -143,9 +143,9 @@ func (s *NodeRegistrySync) handleHeartbeat(ctx context.Context, message fabricts
 		at = s.now().UTC()
 	}
 	if len(heartbeat.Capabilities) > 0 {
-		s.registry.SetCapabilities(heartbeat.NodeID, heartbeat.Capabilities, heartbeat.IsGateway, heartbeat.Version, at)
+		s.registry.SetCapabilities(heartbeat.NodeID, heartbeat.Capabilities, heartbeat.Agents, heartbeat.IsGateway, heartbeat.Version, at)
 	} else {
-		s.registry.RecordHeartbeat(heartbeat.NodeID, heartbeat.IsGateway, heartbeat.Version, at)
+		s.registry.RecordHeartbeat(heartbeat.NodeID, heartbeat.Agents, heartbeat.IsGateway, heartbeat.Version, at)
 	}
 	_ = ctx
 }

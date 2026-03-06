@@ -6,9 +6,10 @@ REPO_NAME="${REPO_NAME:-gopher}"
 VERSION_TAG="${VERSION_TAG:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="${BINARY_NAME:-gopher}"
-CONFIG_PATH="${CONFIG_PATH:-/etc/gopher/gopher.toml}"
+CONFIG_PATH="${CONFIG_PATH:-}"
 CONFIG_PATH_SET="false"
-ENV_PATH="${ENV_PATH:-/etc/gopher/gopher.env}"
+ENV_PATH="${ENV_PATH:-}"
+ENV_PATH_SET="false"
 ROLE="${ROLE:-gateway}"
 WITH_NATS="false"
 INSTALL_SERVICE="true"
@@ -27,8 +28,8 @@ options:
   --repo <name>            github repo name (default: gopher)
   --install-dir <path>     binary install dir (default: /usr/local/bin)
   --binary-name <name>     installed binary name (default: gopher)
-  --config-path <path>     gateway config path (default: /etc/gopher/gopher.toml)
-  --env-path <path>        gateway env file path (default: /etc/gopher/gopher.env)
+  --config-path <path>     config path (default: ~/.gopher/gopher.toml or ~/.gopher/node.toml)
+  --env-path <path>        env file path (default: ~/.gopher/gopher.env)
   --role <gateway|node>    install role (default: gateway)
   --with-nats              install+enable local nats service (gateway role only)
   --no-service             skip systemd service installation
@@ -75,6 +76,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --env-path)
       ENV_PATH="${2:-}"
+      ENV_PATH_SET="true"
       shift 2
       ;;
     --role)
@@ -118,9 +120,30 @@ if [[ "$ROLE" == "node" ]]; then
     echo "--with-nats is only valid for --role gateway" >&2
     exit 1
   fi
-  if [[ "$CONFIG_PATH_SET" == "false" ]]; then
-    CONFIG_PATH="/etc/gopher/node.toml"
+fi
+
+resolve_target_home() {
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    getent passwd "${SUDO_USER}" | cut -d: -f6
+    return 0
   fi
+  if [[ -n "${HOME:-}" ]]; then
+    printf '%s\n' "${HOME}"
+    return 0
+  fi
+  printf '%s\n' "/root"
+}
+
+STATE_DIR="$(resolve_target_home)/.gopher"
+if [[ "$CONFIG_PATH_SET" == "false" ]]; then
+  if [[ "$ROLE" == "node" ]]; then
+    CONFIG_PATH="${STATE_DIR}/node.toml"
+  else
+    CONFIG_PATH="${STATE_DIR}/gopher.toml"
+  fi
+fi
+if [[ "$ENV_PATH_SET" == "false" ]]; then
+  ENV_PATH="${STATE_DIR}/gopher.env"
 fi
 
 for cmd in curl sha256sum python3 mktemp; do

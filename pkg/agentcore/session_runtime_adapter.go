@@ -373,6 +373,7 @@ func mapSessionAttachments(in []sessionrt.Attachment) []Attachment {
 	out := make([]Attachment, 0, len(in))
 	for _, attachment := range in {
 		out = append(out, Attachment{
+			Path:     strings.TrimSpace(attachment.Path),
 			Name:     strings.TrimSpace(attachment.Name),
 			MIMEType: strings.TrimSpace(attachment.MIMEType),
 			Text:     attachment.Text,

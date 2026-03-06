@@ -60,6 +60,7 @@ type Event struct {
 }
 
 type Attachment struct {
+	Path     string `json:"path,omitempty"`
 	Name     string `json:"name,omitempty"`
 	MIMEType string `json:"mime_type,omitempty"`
 	Text     string `json:"text,omitempty"`

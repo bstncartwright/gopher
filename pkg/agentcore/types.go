@@ -630,6 +630,7 @@ type SessionMemoryFlusher interface {
 }
 
 type Attachment struct {
+	Path     string
 	Name     string
 	MIMEType string
 	Text     string

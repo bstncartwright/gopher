@@ -194,12 +194,19 @@ func startTelegramDMBridgeWithRuntime(
 	registerCancel()
 
 	pipeline, err = gateway.NewDMPipeline(gateway.DMPipelineOptions{
-		Manager:            manager,
-		Transport:          telegramBridge,
-		EventStore:         store,
-		AgentID:            agentRuntime.DefaultActorID,
-		Conversations:      gateway.NewConversationSessionMap(),
-		Bindings:           bindingStore,
+		Manager:       manager,
+		Transport:     telegramBridge,
+		EventStore:    store,
+		AgentID:       agentRuntime.DefaultActorID,
+		Conversations: gateway.NewConversationSessionMap(),
+		Bindings:      bindingStore,
+		AttachmentWorkspace: func(agentID sessionrt.ActorID) string {
+			agent := agentRuntime.Agents[agentID]
+			if agent == nil {
+				return ""
+			}
+			return strings.TrimSpace(agent.Workspace)
+		},
 		ModelPolicyCommand: modelPolicyCommand,
 	})
 	if err != nil {

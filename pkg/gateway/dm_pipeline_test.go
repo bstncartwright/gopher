@@ -883,10 +883,20 @@ func TestDMPipelinePersistsInboundAttachmentsOnUserMessage(t *testing.T) {
 		t.Fatalf("NewManager() error: %v", err)
 	}
 
+	workspace := t.TempDir()
 	pipeline, err := NewDMPipeline(DMPipelineOptions{
 		Manager:   manager,
 		Transport: &fakeTransport{},
 		AgentID:   "agent:a",
+		Now: func() time.Time {
+			return time.Date(2026, time.March, 5, 12, 34, 56, 789, time.UTC)
+		},
+		AttachmentWorkspace: func(agentID sessionrt.ActorID) string {
+			if agentID != "agent:a" {
+				return ""
+			}
+			return workspace
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewDMPipeline() error: %v", err)
@@ -944,6 +954,17 @@ func TestDMPipelinePersistsInboundAttachmentsOnUserMessage(t *testing.T) {
 		}
 		if msg.Attachments[0].Name != "photo.jpg" {
 			t.Fatalf("attachment name = %q, want photo.jpg", msg.Attachments[0].Name)
+		}
+		wantPath := filepath.Join(workspace, ".gopher", "inbound", "2026-03-05", "20260305T123456.000000789Z-01-photo.jpg")
+		if msg.Attachments[0].Path != wantPath {
+			t.Fatalf("attachment path = %q, want %q", msg.Attachments[0].Path, wantPath)
+		}
+		blob, err := os.ReadFile(wantPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%q) error: %v", wantPath, err)
+		}
+		if string(blob) != "img" {
+			t.Fatalf("staged attachment data = %q", string(blob))
 		}
 		if string(msg.Attachments[0].Data) != "img" {
 			t.Fatalf("attachment data = %q", string(msg.Attachments[0].Data))

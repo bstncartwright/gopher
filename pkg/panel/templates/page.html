@@ -264,10 +264,15 @@
 
       var state = {
         sessionID: resolveInitialSessionID(),
+        firstSeq: 0,
         lastSeq: 0,
         detailRenderedSeq: 0,
+        hasOlderRows: false,
         shouldAutoScrollDetail: true,
         animateIncomingRows: false,
+        loadingOlderRows: false,
+        loadingNewerRows: false,
+        pendingNewerRefresh: false,
         source: null,
         sourceSessionID: "",
         payloadView: localStorage.getItem("gopher.panel.payloadView") === "raw" ? "raw" : "digest",
@@ -898,6 +903,83 @@
         state.sourceSessionID = "";
       }
 
+      function sessionDetailContainer() {
+        return document.getElementById("session-detail");
+      }
+
+      function timelineRootNode() {
+        return document.querySelector("#session-detail .timeline");
+      }
+
+      function timelineMetaNode() {
+        return document.querySelector("#session-detail [data-timeline-meta]");
+      }
+
+      function timelineRowsURL(sessionID, params) {
+        var url = new URL("/_gopher/panel/fragments/session/" + encodeURIComponent(sessionID) + "/events", window.location.origin);
+        var keys = Object.keys(params || {});
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var value = params[key];
+          if (value === null || value === undefined || value === "" || value === 0) {
+            continue;
+          }
+          url.searchParams.set(key, String(value));
+        }
+        return url.toString();
+      }
+
+      function parseHTMLFragment(html) {
+        var template = document.createElement("template");
+        template.innerHTML = String(html || "").trim();
+        return template.content.firstElementChild;
+      }
+
+      function updateTimelineMeta() {
+        var root = timelineRootNode();
+        var rows = document.querySelectorAll("#session-detail [data-event-row]");
+        var firstSeq = rows.length ? (Number(rows[0].getAttribute("data-event-seq") || "0") || 0) : 0;
+        var renderedLastSeq = rows.length ? (Number(rows[rows.length - 1].getAttribute("data-event-seq") || "0") || 0) : 0;
+
+        if (root) {
+          root.setAttribute("data-first-seq", String(firstSeq));
+          root.setAttribute("data-last-seq", String(Math.max(state.lastSeq, renderedLastSeq)));
+          root.setAttribute("data-has-older", state.hasOlderRows ? "true" : "false");
+        }
+
+        state.firstSeq = firstSeq;
+        if (renderedLastSeq > state.detailRenderedSeq) {
+          state.detailRenderedSeq = renderedLastSeq;
+        }
+        if (renderedLastSeq > state.lastSeq) {
+          state.lastSeq = renderedLastSeq;
+        }
+
+        var meta = timelineMetaNode();
+        if (meta) {
+          meta.textContent = "Last sequence: " + (state.lastSeq || state.detailRenderedSeq || 0) + " · Loaded: " + rows.length + (state.hasOlderRows ? " latest" : "");
+        }
+      }
+
+      function updateStateFromDetailNode(node) {
+        if (!node) {
+          return false;
+        }
+        var detailSession = node.getAttribute("data-session-id") || "";
+        if (!detailSession) {
+          return false;
+        }
+        var detailSeq = Number(node.getAttribute("data-last-seq") || "0") || 0;
+        var firstSeq = Number(node.getAttribute("data-first-seq") || "0") || 0;
+        state.firstSeq = firstSeq;
+        state.hasOlderRows = node.getAttribute("data-has-older") === "true";
+        if (detailSeq > state.lastSeq) {
+          state.lastSeq = detailSeq;
+        }
+        state.detailRenderedSeq = detailSeq;
+        return true;
+      }
+
       function refreshSessionDetail(options) {
         if (!state.sessionID) {
           return;
@@ -924,9 +1006,14 @@
           return;
         }
         state.sessionID = sessionID;
+        state.firstSeq = 0;
         state.lastSeq = Number(lastSeq) || 0;
         state.detailRenderedSeq = state.lastSeq;
+        state.hasOlderRows = false;
         state.animateIncomingRows = false;
+        state.loadingOlderRows = false;
+        state.loadingNewerRows = false;
+        state.pendingNewerRefresh = false;
         highlightSelected();
         if (options.syncURL !== false) {
           setURLState({ replaceHistory: !!options.replaceHistory });
@@ -959,7 +1046,7 @@
           } catch (err) {
             console.error("parse stream payload", err);
           }
-          refreshSessionDetail({ animateIncoming: true });
+          loadNewerTimelineRows();
           refreshSessions();
         });
         source.onerror = function () {
@@ -975,8 +1062,7 @@
           return false;
         }
         var detailSession = node.getAttribute("data-session-id") || "";
-        var detailSeq = Number(node.getAttribute("data-last-seq") || "0") || 0;
-        if (!detailSession) {
+        if (!detailSession || !updateStateFromDetailNode(node)) {
           return false;
         }
         if (detailSession !== state.sessionID) {
@@ -986,17 +1072,12 @@
             return false;
           }
           state.sessionID = detailSession;
-          state.lastSeq = detailSeq;
-          state.detailRenderedSeq = detailSeq;
           setURLState({ replaceHistory: true });
           openSource();
         } else {
-          if (detailSeq > state.lastSeq) {
-            state.lastSeq = detailSeq;
-          }
-          state.detailRenderedSeq = detailSeq;
           openSource();
         }
+        updateTimelineMeta();
         highlightSelected();
         return true;
       }
@@ -1034,6 +1115,318 @@
           return;
         }
         scrollDetailToBottom();
+      }
+
+      function rowExistsInTimeline(seq) {
+        return !!document.querySelector('#session-detail [data-event-row][data-event-seq="' + String(seq) + '"]');
+      }
+
+      function isKnownBuiltInToolName(name) {
+        var value = normalize(name);
+        return value === "read" || value === "write" || value === "edit" || value === "apply_patch" || value === "exec" || value === "process" || value === "delegate" || value === "heartbeat" || value === "cron" || value === "web_search" || value === "search_mcp" || value === "search";
+      }
+
+      function toolNameFromPayload(payload) {
+        return pickString(payload, ["tool_name", "name", "tool", "id"]);
+      }
+
+      function toolArgsFromPayload(payload) {
+        return pick(payload, ["arguments", "args", "input", "params", "payload"]);
+      }
+
+      function mergedToolExecutionPayload(toolName, callPayload, resultPayload, waiting) {
+        var merged = { waiting: !!waiting };
+        var resolvedName = String(toolName || "").trim();
+        if (resolvedName) {
+          merged.name = resolvedName;
+        }
+        var args = toolArgsFromPayload(callPayload || {});
+        if (args !== null && args !== undefined) {
+          merged.args = args;
+        }
+        if (callPayload && typeof callPayload === "object" && Object.keys(callPayload).length) {
+          merged.tool_call = callPayload;
+        }
+        if (resultPayload && typeof resultPayload === "object" && Object.keys(resultPayload).length) {
+          merged.tool_result = resultPayload;
+        }
+        return merged;
+      }
+
+      function findPendingToolRowIndex(pending, toolName) {
+        var normalizedName = normalize(toolName);
+        if (normalizedName) {
+          for (var i = 0; i < pending.length; i++) {
+            if (normalize(pending[i].toolName) === normalizedName) {
+              return i;
+            }
+          }
+        }
+        return pending.length ? 0 : -1;
+      }
+
+      function updateTimelineRowPayload(row, payload, waiting) {
+        var rawNode = row.querySelector(".event-raw pre");
+        if (rawNode) {
+          rawNode.textContent = JSON.stringify(payload || {}, null, 2);
+        }
+        var pendingNode = row.querySelector("[data-event-pending]");
+        if (waiting) {
+          if (!pendingNode) {
+            pendingNode = document.createElement("span");
+            pendingNode.className = "event-pending";
+            pendingNode.setAttribute("data-event-pending", "true");
+            pendingNode.innerHTML = '<span class="event-spinner" aria-hidden="true"></span>waiting for result';
+            var badge = row.querySelector("[data-event-badge]");
+            if (badge && badge.parentNode) {
+              badge.parentNode.insertBefore(pendingNode, badge.nextSibling);
+            }
+          }
+        } else if (pendingNode) {
+          pendingNode.remove();
+        }
+
+        var badgeNode = row.querySelector("[data-event-badge]");
+        if (badgeNode) {
+          badgeNode.className = "badge badge-tool-result";
+          var toolName = toolNameFromPayload(payload);
+          if (isKnownBuiltInToolName(toolName)) {
+            badgeNode.textContent = toolName;
+          }
+        }
+      }
+
+      function reconcileToolRows() {
+        var rows = document.querySelectorAll("#session-detail [data-event-row]");
+        var pending = [];
+        var changed = false;
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var eventType = row.getAttribute("data-event-type") || "";
+          var rawNode = row.querySelector(".event-raw pre");
+          var payload = safeParseJSON(rawNode ? rawNode.textContent || "" : "");
+          if (eventType === "tool_call") {
+            pending.push({
+              row: row,
+              payload: payload && typeof payload === "object" ? payload : {},
+              toolName: toolNameFromPayload(payload)
+            });
+            continue;
+          }
+          if (eventType !== "tool_result") {
+            continue;
+          }
+          var index = findPendingToolRowIndex(pending, toolNameFromPayload(payload));
+          if (index < 0) {
+            continue;
+          }
+          var item = pending.splice(index, 1)[0];
+          var callPayload = item.payload && item.payload.tool_call && typeof item.payload.tool_call === "object" ? item.payload.tool_call : item.payload;
+          updateTimelineRowPayload(item.row, mergedToolExecutionPayload(toolNameFromPayload(payload) || item.toolName, callPayload, payload, false), false);
+          row.remove();
+          changed = true;
+        }
+        return changed;
+      }
+
+      function hydrateTimeline() {
+        var rows = document.querySelectorAll("#session-detail [data-event-row]");
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var digestNode = row.querySelector("[data-event-digest]");
+          if (!digestNode) {
+            continue;
+          }
+          var rawNode = row.querySelector(".event-raw pre");
+          var rawText = rawNode ? rawNode.textContent || "" : "";
+          var payload = safeParseJSON(rawText);
+          var eventType = row.getAttribute("data-event-type") || "";
+          var summary = summarizeEvent(eventType, payload, rawText);
+          digestNode.textContent = summary || "No payload details.";
+          row.setAttribute("data-event-category", eventCategory(eventType, payload));
+          row.setAttribute("data-event-anomaly", anomalyFlag(eventType, payload, summary) ? "true" : "false");
+
+          var descriptor = eventNoiseDescriptor(eventType, payload);
+          if (descriptor && descriptor.key) {
+            row.setAttribute("data-noise-group-key", descriptor.key);
+            row.setAttribute("data-noise-group-label", descriptor.label || "repeated activity");
+          } else {
+            row.removeAttribute("data-noise-group-key");
+            row.removeAttribute("data-noise-group-label");
+          }
+
+          var keyFactsNode = row.querySelector("[data-event-keyfacts]");
+          if (keyFactsNode) {
+            keyFactsNode.textContent = keyFacts(eventType, payload, summary);
+          }
+          var detailsNode = row.querySelector("[data-payload-details]");
+          var payloadSummary = row.querySelector("[data-payload-summary]");
+          if (payloadSummary) {
+            var keyCount = payload && typeof payload === "object" ? Object.keys(payload).length : 0;
+            payloadSummary.textContent = keyCount > 0 ? "View payload JSON (" + keyCount + " keys)" : "View payload JSON";
+          }
+          if (detailsNode) {
+            detailsNode.open = false;
+          }
+        }
+        if (reconcileToolRows()) {
+          hydrateTimeline();
+          return;
+        }
+        buildNoiseGroups();
+        applyTimelineFilters();
+        applyTimelineFilterControls();
+        summarizeTimeline();
+        updateTimelineMeta();
+        applyRelativeTimes(document.getElementById("session-detail"));
+      }
+
+      function fetchTimelinePage(sessionID, params) {
+        return fetch(timelineRowsURL(sessionID, params), { credentials: "same-origin" })
+          .then(function (response) {
+            if (!response.ok) {
+              throw new Error("timeline page request failed with status " + response.status);
+            }
+            return response.text();
+          })
+          .then(function (html) {
+            return parseHTMLFragment(html);
+          });
+      }
+
+      function ingestTimelinePage(pageNode, mode) {
+        if (!pageNode) {
+          return 0;
+        }
+        var container = timelineEventsContainer();
+        if (!container) {
+          return 0;
+        }
+        var rows = pageNode.querySelectorAll("[data-event-row]");
+        var inserted = [];
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          var seq = Number(row.getAttribute("data-event-seq") || "0") || 0;
+          if (!seq || rowExistsInTimeline(seq)) {
+            continue;
+          }
+          if (mode === "older" && container.firstChild) {
+            container.insertBefore(row, container.firstChild);
+          } else {
+            container.appendChild(row);
+          }
+          inserted.push(row);
+        }
+
+        if (mode === "older") {
+          state.hasOlderRows = pageNode.getAttribute("data-has-older") === "true";
+        }
+        var firstSeq = Number(pageNode.getAttribute("data-first-seq") || "0") || 0;
+        var lastSeq = Number(pageNode.getAttribute("data-last-seq") || "0") || 0;
+        if (firstSeq > 0 && (!state.firstSeq || firstSeq < state.firstSeq)) {
+          state.firstSeq = firstSeq;
+        }
+        if (lastSeq > state.lastSeq) {
+          state.lastSeq = lastSeq;
+        }
+        if (mode === "newer" && inserted.length) {
+          for (var j = 0; j < inserted.length; j++) {
+            inserted[j].classList.add("event-row-new");
+          }
+        }
+        hydrateTimeline();
+        return inserted.length;
+      }
+
+      function loadOlderTimelineRows() {
+        if (!state.sessionID || !state.hasOlderRows || state.loadingOlderRows) {
+          return;
+        }
+        var container = timelineEventsContainer();
+        var detail = sessionDetailContainer();
+        if (!container || !detail) {
+          return;
+        }
+
+        var sessionID = state.sessionID;
+        var beforeSeq = state.firstSeq;
+        var previousHeight = detail.scrollHeight;
+        state.loadingOlderRows = true;
+
+        fetchTimelinePage(sessionID, { before_seq: beforeSeq, limit: 50 })
+          .then(function (pageNode) {
+            if (state.sessionID !== sessionID) {
+              return;
+            }
+            var inserted = ingestTimelinePage(pageNode, "older");
+            if (inserted > 0) {
+              var nextHeight = detail.scrollHeight;
+              detail.scrollTop += nextHeight - previousHeight;
+              maybeFillDetailViewport();
+            }
+          })
+          .catch(function (err) {
+            console.error("load older timeline rows", err);
+          })
+          .finally(function () {
+            if (state.sessionID === sessionID) {
+              state.loadingOlderRows = false;
+            }
+          });
+      }
+
+      function loadNewerTimelineRows() {
+        if (!state.sessionID) {
+          return;
+        }
+        if (!timelineEventsContainer()) {
+          refreshSessionDetail({ animateIncoming: true });
+          return;
+        }
+        if (state.loadingNewerRows) {
+          state.pendingNewerRefresh = true;
+          return;
+        }
+
+        var sessionID = state.sessionID;
+        var afterSeq = state.detailRenderedSeq;
+        state.loadingNewerRows = true;
+        state.pendingNewerRefresh = false;
+
+        fetchTimelinePage(sessionID, { after_seq: afterSeq, limit: 200 })
+          .then(function (pageNode) {
+            if (state.sessionID !== sessionID) {
+              return;
+            }
+            captureDetailAutoScroll(false);
+            var inserted = ingestTimelinePage(pageNode, "newer");
+            if (inserted > 0) {
+              maybeScrollDetailToBottom();
+            }
+          })
+          .catch(function (err) {
+            console.error("load newer timeline rows", err);
+          })
+          .finally(function () {
+            if (state.sessionID !== sessionID) {
+              return;
+            }
+            state.loadingNewerRows = false;
+            if (state.pendingNewerRefresh) {
+              state.pendingNewerRefresh = false;
+              loadNewerTimelineRows();
+            }
+          });
+      }
+
+      function maybeFillDetailViewport() {
+        var detail = sessionDetailContainer();
+        if (!detail || !state.hasOlderRows || state.loadingOlderRows) {
+          return;
+        }
+        if (detail.scrollHeight <= detail.clientHeight + 32) {
+          loadOlderTimelineRows();
+        }
       }
 
 
@@ -1142,8 +1535,13 @@
         if (!cards.length) {
           var hadSession = !!state.sessionID;
           state.sessionID = "";
+          state.firstSeq = 0;
           state.lastSeq = 0;
           state.detailRenderedSeq = 0;
+          state.hasOlderRows = false;
+          state.loadingOlderRows = false;
+          state.loadingNewerRows = false;
+          state.pendingNewerRefresh = false;
           closeSource();
           if (hadSession) {
             setURLState({ replaceHistory: true });
@@ -1524,53 +1922,6 @@
         state.previousTab = state.activeTab;
       }
 
-      function hydrateTimeline() {
-        var rows = document.querySelectorAll("#session-detail [data-event-row]");
-        for (var i = 0; i < rows.length; i++) {
-          var row = rows[i];
-          var digestNode = row.querySelector("[data-event-digest]");
-          if (!digestNode) {
-            continue;
-          }
-          var rawNode = row.querySelector(".event-raw pre");
-          var rawText = rawNode ? rawNode.textContent || "" : "";
-          var payload = safeParseJSON(rawText);
-          var eventType = row.getAttribute("data-event-type") || "";
-          var summary = summarizeEvent(eventType, payload, rawText);
-          digestNode.textContent = summary || "No payload details.";
-          row.setAttribute("data-event-category", eventCategory(eventType, payload));
-          row.setAttribute("data-event-anomaly", anomalyFlag(eventType, payload, summary) ? "true" : "false");
-
-          var descriptor = eventNoiseDescriptor(eventType, payload);
-          if (descriptor && descriptor.key) {
-            row.setAttribute("data-noise-group-key", descriptor.key);
-            row.setAttribute("data-noise-group-label", descriptor.label || "repeated activity");
-          } else {
-            row.removeAttribute("data-noise-group-key");
-            row.removeAttribute("data-noise-group-label");
-          }
-
-          var keyFactsNode = row.querySelector("[data-event-keyfacts]");
-          if (keyFactsNode) {
-            keyFactsNode.textContent = keyFacts(eventType, payload, summary);
-          }
-          var detailsNode = row.querySelector("[data-payload-details]");
-          var payloadSummary = row.querySelector("[data-payload-summary]");
-          if (payloadSummary) {
-            var keyCount = payload && typeof payload === "object" ? Object.keys(payload).length : 0;
-            payloadSummary.textContent = keyCount > 0 ? "View payload JSON (" + keyCount + " keys)" : "View payload JSON";
-          }
-          if (detailsNode) {
-            detailsNode.open = false;
-          }
-        }
-        buildNoiseGroups();
-        applyTimelineFilters();
-        applyTimelineFilterControls();
-        summarizeTimeline();
-        applyRelativeTimes(document.getElementById("session-detail"));
-      }
-
       document.body.addEventListener("click", function (event) {
         var tabButton = event.target.closest("[data-panel-tab]");
         if (tabButton) {
@@ -1687,6 +2038,7 @@
           hydrateTimeline();
           animateIncomingTimelineRows(previousRenderedSeq);
           maybeScrollDetailToBottom();
+          maybeFillDetailViewport();
         }
         if (event.detail.target.id === "sessions-list") {
           highlightSelected();
@@ -1704,8 +2056,13 @@
         }
         if (nextSessionID !== state.sessionID) {
           state.sessionID = nextSessionID;
+          state.firstSeq = 0;
           state.lastSeq = 0;
           state.detailRenderedSeq = 0;
+          state.hasOlderRows = false;
+          state.loadingOlderRows = false;
+          state.loadingNewerRows = false;
+          state.pendingNewerRefresh = false;
         }
         state.activeTab = nextTab;
         localStorage.setItem("gopher.panel.activeTab", nextTab);
@@ -1726,6 +2083,9 @@
         state.shouldAutoScrollDetail = isDetailNearBottom(sessionDetail);
         sessionDetail.addEventListener("scroll", function () {
           state.shouldAutoScrollDetail = isDetailNearBottom(sessionDetail);
+          if (sessionDetail.scrollTop <= 120) {
+            loadOlderTimelineRows();
+          }
         }, { passive: true });
       }
 

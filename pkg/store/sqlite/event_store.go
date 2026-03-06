@@ -246,6 +246,122 @@ func (s *EventStore) List(ctx context.Context, sessionID sessionrt.SessionID) ([
 	return events, nil
 }
 
+func (s *EventStore) ListBefore(ctx context.Context, sessionID sessionrt.SessionID, beforeSeq uint64, limit int) ([]sessionrt.Event, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	default:
+	}
+
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `
+		SELECT event_id, timestamp, actor_id, type, payload, seq
+		FROM events
+		WHERE session_id = ?
+	`
+	args := []any{string(sessionID)}
+	if beforeSeq > 0 {
+		query += ` AND seq < ?`
+		args = append(args, int64(beforeSeq))
+	}
+	query += ` ORDER BY seq DESC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("query events before: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]sessionrt.Event, 0, limit+1)
+	for rows.Next() {
+		event, err := scanEventRow(rows, sessionID)
+		if err != nil {
+			return nil, false, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate event rows: %w", err)
+	}
+	if len(events) == 0 {
+		exists, err := s.sessionExists(ctx, sessionID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !exists {
+			return nil, false, sessionrt.ErrSessionNotFound
+		}
+		return nil, false, nil
+	}
+
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	reverseEvents(events)
+	return events, hasMore, nil
+}
+
+func (s *EventStore) ListAfter(ctx context.Context, sessionID sessionrt.SessionID, afterSeq uint64, limit int) ([]sessionrt.Event, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	query := `
+		SELECT event_id, timestamp, actor_id, type, payload, seq
+		FROM events
+		WHERE session_id = ? AND seq > ?
+		ORDER BY seq ASC
+	`
+	args := []any{string(sessionID), int64(afterSeq)}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query events after: %w", err)
+	}
+	defer rows.Close()
+
+	capHint := 0
+	if limit > 0 {
+		capHint = limit
+	}
+	events := make([]sessionrt.Event, 0, capHint)
+	for rows.Next() {
+		event, err := scanEventRow(rows, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate event rows: %w", err)
+	}
+	if len(events) == 0 {
+		exists, err := s.sessionExists(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, sessionrt.ErrSessionNotFound
+		}
+	}
+	return events, nil
+}
+
 func (s *EventStore) Stream(ctx context.Context, sessionID sessionrt.SessionID) (<-chan sessionrt.Event, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -557,6 +673,49 @@ func scanSessionRecordFromRow(row *sql.Row) (sessionrt.SessionRecord, error) {
 		LastSeq:     uint64(lastSeq),
 		InFlight:    inFlight != 0,
 	}, nil
+}
+
+func scanEventRow(scanner interface{ Scan(dest ...any) error }, sessionID sessionrt.SessionID) (sessionrt.Event, error) {
+	var eventID string
+	var tsMillis int64
+	var actorID string
+	var eventType string
+	var payloadBlob []byte
+	var seq int64
+	if err := scanner.Scan(&eventID, &tsMillis, &actorID, &eventType, &payloadBlob, &seq); err != nil {
+		return sessionrt.Event{}, fmt.Errorf("scan event row: %w", err)
+	}
+	payload, err := decodePayload(payloadBlob)
+	if err != nil {
+		return sessionrt.Event{}, fmt.Errorf("decode payload for session %s seq %d: %w", sessionID, seq, err)
+	}
+	return sessionrt.Event{
+		ID:        sessionrt.EventID(eventID),
+		SessionID: sessionID,
+		From:      sessionrt.ActorID(actorID),
+		Type:      sessionrt.EventType(eventType),
+		Payload:   payload,
+		Timestamp: fromMillis(tsMillis),
+		Seq:       uint64(seq),
+	}, nil
+}
+
+func reverseEvents(events []sessionrt.Event) {
+	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+		events[left], events[right] = events[right], events[left]
+	}
+}
+
+func (s *EventStore) sessionExists(ctx context.Context, sessionID sessionrt.SessionID) (bool, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT 1 FROM events WHERE session_id = ? LIMIT 1`, string(sessionID))
+	var marker int
+	if err := row.Scan(&marker); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("query session existence: %w", err)
+	}
+	return true, nil
 }
 
 func decodePayload(blob []byte) (any, error) {

@@ -42,7 +42,7 @@ var readUnitStatusForManagedUnit = func(ctx context.Context, scope serviceSystem
 	return readUnitStatus(ctx, scope, unit)
 }
 var loadGatewayConfigForStatus = func() (config.GatewayConfig, error) {
-	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: defaultServiceGatewayConfigPath()})
+	cfg, _, err := config.LoadGatewayConfig(config.GatewayLoadOptions{ConfigPath: defaultServiceConfigPath("gateway")})
 	return cfg, err
 }
 var runSystemctlForService = func(ctx context.Context, args ...string) error {

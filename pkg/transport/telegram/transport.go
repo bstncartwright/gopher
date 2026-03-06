@@ -30,6 +30,10 @@ const (
 	defaultPollInterval = 2 * time.Second
 	defaultPollTimeout  = 30 * time.Second
 	defaultHTTPTimeout  = 45 * time.Second
+
+	telegramMaxMessageRunes   = 4096
+	telegramDraftMaxRunes     = 4096
+	telegramMessageChunkRunes = 4000
 )
 
 type Options struct {
@@ -59,8 +63,14 @@ type Transport struct {
 	draftStreamingMu       sync.Mutex
 	draftStreamingDisabled bool
 
+	rateLimitMu        sync.Mutex
+	chatRateLimitUntil map[string]time.Time
+
 	runMu     sync.Mutex
 	runCancel context.CancelFunc
+
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
 }
 
 type pollResponse struct {
@@ -129,9 +139,14 @@ type telegramChat struct {
 }
 
 type sendResponse struct {
-	OK          bool   `json:"ok"`
-	Description string `json:"description"`
-	ErrorCode   int    `json:"error_code"`
+	OK          bool                        `json:"ok"`
+	Description string                      `json:"description"`
+	ErrorCode   int                         `json:"error_code"`
+	Parameters  *telegramResponseParameters `json:"parameters,omitempty"`
+}
+
+type telegramResponseParameters struct {
+	RetryAfter int `json:"retry_after"`
 }
 
 type BotCommand struct {
@@ -145,6 +160,7 @@ type telegramAPIError struct {
 	ErrorCode   int
 	HTTPStatus  string
 	RawBody     string
+	RetryAfter  time.Duration
 }
 
 func (e *telegramAPIError) Error() string {
@@ -187,6 +203,7 @@ var (
 	telegramBoldPattern            = regexp.MustCompile(`\*\*(.+?)\*\*|__(.+?)__`)
 	telegramMarkdownHeaderPattern  = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*$`)
 	telegramHeaderSuffixPattern    = regexp.MustCompile(`\s+#+\s*$`)
+	telegramRetryAfterPattern      = regexp.MustCompile(`retry after (\d+)`)
 	// Telegram Bot API only accepts this fixed set of built-in emoji reactions.
 	telegramSupportedReactionEmojis = map[string]struct{}{
 		"❤": {}, "👍": {}, "👎": {}, "🔥": {}, "🥰": {}, "👏": {}, "😁": {}, "🤔": {}, "🤯": {}, "😱": {},
@@ -236,6 +253,20 @@ func New(opts Options) (*Transport, error) {
 		offsetPath:    strings.TrimSpace(opts.OffsetPath),
 		apiBaseURL:    apiBaseURL,
 		client:        &http.Client{Timeout: defaultHTTPTimeout},
+		now:           time.Now,
+		sleep: func(ctx context.Context, d time.Duration) error {
+			if d <= 0 {
+				return nil
+			}
+			timer := time.NewTimer(d)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		},
 	}, nil
 }
 
@@ -321,24 +352,16 @@ func (t *Transport) SendMessage(ctx context.Context, message transport.OutboundM
 	}
 
 	if text != "" {
-		renderedText, parseMode := renderTelegramMessageText(text)
-		payload := buildSendMessagePayload(target.ChatID, target.MessageThreadID, renderedText, parseMode)
-		slog.Info("telegram transport: sending message", "conversation_id", message.ConversationID, "chat_id", target.ChatID, "attachment_count", len(message.Attachments))
-		if err := t.sendAPI(ctx, "sendMessage", payload); err != nil {
-			if parseMode == "" || !isTelegramEntityParseError(err) {
-				return err
-			}
-			fallbackText := strings.TrimSpace(stripCommonMarkdownFormatting(text))
-			if fallbackText == "" {
-				fallbackText = text
-			}
-			slog.Warn(
-				"telegram transport: parse-mode render rejected by telegram, retrying plain text",
-				"conversation_id", message.ConversationID,
-				"chat_id", target.ChatID,
-				"error", err,
-			)
-			if err := t.sendAPI(ctx, "sendMessage", buildSendMessagePayload(target.ChatID, target.MessageThreadID, fallbackText, "")); err != nil {
+		chunks := splitTelegramMessageText(text, telegramMessageChunkRunes)
+		slog.Info(
+			"telegram transport: sending message",
+			"conversation_id", message.ConversationID,
+			"chat_id", target.ChatID,
+			"attachment_count", len(message.Attachments),
+			"text_chunk_count", len(chunks),
+		)
+		for _, chunk := range chunks {
+			if err := t.sendTextMessage(ctx, message.ConversationID, target, chunk); err != nil {
 				return err
 			}
 		}
@@ -387,8 +410,8 @@ func (t *Transport) SendMessageDraft(ctx context.Context, conversationID string,
 		return nil
 	}
 	runes := []rune(text)
-	if len(runes) > 4096 {
-		text = strings.TrimSpace(string(runes[:4095])) + "…"
+	if len(runes) > telegramDraftMaxRunes {
+		text = strings.TrimSpace(string(runes[:telegramDraftMaxRunes-1])) + "…"
 	}
 	payload := map[string]any{
 		"chat_id":  target.ChatID,
@@ -643,46 +666,79 @@ func (t *Transport) sendAPI(ctx context.Context, method string, payload map[stri
 	if err != nil {
 		return fmt.Errorf("encode telegram %s payload: %w", method, err)
 	}
-	endpoint := fmt.Sprintf("%s/bot%s/%s", t.apiBaseURL, url.PathEscape(t.botToken), method)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build telegram %s request: %w", method, err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	slog.Debug("telegram transport: sending API request", "method", method, "payload_keys", mapKeys(payload), "chat_id", payload["chat_id"])
-	response, err := t.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("send telegram %s request: %w", method, err)
-	}
-	defer response.Body.Close()
-	body, err = io.ReadAll(io.LimitReader(response.Body, 32<<10))
-	if err != nil {
-		return fmt.Errorf("read telegram %s response: %w", method, err)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		if apiErr := parseTelegramAPIError(method, response.Status, body); apiErr != nil {
+	chatID := chatIDFromPayload(payload["chat_id"])
+	for attempt := 0; attempt < 2; attempt++ {
+		suppressed, err := t.beforeOutboundMethod(ctx, method, chatID)
+		if err != nil {
+			return err
+		}
+		if suppressed {
+			return nil
+		}
+		endpoint := fmt.Sprintf("%s/bot%s/%s", t.apiBaseURL, url.PathEscape(t.botToken), method)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("build telegram %s request: %w", method, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		slog.Debug("telegram transport: sending API request", "method", method, "payload_keys", mapKeys(payload), "chat_id", payload["chat_id"])
+		response, err := t.client.Do(request)
+		if err != nil {
+			return fmt.Errorf("send telegram %s request: %w", method, err)
+		}
+		blob, readErr := io.ReadAll(io.LimitReader(response.Body, 32<<10))
+		_ = response.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("read telegram %s response: %w", method, readErr)
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			if apiErr := parseTelegramAPIError(method, response.Status, blob); apiErr != nil {
+				suppressed, shouldRetry, retryErr := t.handleRateLimitError(ctx, method, chatID, apiErr, attempt)
+				if retryErr != nil {
+					return retryErr
+				}
+				if suppressed {
+					return nil
+				}
+				if shouldRetry {
+					continue
+				}
+				return apiErr
+			}
+			detail := strings.TrimSpace(string(blob))
+			if detail == "" {
+				return fmt.Errorf("telegram %s status: %s", method, response.Status)
+			}
+			return fmt.Errorf("telegram %s status: %s body: %s", method, response.Status, detail)
+		}
+		var parsed sendResponse
+		if err := json.Unmarshal(blob, &parsed); err != nil {
+			return fmt.Errorf("decode telegram %s response: %w", method, err)
+		}
+		if !parsed.OK {
+			apiErr := &telegramAPIError{
+				Method:      method,
+				Description: strings.TrimSpace(parsed.Description),
+				ErrorCode:   parsed.ErrorCode,
+				HTTPStatus:  response.Status,
+				RawBody:     strings.TrimSpace(string(blob)),
+				RetryAfter:  retryAfterDuration(parsed.Parameters, parsed.Description),
+			}
+			suppressed, shouldRetry, retryErr := t.handleRateLimitError(ctx, method, chatID, apiErr, attempt)
+			if retryErr != nil {
+				return retryErr
+			}
+			if suppressed {
+				return nil
+			}
+			if shouldRetry {
+				continue
+			}
 			return apiErr
 		}
-		detail := strings.TrimSpace(string(body))
-		if detail == "" {
-			return fmt.Errorf("telegram %s status: %s", method, response.Status)
-		}
-		return fmt.Errorf("telegram %s status: %s body: %s", method, response.Status, detail)
+		slog.Debug("telegram transport: api request successful", "method", method, "payload_keys", mapKeys(payload))
+		return nil
 	}
-	var parsed sendResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return fmt.Errorf("decode telegram %s response: %w", method, err)
-	}
-	if !parsed.OK {
-		return &telegramAPIError{
-			Method:      method,
-			Description: strings.TrimSpace(parsed.Description),
-			ErrorCode:   parsed.ErrorCode,
-			HTTPStatus:  response.Status,
-			RawBody:     strings.TrimSpace(string(body)),
-		}
-	}
-	slog.Debug("telegram transport: api request successful", "method", method, "payload_keys", mapKeys(payload))
 	return nil
 }
 
@@ -704,10 +760,11 @@ func parseTelegramAPIError(method, httpStatus string, body []byte) error {
 		ErrorCode:   parsed.ErrorCode,
 		HTTPStatus:  strings.TrimSpace(httpStatus),
 		RawBody:     trimmedBody,
+		RetryAfter:  retryAfterDuration(parsed.Parameters, parsed.Description),
 	}
 }
 
-func (t *Transport) sendMultipartAPI(ctx context.Context, method string, body *bytes.Buffer, contentType string) error {
+func (t *Transport) sendMultipartAPI(ctx context.Context, method, chatID string, body *bytes.Buffer, contentType string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -715,30 +772,72 @@ func (t *Transport) sendMultipartAPI(ctx context.Context, method string, body *b
 	if method == "" {
 		return fmt.Errorf("telegram method is required")
 	}
-	endpoint := fmt.Sprintf("%s/bot%s/%s", t.apiBaseURL, url.PathEscape(t.botToken), method)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body.Bytes()))
-	if err != nil {
-		return fmt.Errorf("build telegram %s request: %w", method, err)
-	}
-	request.Header.Set("Content-Type", contentType)
-	response, err := t.client.Do(request)
-	if err != nil {
-		return fmt.Errorf("send telegram %s request: %w", method, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("telegram %s status: %s", method, response.Status)
-	}
-	var parsed sendResponse
-	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
-		return fmt.Errorf("decode telegram %s response: %w", method, err)
-	}
-	if !parsed.OK {
-		return &telegramAPIError{
-			Method:      method,
-			Description: strings.TrimSpace(parsed.Description),
-			ErrorCode:   parsed.ErrorCode,
+	chatID = strings.TrimSpace(chatID)
+	for attempt := 0; attempt < 2; attempt++ {
+		suppressed, err := t.beforeOutboundMethod(ctx, method, chatID)
+		if err != nil {
+			return err
 		}
+		if suppressed {
+			return nil
+		}
+		endpoint := fmt.Sprintf("%s/bot%s/%s", t.apiBaseURL, url.PathEscape(t.botToken), method)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body.Bytes()))
+		if err != nil {
+			return fmt.Errorf("build telegram %s request: %w", method, err)
+		}
+		request.Header.Set("Content-Type", contentType)
+		response, err := t.client.Do(request)
+		if err != nil {
+			return fmt.Errorf("send telegram %s request: %w", method, err)
+		}
+		blob, readErr := io.ReadAll(io.LimitReader(response.Body, 32<<10))
+		_ = response.Body.Close()
+		if readErr != nil {
+			return fmt.Errorf("read telegram %s response: %w", method, readErr)
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			if apiErr := parseTelegramAPIError(method, response.Status, blob); apiErr != nil {
+				suppressed, shouldRetry, retryErr := t.handleRateLimitError(ctx, method, chatID, apiErr, attempt)
+				if retryErr != nil {
+					return retryErr
+				}
+				if suppressed {
+					return nil
+				}
+				if shouldRetry {
+					continue
+				}
+				return apiErr
+			}
+			return fmt.Errorf("telegram %s status: %s", method, response.Status)
+		}
+		var parsed sendResponse
+		if err := json.Unmarshal(blob, &parsed); err != nil {
+			return fmt.Errorf("decode telegram %s response: %w", method, err)
+		}
+		if !parsed.OK {
+			apiErr := &telegramAPIError{
+				Method:      method,
+				Description: strings.TrimSpace(parsed.Description),
+				ErrorCode:   parsed.ErrorCode,
+				HTTPStatus:  response.Status,
+				RawBody:     strings.TrimSpace(string(blob)),
+				RetryAfter:  retryAfterDuration(parsed.Parameters, parsed.Description),
+			}
+			suppressed, shouldRetry, retryErr := t.handleRateLimitError(ctx, method, chatID, apiErr, attempt)
+			if retryErr != nil {
+				return retryErr
+			}
+			if suppressed {
+				return nil
+			}
+			if shouldRetry {
+				continue
+			}
+			return apiErr
+		}
+		return nil
 	}
 	return nil
 }
@@ -999,7 +1098,7 @@ func (t *Transport) sendAttachment(ctx context.Context, conversationID string, t
 		"method", method,
 		"mime_type", strings.TrimSpace(attachment.MIMEType),
 	)
-	return t.sendMultipartAPI(ctx, method, &body, writer.FormDataContentType())
+	return t.sendMultipartAPI(ctx, method, target.ChatID, &body, writer.FormDataContentType())
 }
 
 func (t *Transport) getHandler() transport.InboundHandler {
@@ -1222,6 +1321,248 @@ func buildSendMessagePayload(chatID string, messageThreadID int64, text, parseMo
 		payload["parse_mode"] = mode
 	}
 	return payload
+}
+
+func chatIDFromPayload(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	case float64:
+		if typed == float64(int64(typed)) {
+			return strconv.FormatInt(int64(typed), 10)
+		}
+	}
+	return ""
+}
+
+func retryAfterDuration(parameters *telegramResponseParameters, description string) time.Duration {
+	if parameters != nil && parameters.RetryAfter > 0 {
+		return time.Duration(parameters.RetryAfter) * time.Second
+	}
+	description = strings.ToLower(strings.TrimSpace(description))
+	if description == "" {
+		return 0
+	}
+	matches := telegramRetryAfterPattern.FindStringSubmatch(description)
+	if len(matches) != 2 {
+		return 0
+	}
+	seconds, err := strconv.Atoi(matches[1])
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (t *Transport) beforeOutboundMethod(ctx context.Context, method, chatID string) (bool, error) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return false, nil
+	}
+	deadline, limited := t.chatRateLimitDeadline(chatID)
+	if !limited {
+		return false, nil
+	}
+	delay := deadline.Sub(t.now())
+	if delay <= 0 {
+		t.clearChatRateLimit(chatID)
+		return false, nil
+	}
+	if isTelegramSkippableRateLimitMethod(method) {
+		slog.Info(
+			"telegram transport: suppressing non-essential request during rate limit",
+			"method", method,
+			"chat_id", chatID,
+			"retry_after_ms", delay.Milliseconds(),
+		)
+		return true, nil
+	}
+	if err := t.sleep(ctx, delay); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func (t *Transport) handleRateLimitError(ctx context.Context, method, chatID string, err error, attempt int) (bool, bool, error) {
+	apiErr, ok := telegramRateLimitError(err)
+	if !ok {
+		return false, false, nil
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID != "" && apiErr.RetryAfter > 0 {
+		t.setChatRateLimit(chatID, apiErr.RetryAfter)
+	}
+	if isTelegramSkippableRateLimitMethod(method) {
+		slog.Warn(
+			"telegram transport: non-essential request rate limited; suppressing until retry window elapses",
+			"method", method,
+			"chat_id", chatID,
+			"retry_after_ms", apiErr.RetryAfter.Milliseconds(),
+			"error", err,
+		)
+		return true, false, nil
+	}
+	if attempt > 0 || apiErr.RetryAfter <= 0 {
+		return false, false, nil
+	}
+	if err := t.sleep(ctx, apiErr.RetryAfter); err != nil {
+		return false, false, err
+	}
+	return false, true, nil
+}
+
+func (t *Transport) chatRateLimitDeadline(chatID string) (time.Time, bool) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return time.Time{}, false
+	}
+	t.rateLimitMu.Lock()
+	defer t.rateLimitMu.Unlock()
+	if t.chatRateLimitUntil == nil {
+		return time.Time{}, false
+	}
+	deadline, ok := t.chatRateLimitUntil[chatID]
+	return deadline, ok
+}
+
+func (t *Transport) clearChatRateLimit(chatID string) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return
+	}
+	t.rateLimitMu.Lock()
+	if t.chatRateLimitUntil != nil {
+		delete(t.chatRateLimitUntil, chatID)
+	}
+	t.rateLimitMu.Unlock()
+}
+
+func (t *Transport) setChatRateLimit(chatID string, retryAfter time.Duration) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" || retryAfter <= 0 {
+		return
+	}
+	deadline := t.now().Add(retryAfter)
+	t.rateLimitMu.Lock()
+	if t.chatRateLimitUntil == nil {
+		t.chatRateLimitUntil = map[string]time.Time{}
+	}
+	if existing, ok := t.chatRateLimitUntil[chatID]; !ok || deadline.After(existing) {
+		t.chatRateLimitUntil[chatID] = deadline
+	}
+	t.rateLimitMu.Unlock()
+}
+
+func telegramRateLimitError(err error) (*telegramAPIError, bool) {
+	var apiErr *telegramAPIError
+	if !errors.As(err, &apiErr) {
+		return nil, false
+	}
+	if apiErr.ErrorCode != http.StatusTooManyRequests {
+		return nil, false
+	}
+	return apiErr, true
+}
+
+func isTelegramSkippableRateLimitMethod(method string) bool {
+	switch strings.TrimSpace(method) {
+	case "sendChatAction", "sendMessageDraft":
+		return true
+	default:
+		return false
+	}
+}
+
+func (t *Transport) sendTextMessage(ctx context.Context, conversationID string, target telegramConversationTarget, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+
+	renderedText, parseMode := renderTelegramMessageText(text)
+	payload := buildSendMessagePayload(target.ChatID, target.MessageThreadID, renderedText, parseMode)
+	if err := t.sendAPI(ctx, "sendMessage", payload); err != nil {
+		if parseMode == "" || !isTelegramEntityParseError(err) {
+			return err
+		}
+		fallbackText := strings.TrimSpace(stripCommonMarkdownFormatting(text))
+		if fallbackText == "" {
+			fallbackText = text
+		}
+		slog.Warn(
+			"telegram transport: parse-mode render rejected by telegram, retrying plain text",
+			"conversation_id", conversationID,
+			"chat_id", target.ChatID,
+			"error", err,
+		)
+		if err := t.sendAPI(ctx, "sendMessage", buildSendMessagePayload(target.ChatID, target.MessageThreadID, fallbackText, "")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func splitTelegramMessageText(text string, maxRunes int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if maxRunes <= 0 {
+		maxRunes = telegramMaxMessageRunes
+	}
+
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return []string{text}
+	}
+
+	chunks := make([]string, 0, (len(runes)/maxRunes)+1)
+	for len(runes) > 0 {
+		if len(runes) <= maxRunes {
+			chunk := strings.TrimSpace(string(runes))
+			if chunk != "" {
+				chunks = append(chunks, chunk)
+			}
+			break
+		}
+
+		splitAt := maxRunes
+		for idx := maxRunes; idx >= maxRunes/2; idx-- {
+			switch runes[idx-1] {
+			case '\n', ' ', '\t':
+				splitAt = idx
+				idx = 0
+			}
+		}
+
+		chunk := strings.TrimSpace(string(runes[:splitAt]))
+		if chunk == "" {
+			chunk = strings.TrimSpace(string(runes[:maxRunes]))
+			splitAt = maxRunes
+		}
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+
+		runes = runes[splitAt:]
+		for len(runes) > 0 {
+			switch runes[0] {
+			case '\n', ' ', '\t':
+				runes = runes[1:]
+			default:
+				goto nextChunk
+			}
+		}
+
+	nextChunk:
+	}
+	return chunks
 }
 
 func (t *Transport) setDraftStreamingDisabled(disabled bool) {

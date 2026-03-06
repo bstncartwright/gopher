@@ -1122,9 +1122,11 @@ func messageFromPayload(payload any) (sessionrt.Message, bool) {
 	case map[string]any:
 		role, _ := typed["role"].(string)
 		content, _ := typed["content"].(string)
+		target, _ := typed["target_actor_id"].(string)
 		return sessionrt.Message{
-			Role:    sessionrt.Role(strings.TrimSpace(role)),
-			Content: content,
+			Role:          sessionrt.Role(strings.TrimSpace(role)),
+			Content:       content,
+			TargetActorID: sessionrt.ActorID(strings.TrimSpace(target)),
 		}, true
 	default:
 		return sessionrt.Message{}, false
@@ -1534,20 +1536,17 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			if event.Type != sessionrt.EventMessage {
 				continue
 			}
-			msg, ok := event.Payload.(sessionrt.Message)
+			msg, ok := messageFromPayload(event.Payload)
 			if !ok {
-				payload, mapOK := event.Payload.(map[string]any)
-				if !mapOK {
-					continue
-				}
-				roleRaw, roleOK := payload["role"].(string)
-				textRaw, textOK := payload["content"].(string)
-				if !roleOK || !textOK {
-					continue
-				}
-				msg = sessionrt.Message{Role: sessionrt.Role(roleRaw), Content: textRaw}
+				continue
 			}
 			if msg.Role != sessionrt.RoleAgent {
+				continue
+			}
+			if strings.TrimSpace(string(msg.TargetActorID)) != "" {
+				// Agent-targeted messages are internal session traffic. Keep them
+				// inside the session so the target actor can continue the workflow.
+				p.cancelScheduledErrorFallback(conversationID)
 				continue
 			}
 			p.cancelScheduledErrorFallback(conversationID)

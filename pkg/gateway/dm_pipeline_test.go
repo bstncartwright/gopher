@@ -210,6 +210,40 @@ func (e *dmStaticExecutor) Step(_ context.Context, input sessionrt.AgentInput) (
 	}, nil
 }
 
+type dmTargetedReplyExecutor struct {
+	text string
+}
+
+func (e *dmTargetedReplyExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: e.text,
+				},
+			},
+		},
+	}, nil
+}
+
+func dmMessageTargetSelector(_ *sessionrt.Session, trigger sessionrt.Event) ([]sessionrt.ActorID, bool) {
+	if trigger.Type != sessionrt.EventMessage {
+		return nil, false
+	}
+	msg, ok := trigger.Payload.(sessionrt.Message)
+	if !ok {
+		return nil, false
+	}
+	target := sessionrt.ActorID(strings.TrimSpace(string(msg.TargetActorID)))
+	if target == "" {
+		return nil, false
+	}
+	return []sessionrt.ActorID{target}, true
+}
+
 type dmErrorExecutor struct {
 	message string
 }
@@ -1397,6 +1431,71 @@ func TestDMPipelineIgnoresInvalidBindingSubscriptionRestore(t *testing.T) {
 	}
 	waitFor(t, 2*time.Second, func() bool {
 		return fake.sentCount() >= 1
+	})
+}
+
+func TestDMPipelineKeepsAgentTargetedMessagesInternal(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:         store,
+		Executor:      &dmTargetedReplyExecutor{text: "main summary"},
+		AgentSelector: dmMessageTargetSelector,
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	created, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{
+			{ID: "agent:a", Type: sessionrt.ActorAgent},
+			{ID: "worker", Type: sessionrt.ActorAgent},
+			{ID: "external:@user:hs", Type: sessionrt.ActorHuman},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := pipeline.BindConversation("telegram:777", created.ID, "agent:a", "@milo:hs", ConversationModeDM); err != nil {
+		t.Fatalf("BindConversation() error: %v", err)
+	}
+
+	pipeline.startProcessing("telegram:777")
+	if err := manager.SendEvent(context.Background(), sessionrt.Event{
+		SessionID: created.ID,
+		From:      "worker",
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:          sessionrt.RoleAgent,
+			Content:       "raw worker output",
+			TargetActorID: "agent:a",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent(worker targeted message) error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	if got := fake.lastSent().Text; got != "main summary" {
+		t.Fatalf("last outbound text = %q, want main summary", got)
+	}
+	for _, sent := range fake.sentMessages() {
+		if strings.Contains(sent.Text, "raw worker output") {
+			t.Fatalf("worker targeted message leaked to transport: %#v", fake.sentMessages())
+		}
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return !pipeline.IsConversationProcessing("telegram:777")
 	})
 }
 

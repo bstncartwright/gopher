@@ -1,7 +1,11 @@
 package agentcore
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +54,24 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 	turnCtx, cancel := withTurnTimeout(ctx)
 	defer cancel()
 
+	if strings.EqualFold(strings.TrimSpace(a.agent.Config.Runtime.Type), "acp") {
+		response, err := a.runACPTurn(turnCtx, input, userMsg.Content)
+		if err != nil {
+			return sessionrt.AgentOutput{}, err
+		}
+		out := []sessionrt.Event{{
+			Type: sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleAgent,
+				Content: response,
+			},
+		}}
+		if patch := a.buildStatePatch(sessionData); patch != nil {
+			out = append(out, sessionrt.Event{Type: sessionrt.EventStatePatch, Payload: patch})
+		}
+		return sessionrt.AgentOutput{Events: out}, nil
+	}
+
 	result, err := a.agent.RunTurn(turnCtx, sessionData, TurnInput{
 		UserMessage: userMsg.Content,
 		PromptMode:  PromptModeFull,
@@ -92,6 +114,28 @@ func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.
 		emitFn = func(sessionrt.Event) error { return nil }
 	}
 
+	if strings.EqualFold(strings.TrimSpace(a.agent.Config.Runtime.Type), "acp") {
+		response, err := a.runACPTurn(turnCtx, input, userMsg.Content)
+		if err != nil {
+			return err
+		}
+		if err := emitFn(sessionrt.Event{
+			Type: sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleAgent,
+				Content: response,
+			},
+		}); err != nil {
+			return err
+		}
+		if patch := a.buildStatePatch(sessionData); patch != nil {
+			if emitErr := emitFn(sessionrt.Event{Type: sessionrt.EventStatePatch, Payload: patch}); emitErr != nil {
+				return emitErr
+			}
+		}
+		return nil
+	}
+
 	_, err := a.agent.RunTurnWithEventHandler(turnCtx, sessionData, TurnInput{
 		UserMessage: userMsg.Content,
 		PromptMode:  PromptModeFull,
@@ -114,6 +158,55 @@ func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.
 		}
 	}
 	return err
+}
+
+func (a *SessionRuntimeAdapter) runACPTurn(ctx context.Context, input sessionrt.AgentInput, prompt string) (string, error) {
+	runtimeCfg := a.agent.Config.Runtime
+	acp := runtimeCfg.ACP
+	timeout := time.Duration(acp.TimeoutSeconds) * time.Second
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	args := make([]string, 0, len(acp.Args))
+	repl := strings.NewReplacer(
+		"{agent}", strings.TrimSpace(acp.Agent),
+		"{prompt}", prompt,
+		"{session_id}", strings.TrimSpace(string(input.SessionID)),
+		"{actor_id}", strings.TrimSpace(string(input.ActorID)),
+	)
+	for _, candidate := range acp.Args {
+		args = append(args, repl.Replace(candidate))
+	}
+	cmd := exec.CommandContext(ctx, acp.Command, args...)
+	cmd.Dir = strings.TrimSpace(a.agent.Workspace)
+	if len(acp.Env) > 0 {
+		env := os.Environ()
+		for key, value := range acp.Env {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			env = append(env, key+"="+repl.Replace(value))
+		}
+		cmd.Env = env
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("acp runtime command failed (%s %s): %w: %s", acp.Command, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		out = strings.TrimSpace(stderr.String())
+	}
+	if out == "" {
+		out = "ACP run completed with no output."
+	}
+	return out, nil
 }
 
 func withTurnTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -101,6 +101,9 @@ func LoadAgent(workspacePath string) (*Agent, error) {
 	}
 	applyDefaultContextManagement(&config)
 	applyDefaultMemoryConfig(&config)
+	if err := applyDefaultRuntimeConfig(&config); err != nil {
+		return nil, fmt.Errorf("invalid runtime config: %w", err)
+	}
 	if err := config.MemorySearch.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid memory_search config: %w", err)
 	}
@@ -647,6 +650,69 @@ func applyDefaultMemoryConfig(cfg *AgentConfig) {
 	cfg.MemorySearch.EmbeddingMaxChars = cfg.MemorySearch.EmbeddingMaxCharsValue()
 	cfg.MemorySearch.EmbeddingRetries = cfg.MemorySearch.EmbeddingRetriesValue()
 	cfg.MemorySearch.EmbeddingConcurrent = cfg.MemorySearch.EmbeddingConcurrencyValue()
+}
+
+func applyDefaultRuntimeConfig(cfg *AgentConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	runtimeType := strings.ToLower(strings.TrimSpace(cfg.Runtime.Type))
+	if runtimeType == "" {
+		runtimeType = "native"
+	}
+	switch runtimeType {
+	case "native":
+		cfg.Runtime.Type = runtimeType
+		return nil
+	case "acp":
+		cfg.Runtime.Type = runtimeType
+		acp := &cfg.Runtime.ACP
+
+		builtin := strings.ToLower(strings.TrimSpace(acp.Builtin))
+		switch builtin {
+		case "", "codex", "opencode":
+			// valid builtins; empty means manual/custom agent routing
+		default:
+			return fmt.Errorf("runtime.acp.builtin %q is unsupported (supported: codex, opencode)", strings.TrimSpace(acp.Builtin))
+		}
+		acp.Builtin = builtin
+
+		if builtin != "" {
+			acp.Agent = builtin
+		}
+		acp.Agent = strings.TrimSpace(acp.Agent)
+		if acp.Agent == "" {
+			agentID := strings.ToLower(strings.TrimSpace(cfg.AgentID))
+			switch agentID {
+			case "codex", "opencode":
+				acp.Agent = agentID
+			default:
+				acp.Agent = "codex"
+			}
+		}
+		acp.Command = strings.TrimSpace(acp.Command)
+		if acp.Command == "" {
+			acp.Command = "acpx"
+		}
+		if len(acp.Args) == 0 {
+			acp.Args = []string{"run", "--agent", "{agent}", "--prompt", "{prompt}"}
+		}
+		for i := range acp.Args {
+			acp.Args[i] = strings.TrimSpace(acp.Args[i])
+		}
+		if acp.TimeoutSeconds <= 0 {
+			acp.TimeoutSeconds = 300
+		}
+		if acp.TimeoutSeconds > 3600 {
+			acp.TimeoutSeconds = 3600
+		}
+		if acp.Env == nil {
+			acp.Env = map[string]string{}
+		}
+		return nil
+	default:
+		return fmt.Errorf("runtime.type %q is unsupported (supported: native, acp)", strings.TrimSpace(cfg.Runtime.Type))
+	}
 }
 
 func validateConfigRemovedContextManagementKeys(path string) error {

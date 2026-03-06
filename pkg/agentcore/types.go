@@ -34,6 +34,21 @@ type AgentConfig struct {
 	Memory                  MemoryConfig            `json:"memory,omitempty" toml:"memory,omitempty"`
 	MemorySearch            MemorySearchConfig      `json:"memory_search,omitempty" toml:"memory_search,omitempty"`
 	ContextManagement       ContextManagementConfig `json:"context_management,omitempty" toml:"context_management,omitempty"`
+	Runtime                 AgentRuntimeConfig      `json:"runtime,omitempty" toml:"runtime,omitempty"`
+}
+
+type AgentRuntimeConfig struct {
+	Type string                `json:"type,omitempty" toml:"type,omitempty"`
+	ACP  AgentACPRuntimeConfig `json:"acp,omitempty" toml:"acp,omitempty"`
+}
+
+type AgentACPRuntimeConfig struct {
+	Builtin        string            `json:"builtin,omitempty" toml:"builtin,omitempty"`
+	Agent          string            `json:"agent,omitempty" toml:"agent,omitempty"`
+	Command        string            `json:"command,omitempty" toml:"command,omitempty"`
+	Args           []string          `json:"args,omitempty" toml:"args,omitempty"`
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty" toml:"timeout_seconds,omitempty"`
+	Env            map[string]string `json:"env,omitempty" toml:"env,omitempty"`
 }
 
 type ContextManagementConfig struct {

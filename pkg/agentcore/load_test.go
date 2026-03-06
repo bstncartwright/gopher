@@ -874,6 +874,51 @@ func TestLoadAgentImplicitlyEnablesApplyPatchForOpenAICodexModels(t *testing.T) 
 	}
 }
 
+func TestLoadAgentACPBuiltinCodex(t *testing.T) {
+	config := defaultConfig()
+	config.Runtime.Type = "acp"
+	config.Runtime.ACP.Builtin = "codex"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if got := strings.TrimSpace(agent.Config.Runtime.ACP.Agent); got != "codex" {
+		t.Fatalf("runtime.acp.agent = %q, want codex", got)
+	}
+}
+
+func TestLoadAgentACPBuiltinOpenCode(t *testing.T) {
+	config := defaultConfig()
+	config.Runtime.Type = "acp"
+	config.Runtime.ACP.Builtin = "opencode"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if got := strings.TrimSpace(agent.Config.Runtime.ACP.Agent); got != "opencode" {
+		t.Fatalf("runtime.acp.agent = %q, want opencode", got)
+	}
+}
+
+func TestLoadAgentRejectsUnknownACPBuiltin(t *testing.T) {
+	config := defaultConfig()
+	config.Runtime.Type = "acp"
+	config.Runtime.ACP.Builtin = "claude"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected invalid runtime.acp.builtin error")
+	}
+	if !strings.Contains(err.Error(), "runtime.acp.builtin") {
+		t.Fatalf("expected runtime.acp.builtin error, got: %v", err)
+	}
+}
+
 func modelsToMap(models []ai.Model) map[string]ai.Model {
 	out := make(map[string]ai.Model, len(models))
 	for _, model := range models {
@@ -889,4 +934,51 @@ func containsTool(tools []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestLoadAgentDefaultsRuntimeToNative(t *testing.T) {
+	config := defaultConfig()
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if got := strings.TrimSpace(agent.Config.Runtime.Type); got != "native" {
+		t.Fatalf("runtime.type = %q, want native", got)
+	}
+}
+
+func TestLoadAgentAppliesACPDefaults(t *testing.T) {
+	config := defaultConfig()
+	config.Runtime.Type = "acp"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+	if got := strings.TrimSpace(agent.Config.Runtime.ACP.Command); got != "acpx" {
+		t.Fatalf("runtime.acp.command = %q, want acpx", got)
+	}
+	if got := strings.TrimSpace(agent.Config.Runtime.ACP.Agent); got != "codex" {
+		t.Fatalf("runtime.acp.agent = %q, want codex", got)
+	}
+	if len(agent.Config.Runtime.ACP.Args) == 0 {
+		t.Fatalf("runtime.acp.args should be defaulted")
+	}
+}
+
+func TestLoadAgentRejectsUnknownRuntimeType(t *testing.T) {
+	config := defaultConfig()
+	config.Runtime.Type = "custom"
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+
+	_, err := LoadAgent(workspace)
+	if err == nil {
+		t.Fatalf("expected invalid runtime type error")
+	}
+	if !strings.Contains(err.Error(), "runtime.type") {
+		t.Fatalf("expected runtime.type error, got: %v", err)
+	}
 }

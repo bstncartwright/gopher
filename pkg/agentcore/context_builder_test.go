@@ -189,6 +189,48 @@ func TestContextBuilderFallsBackToMCPWhenHostedSearchDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildInboundAttachmentContentIncludesSavedWorkspacePath(t *testing.T) {
+	model := ai.Model{Input: []string{"text"}}
+	content := buildInboundAttachmentContent("save this", []Attachment{{
+		Path:     "/tmp/workspace/.gopher/inbound/file.pdf",
+		Name:     "file.pdf",
+		MIMEType: "application/pdf",
+		Data:     []byte("pdf"),
+	}}, model)
+	blocks, ok := content.([]ai.ContentBlock)
+	if !ok {
+		t.Fatalf("content type = %T, want []ai.ContentBlock", content)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("block count = %d, want 2", len(blocks))
+	}
+	if !strings.Contains(blocks[1].Text, "Saved in workspace at /tmp/workspace/.gopher/inbound/file.pdf.") {
+		t.Fatalf("attachment summary = %q", blocks[1].Text)
+	}
+}
+
+func TestAttachmentContentBlocksIncludeImageSummaryWhenSavedPathPresent(t *testing.T) {
+	model := ai.Model{Input: []string{"image"}}
+	blocks := attachmentContentBlocks(Attachment{
+		Path:     "/tmp/workspace/.gopher/inbound/photo.jpg",
+		Name:     "photo.jpg",
+		MIMEType: "image/jpeg",
+		Data:     []byte("img"),
+	}, model)
+	if len(blocks) != 2 {
+		t.Fatalf("block count = %d, want 2", len(blocks))
+	}
+	if blocks[0].Type != ai.ContentTypeImage {
+		t.Fatalf("first block type = %q, want image", blocks[0].Type)
+	}
+	if blocks[1].Type != ai.ContentTypeText {
+		t.Fatalf("second block type = %q, want text", blocks[1].Type)
+	}
+	if !strings.Contains(blocks[1].Text, "Saved in workspace at /tmp/workspace/.gopher/inbound/photo.jpg.") {
+		t.Fatalf("image summary = %q", blocks[1].Text)
+	}
+}
+
 func contextHasTool(ctx ai.Context, name string) bool {
 	for _, tool := range ctx.Tools {
 		if strings.TrimSpace(tool.Name) == name {

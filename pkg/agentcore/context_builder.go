@@ -248,6 +248,8 @@ func attachmentContentBlocks(attachment Attachment, model ai.Model) []ai.Content
 		}}
 		if text := strings.TrimSpace(attachment.Text); text != "" {
 			blocks = append(blocks, ai.ContentBlock{Type: ai.ContentTypeText, Text: formatInboundAttachmentText(attachment, text)})
+		} else if strings.TrimSpace(attachment.Path) != "" {
+			blocks = append(blocks, ai.ContentBlock{Type: ai.ContentTypeText, Text: formatInboundAttachmentSummary(attachment)})
 		}
 		return blocks
 	}
@@ -274,15 +276,32 @@ func formatInboundAttachmentSummary(attachment Attachment) string {
 	}
 
 	name := strings.TrimSpace(attachment.Name)
+	path := strings.TrimSpace(attachment.Path)
 	switch {
 	case name != "" && mimeType != "":
-		return fmt.Sprintf("Attached %s: %s (%s).", label, name, mimeType)
+		summary := fmt.Sprintf("Attached %s: %s (%s).", label, name, mimeType)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
 	case name != "":
-		return fmt.Sprintf("Attached %s: %s.", label, name)
+		summary := fmt.Sprintf("Attached %s: %s.", label, name)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
 	case mimeType != "":
-		return fmt.Sprintf("Attached %s (%s).", label, mimeType)
+		summary := fmt.Sprintf("Attached %s (%s).", label, mimeType)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
 	default:
-		return fmt.Sprintf("Attached %s.", label)
+		summary := fmt.Sprintf("Attached %s.", label)
+		if path != "" {
+			return summary + " Saved in workspace at " + path + "."
+		}
+		return summary
 	}
 }
 

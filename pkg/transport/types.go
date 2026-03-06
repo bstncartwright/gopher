@@ -3,6 +3,7 @@ package transport
 import "context"
 
 type InboundAttachment struct {
+	Path     string
 	Name     string
 	MIMEType string
 	Text     string

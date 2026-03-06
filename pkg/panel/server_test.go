@@ -108,6 +108,55 @@ func (s *fakeSessionStore) List(_ context.Context, sessionID sessionrt.SessionID
 	return out, nil
 }
 
+func (s *fakeSessionStore) ListBefore(_ context.Context, sessionID sessionrt.SessionID, beforeSeq uint64, limit int) ([]sessionrt.Event, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	events, ok := s.events[sessionID]
+	if !ok {
+		return nil, false, sessionrt.ErrSessionNotFound
+	}
+	end := len(events)
+	if beforeSeq > 0 {
+		for i, event := range events {
+			if event.Seq >= beforeSeq {
+				end = i
+				break
+			}
+		}
+	}
+	if limit <= 0 || end <= limit {
+		out := append([]sessionrt.Event(nil), events[:end]...)
+		return out, false, nil
+	}
+	start := end - limit
+	out := append([]sessionrt.Event(nil), events[start:end]...)
+	return out, start > 0, nil
+}
+
+func (s *fakeSessionStore) ListAfter(_ context.Context, sessionID sessionrt.SessionID, afterSeq uint64, limit int) ([]sessionrt.Event, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	events, ok := s.events[sessionID]
+	if !ok {
+		return nil, sessionrt.ErrSessionNotFound
+	}
+	start := len(events)
+	for i, event := range events {
+		if event.Seq > afterSeq {
+			start = i
+			break
+		}
+	}
+	if start >= len(events) {
+		return nil, nil
+	}
+	out := append([]sessionrt.Event(nil), events[start:]...)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *fakeSessionStore) Stream(_ context.Context, sessionID sessionrt.SessionID) (<-chan sessionrt.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -469,6 +518,110 @@ func TestPanelSessionsUseSessionDisplayNameFallback(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Weekly Planning") {
 		t.Fatalf("expected display_name fallback in detail view, got: %s", rec.Body.String())
+	}
+}
+
+func TestPanelSessionDetailLoadsNewestWindow(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	events := make([]sessionrt.Event, 0, 15)
+	for i := 1; i <= 15; i++ {
+		events = append(events, sessionrt.Event{
+			SessionID: "sess-window",
+			Seq:       uint64(i),
+			Type:      sessionrt.EventMessage,
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleUser,
+				Content: fmt.Sprintf("message %d", i),
+			},
+		})
+	}
+	store.addSession("sess-window", sessionrt.SessionActive, events)
+
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/session/sess-window", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if got := strings.Count(body, "data-event-row"); got != 10 {
+		t.Fatalf("rendered rows = %d, want 10", got)
+	}
+	if !strings.Contains(body, "data-first-seq=\"6\"") {
+		t.Fatalf("expected first seq 6 in detail fragment, got: %s", body)
+	}
+	if !strings.Contains(body, "data-last-seq=\"15\"") {
+		t.Fatalf("expected last seq 15 in detail fragment, got: %s", body)
+	}
+	if !strings.Contains(body, "data-has-older=\"true\"") {
+		t.Fatalf("expected older rows marker in detail fragment, got: %s", body)
+	}
+	if strings.Contains(body, "message 5") {
+		t.Fatalf("expected older message outside newest window to be omitted, got: %s", body)
+	}
+	if !strings.Contains(body, "message 6") || !strings.Contains(body, "message 15") {
+		t.Fatalf("expected newest window contents in detail fragment, got: %s", body)
+	}
+}
+
+func TestPanelSessionEventRowsEndpointPagesBeforeAndAfter(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	events := make([]sessionrt.Event, 0, 15)
+	for i := 1; i <= 15; i++ {
+		events = append(events, sessionrt.Event{
+			SessionID: "sess-window",
+			Seq:       uint64(i),
+			Type:      sessionrt.EventMessage,
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleUser,
+				Content: fmt.Sprintf("message %d", i),
+			},
+		})
+	}
+	store.addSession("sess-window", sessionrt.SessionActive, events)
+
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	beforeRec := httptest.NewRecorder()
+	beforeReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/session/sess-window/events?before_seq=6&limit=3", nil)
+	srv.newMux().ServeHTTP(beforeRec, beforeReq)
+	if beforeRec.Code != http.StatusOK {
+		t.Fatalf("before status = %d, want 200", beforeRec.Code)
+	}
+	beforeBody := beforeRec.Body.String()
+	if !strings.Contains(beforeBody, "data-first-seq=\"3\"") || !strings.Contains(beforeBody, "data-last-seq=\"5\"") {
+		t.Fatalf("expected paged older window metadata, got: %s", beforeBody)
+	}
+	if !strings.Contains(beforeBody, "data-has-older=\"true\"") {
+		t.Fatalf("expected additional older rows marker, got: %s", beforeBody)
+	}
+	if got := strings.Count(beforeBody, "data-event-row"); got != 3 {
+		t.Fatalf("older rows rendered = %d, want 3", got)
+	}
+
+	afterRec := httptest.NewRecorder()
+	afterReq := httptest.NewRequest(http.MethodGet, "/_gopher/panel/fragments/session/sess-window/events?after_seq=12", nil)
+	srv.newMux().ServeHTTP(afterRec, afterReq)
+	if afterRec.Code != http.StatusOK {
+		t.Fatalf("after status = %d, want 200", afterRec.Code)
+	}
+	afterBody := afterRec.Body.String()
+	if !strings.Contains(afterBody, "data-first-seq=\"13\"") || !strings.Contains(afterBody, "data-last-seq=\"15\"") {
+		t.Fatalf("expected appended newer window metadata, got: %s", afterBody)
+	}
+	if got := strings.Count(afterBody, "data-event-row"); got != 3 {
+		t.Fatalf("newer rows rendered = %d, want 3", got)
 	}
 }
 

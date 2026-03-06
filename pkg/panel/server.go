@@ -25,11 +25,14 @@ import (
 )
 
 const (
-	defaultRetryBackoff = 500 * time.Millisecond
-	maxRetryBackoff     = 30 * time.Second
-	sseKeepaliveEvery   = 15 * time.Second
-	adminRoot           = "/admin"
-	legacyPanelRoot     = "/_gopher/panel"
+	defaultRetryBackoff  = 500 * time.Millisecond
+	maxRetryBackoff      = 30 * time.Second
+	sseKeepaliveEvery    = 15 * time.Second
+	timelineInitialLimit = 10
+	timelinePageLimit    = 50
+	timelineStreamLimit  = 200
+	adminRoot            = "/admin"
+	legacyPanelRoot      = "/_gopher/panel"
 )
 
 //go:embed templates/*.html assets/*
@@ -39,6 +42,11 @@ type SessionStore interface {
 	List(ctx context.Context, sessionID sessionrt.SessionID) ([]sessionrt.Event, error)
 	Stream(ctx context.Context, sessionID sessionrt.SessionID) (<-chan sessionrt.Event, error)
 	ListSessions(ctx context.Context) ([]sessionrt.SessionRecord, error)
+}
+
+type sessionTimelinePageStore interface {
+	ListBefore(ctx context.Context, sessionID sessionrt.SessionID, beforeSeq uint64, limit int) ([]sessionrt.Event, bool, error)
+	ListAfter(ctx context.Context, sessionID sessionrt.SessionID, afterSeq uint64, limit int) ([]sessionrt.Event, error)
 }
 
 type SessionMetadata struct {
@@ -242,9 +250,19 @@ type sessionDetailData struct {
 	Title           string
 	ConversationID  string
 	Error           string
+	FirstSeq        uint64
 	LastSeq         uint64
+	HasOlder        bool
 	Events          []eventRow
 	ContextHealth   *contextHealthData
+}
+
+type sessionEventRowsData struct {
+	SessionID string
+	FirstSeq  uint64
+	LastSeq   uint64
+	HasOlder  bool
+	Events    []eventRow
 }
 
 type contextHealthData struct {
@@ -393,6 +411,7 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("GET "+adminRoot+"/fragments/overview", s.handleOverview)
 	mux.HandleFunc("GET "+adminRoot+"/fragments/sessions", s.handleSessions)
 	mux.HandleFunc("GET "+adminRoot+"/fragments/session/{sessionID}", s.handleSessionDetail)
+	mux.HandleFunc("GET "+adminRoot+"/fragments/session/{sessionID}/events", s.handleSessionEventRows)
 	mux.HandleFunc("GET "+adminRoot+"/fragments/agents", s.handleAgents)
 	mux.HandleFunc("GET "+adminRoot+"/stream/session/{sessionID}", s.handleSessionStream)
 	mux.HandleFunc("GET "+adminRoot+"/assets/panel.css", s.handleCSS)
@@ -408,6 +427,7 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/overview", s.handleOverview)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/sessions", s.handleSessions)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/session/{sessionID}", s.handleSessionDetail)
+	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/session/{sessionID}/events", s.handleSessionEventRows)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/agents", s.handleAgents)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/stream/session/{sessionID}", s.handleSessionStream)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/assets/panel.css", s.handleCSS)
@@ -638,22 +658,29 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.store.List(r.Context(), sessionrt.SessionID(data.SessionID))
+	page, err := s.listSessionEventsBefore(r.Context(), sessionrt.SessionID(data.SessionID), 0, timelineInitialLimit)
 	if err != nil {
 		data.Error = fmt.Sprintf("Load session failed: %v", err)
 		s.renderTemplate(w, "session_detail.html", data)
 		return
 	}
-	data.Events = toEventRows(events)
-	data.ContextHealth = extractContextHealth(events)
-	if len(events) > 0 {
-		data.LastSeq = events[len(events)-1].Seq
+	data.Events = toEventRows(page.Events)
+	data.HasOlder = page.HasMoreBefore
+	if len(page.Events) > 0 {
+		data.FirstSeq = page.Events[0].Seq
+		data.LastSeq = page.Events[len(page.Events)-1].Seq
+	}
+	contextEvents, err := s.listSessionEventsBefore(r.Context(), sessionrt.SessionID(data.SessionID), 0, timelineStreamLimit)
+	if err == nil {
+		data.ContextHealth = extractContextHealth(contextEvents.Events)
 	}
 	metadata := s.lookupSessionMetadata(sessionrt.SessionID(data.SessionID))
 	data.ConversationID = metadata.ConversationID
 	if metadata.ConversationName != "" {
 		data.Title = metadata.ConversationName
-	} else if displayName := sessionrt.DisplayNameFromEvents(events); displayName != "" {
+	} else if displayName := s.lookupSessionDisplayName(r.Context(), sessionrt.SessionID(data.SessionID)); displayName != "" {
+		data.Title = displayName
+	} else if displayName := sessionrt.DisplayNameFromEvents(page.Events); displayName != "" {
 		data.Title = displayName
 	} else if metadata.ConversationID != "" {
 		data.Title = metadata.ConversationID
@@ -661,6 +688,65 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		data.Title = data.SessionID
 	}
 	s.renderTemplate(w, "session_detail.html", data)
+}
+
+func (s *Server) handleSessionEventRows(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "session runtime unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		http.Error(w, "sessionID is required", http.StatusBadRequest)
+		return
+	}
+	beforeSeq, err := parseSeqParam(r.URL.Query().Get("before_seq"), "before_seq")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	afterSeq, err := parseSeqParam(r.URL.Query().Get("after_seq"), "after_seq")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if beforeSeq > 0 && afterSeq > 0 {
+		http.Error(w, "before_seq and after_seq cannot be combined", http.StatusBadRequest)
+		return
+	}
+	limit, err := parseLimitParam(r.URL.Query().Get("limit"), timelinePageLimit, timelineStreamLimit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	data := sessionEventRowsData{SessionID: sessionID}
+	switch {
+	case afterSeq > 0:
+		page, err := s.listSessionEventsAfter(r.Context(), sessionrt.SessionID(sessionID), afterSeq, limit)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("load session: %v", err), http.StatusNotFound)
+			return
+		}
+		data.Events = toEventRows(page.Events)
+		if len(page.Events) > 0 {
+			data.FirstSeq = page.Events[0].Seq
+			data.LastSeq = page.Events[len(page.Events)-1].Seq
+		}
+	default:
+		page, err := s.listSessionEventsBefore(r.Context(), sessionrt.SessionID(sessionID), beforeSeq, limit)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("load session: %v", err), http.StatusNotFound)
+			return
+		}
+		data.Events = toEventRows(page.Events)
+		data.HasOlder = page.HasMoreBefore
+		if len(page.Events) > 0 {
+			data.FirstSeq = page.Events[0].Seq
+			data.LastSeq = page.Events[len(page.Events)-1].Seq
+		}
+	}
+	s.renderTemplate(w, "session_event_rows.html", data)
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
@@ -754,16 +840,13 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.store.List(r.Context(), sessionrt.SessionID(sessionID))
+	events, err := s.listSessionEventsAfter(r.Context(), sessionrt.SessionID(sessionID), afterSeq, timelineStreamLimit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("load session: %v", err), http.StatusNotFound)
 		return
 	}
 	lastSeq := afterSeq
-	for _, event := range events {
-		if event.Seq <= afterSeq {
-			continue
-		}
+	for _, event := range events.Events {
 		if err := writeSessionSSEEvent(w, sessionID, event); err != nil {
 			return
 		}
@@ -843,16 +926,130 @@ func writeJSON(w http.ResponseWriter, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func parseAfterSeq(raw string) (uint64, error) {
+func parseSeqParam(raw string, name string) (uint64, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return 0, nil
 	}
 	seq, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("after_seq must be an unsigned integer")
+		return 0, fmt.Errorf("%s must be an unsigned integer", name)
 	}
 	return seq, nil
+}
+
+func parseAfterSeq(raw string) (uint64, error) {
+	return parseSeqParam(raw, "after_seq")
+}
+
+func parseLimitParam(raw string, defaultValue int, maxValue int) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return defaultValue, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 0, fmt.Errorf("limit must be a positive integer")
+	}
+	if maxValue > 0 && limit > maxValue {
+		return maxValue, nil
+	}
+	return limit, nil
+}
+
+type sessionEventPage struct {
+	Events        []sessionrt.Event
+	HasMoreBefore bool
+}
+
+func (s *Server) listSessionEventsBefore(ctx context.Context, sessionID sessionrt.SessionID, beforeSeq uint64, limit int) (sessionEventPage, error) {
+	if pager, ok := s.store.(sessionTimelinePageStore); ok {
+		events, hasMore, err := pager.ListBefore(ctx, sessionID, beforeSeq, limit)
+		return sessionEventPage{Events: events, HasMoreBefore: hasMore}, err
+	}
+	events, err := s.store.List(ctx, sessionID)
+	if err != nil {
+		return sessionEventPage{}, err
+	}
+	if limit <= 0 || limit >= len(events) {
+		filtered := filterEventsBefore(events, beforeSeq)
+		return sessionEventPage{
+			Events:        filtered,
+			HasMoreBefore: beforeSeq > 0 && len(filtered) < len(events),
+		}, nil
+	}
+	filtered := filterEventsBefore(events, beforeSeq)
+	if len(filtered) <= limit {
+		return sessionEventPage{Events: filtered}, nil
+	}
+	start := len(filtered) - limit
+	return sessionEventPage{
+		Events:        append([]sessionrt.Event(nil), filtered[start:]...),
+		HasMoreBefore: start > 0,
+	}, nil
+}
+
+func (s *Server) listSessionEventsAfter(ctx context.Context, sessionID sessionrt.SessionID, afterSeq uint64, limit int) (sessionEventPage, error) {
+	if pager, ok := s.store.(sessionTimelinePageStore); ok {
+		events, err := pager.ListAfter(ctx, sessionID, afterSeq, limit)
+		return sessionEventPage{Events: events}, err
+	}
+	events, err := s.store.List(ctx, sessionID)
+	if err != nil {
+		return sessionEventPage{}, err
+	}
+	filtered := filterEventsAfter(events, afterSeq)
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return sessionEventPage{Events: filtered}, nil
+}
+
+func filterEventsBefore(events []sessionrt.Event, beforeSeq uint64) []sessionrt.Event {
+	if beforeSeq == 0 {
+		return append([]sessionrt.Event(nil), events...)
+	}
+	idx := len(events)
+	for i, event := range events {
+		if event.Seq >= beforeSeq {
+			idx = i
+			break
+		}
+	}
+	return append([]sessionrt.Event(nil), events[:idx]...)
+}
+
+func filterEventsAfter(events []sessionrt.Event, afterSeq uint64) []sessionrt.Event {
+	if afterSeq == 0 {
+		return append([]sessionrt.Event(nil), events...)
+	}
+	idx := len(events)
+	for i, event := range events {
+		if event.Seq > afterSeq {
+			idx = i
+			break
+		}
+	}
+	if idx >= len(events) {
+		return nil
+	}
+	return append([]sessionrt.Event(nil), events[idx:]...)
+}
+
+func (s *Server) lookupSessionDisplayName(ctx context.Context, sessionID sessionrt.SessionID) string {
+	if s.store == nil {
+		return ""
+	}
+	records, err := s.store.ListSessions(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, record := range records {
+		if record.SessionID == sessionID {
+			return strings.TrimSpace(record.DisplayName)
+		}
+	}
+	return ""
 }
 
 func writeSessionSSEEvent(w io.Writer, sessionID string, event sessionrt.Event) error {

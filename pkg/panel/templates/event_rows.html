@@ -1,0 +1,31 @@
+{{define "event_rows"}}
+{{range .}}
+<article
+  class="event-row{{if .RoleClass}} {{.RoleClass}}{{end}}"
+  data-event-row
+  data-event-type="{{.Type}}"
+  data-event-seq="{{.Seq}}"
+  data-event-from="{{if .From}}{{.From}}{{else}}system{{end}}"
+>
+  <div class="event-topline">
+    <span class="seq">#{{.Seq}}</span>
+    <span class="badge {{.BadgeClass}}" data-event-badge>{{.TypeLabel}}</span>
+    {{if .Waiting}}
+    <span class="event-pending" data-event-pending><span class="event-spinner" aria-hidden="true"></span>waiting for result</span>
+    {{end}}
+    <span class="event-from">{{if .From}}{{.From}}{{else}}system{{end}}</span>
+    <time class="event-time" datetime="{{.Timestamp}}" data-relative-time data-absolute-time="{{.Timestamp}}">{{.Timestamp}}</time>
+  </div>
+
+  <div class="event-digest" data-event-digest>Preparing summary...</div>
+
+  <div class="event-raw">
+    <div class="event-keyfacts" data-event-keyfacts>Extracting key fields...</div>
+    <details class="payload payload-collapsed" data-payload-details>
+      <summary data-payload-summary>View payload JSON</summary>
+      <pre>{{.Payload}}</pre>
+    </details>
+  </div>
+</article>
+{{end}}
+{{end}}

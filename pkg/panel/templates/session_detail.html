@@ -1,15 +1,15 @@
 {{if .Error}}
 <div class="empty-state">{{.Error}}</div>
 {{else if not .Events}}
-<div class="empty-state" data-session-id="{{.SessionID}}" data-last-seq="{{.LastSeq}}">No events for this session yet.</div>
+<div class="empty-state" data-session-id="{{.SessionID}}" data-first-seq="{{.FirstSeq}}" data-last-seq="{{.LastSeq}}" data-has-older="false">No events for this session yet.</div>
 {{else}}
-<section class="timeline" data-session-id="{{.SessionID}}" data-last-seq="{{.LastSeq}}" data-event-total="{{len .Events}}">
+<section class="timeline" data-session-id="{{.SessionID}}" data-first-seq="{{.FirstSeq}}" data-last-seq="{{.LastSeq}}" data-has-older="{{if .HasOlder}}true{{else}}false{{end}}" data-event-total="{{len .Events}}">
   <header class="timeline-head">
     <h3>{{.Title}}</h3>
     {{if and .ConversationID (ne .ConversationID .Title)}}
     <p>Room: {{.ConversationID}}</p>
     {{end}}
-    <p>Last sequence: {{.LastSeq}} · Events: {{len .Events}}</p>
+    <p data-timeline-meta>Last sequence: {{.LastSeq}} · Loaded: {{len .Events}}{{if .HasOlder}} latest{{end}}</p>
   </header>
 
   {{if .ContextHealth}}
@@ -25,35 +25,7 @@
   {{end}}
 
   <div class="timeline-events" data-timeline-events>
-  {{range .Events}}
-  <article
-    class="event-row{{if .RoleClass}} {{.RoleClass}}{{end}}"
-    data-event-row
-    data-event-type="{{.Type}}"
-    data-event-seq="{{.Seq}}"
-    data-event-from="{{if .From}}{{.From}}{{else}}system{{end}}"
-  >
-    <div class="event-topline">
-      <span class="seq">#{{.Seq}}</span>
-      <span class="badge {{.BadgeClass}}">{{.TypeLabel}}</span>
-      {{if .Waiting}}
-      <span class="event-pending"><span class="event-spinner" aria-hidden="true"></span>waiting for result</span>
-      {{end}}
-      <span class="event-from">{{if .From}}{{.From}}{{else}}system{{end}}</span>
-      <time class="event-time" datetime="{{.Timestamp}}" data-relative-time data-absolute-time="{{.Timestamp}}">{{.Timestamp}}</time>
-    </div>
-
-    <div class="event-digest" data-event-digest>Preparing summary...</div>
-
-    <div class="event-raw">
-      <div class="event-keyfacts" data-event-keyfacts>Extracting key fields...</div>
-      <details class="payload payload-collapsed" data-payload-details>
-        <summary data-payload-summary>View payload JSON</summary>
-        <pre>{{.Payload}}</pre>
-      </details>
-    </div>
-  </article>
-  {{end}}
+  {{template "event_rows" .Events}}
   </div>
 </section>
 {{end}}

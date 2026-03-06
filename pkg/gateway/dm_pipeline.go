@@ -2667,6 +2667,11 @@ func (p *DMPipeline) IsConversationProcessing(conversationID string) bool {
 	return p.processing[conversationID] > 0
 }
 
+func (p *DMPipeline) FilterHeartbeatOutbound(conversationID, text string) (normalized string, suppress bool, isHeartbeat bool) {
+	result := p.consumeHeartbeatReply(conversationID, text)
+	return result.Normalized, result.Suppress, result.IsHeartbeat
+}
+
 func (p *DMPipeline) consumeHeartbeatReply(conversationID, text string) heartbeatConsumeResult {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {

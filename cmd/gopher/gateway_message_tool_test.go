@@ -15,6 +15,7 @@ type fakeGatewayMessagePipeline struct {
 	conversationBySession map[sessionrt.SessionID]string
 	lastInboundBySession  map[sessionrt.SessionID]string
 	senderByConversation  map[string]string
+	heartbeatByConv       map[string]fakeHeartbeatFilterResult
 }
 
 func (p *fakeGatewayMessagePipeline) ConversationForSession(sessionID sessionrt.SessionID) (string, bool) {
@@ -29,6 +30,23 @@ func (p *fakeGatewayMessagePipeline) LastInboundEventForSession(sessionID sessio
 
 func (p *fakeGatewayMessagePipeline) SenderForConversation(conversationID string) string {
 	return p.senderByConversation[conversationID]
+}
+
+func (p *fakeGatewayMessagePipeline) FilterHeartbeatOutbound(conversationID, text string) (string, bool, bool) {
+	if p == nil {
+		return text, false, false
+	}
+	result, ok := p.heartbeatByConv[conversationID]
+	if !ok {
+		return text, false, false
+	}
+	return result.Normalized, result.Suppress, result.IsHeartbeat
+}
+
+type fakeHeartbeatFilterResult struct {
+	Normalized  string
+	Suppress    bool
+	IsHeartbeat bool
 }
 
 type fakeGatewayMessageTransport struct {
@@ -129,6 +147,61 @@ func TestGatewayMessageToolServiceStripsReplyTagBeforeSending(t *testing.T) {
 	}
 }
 
+func TestGatewayMessageToolServiceSuppressesHeartbeatOKOutbound(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+		senderByConversation:  map[string]string{"telegram:123": "telegram-bot"},
+		heartbeatByConv: map[string]fakeHeartbeatFilterResult{
+			"telegram:123": {Suppress: true, IsHeartbeat: true},
+		},
+	}
+	tr := &fakeGatewayMessageTransport{}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	result, err := service.SendMessage(context.Background(), agentcore.MessageSendRequest{
+		SessionID: "sess-1",
+		Text:      "HEARTBEAT_OK",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if !result.Sent {
+		t.Fatalf("sent = false, want true")
+	}
+	if len(tr.sent) != 0 {
+		t.Fatalf("transport send count = %d, want 0", len(tr.sent))
+	}
+}
+
+func TestGatewayMessageToolServiceStripsHeartbeatTokenBeforeSending(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+		senderByConversation:  map[string]string{"telegram:123": "telegram-bot"},
+		heartbeatByConv: map[string]fakeHeartbeatFilterResult{
+			"telegram:123": {Normalized: "real alert", IsHeartbeat: true},
+		},
+	}
+	tr := &fakeGatewayMessageTransport{}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	result, err := service.SendMessage(context.Background(), agentcore.MessageSendRequest{
+		SessionID: "sess-1",
+		Text:      "HEARTBEAT_OK real alert",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
+	}
+	if result.Text != "real alert" {
+		t.Fatalf("result text = %q, want real alert", result.Text)
+	}
+	if len(tr.sent) != 1 {
+		t.Fatalf("transport send count = %d, want 1", len(tr.sent))
+	}
+	if tr.sent[0].Text != "real alert" {
+		t.Fatalf("transport text = %q, want real alert", tr.sent[0].Text)
+	}
+}
+
 func TestGatewayMessageToolServiceFailsWithoutBoundConversation(t *testing.T) {
 	service := &gatewayMessageToolService{
 		pipeline:  &fakeGatewayMessagePipeline{conversationBySession: map[sessionrt.SessionID]string{}},
@@ -212,6 +285,31 @@ func TestGatewayMessageToolServiceStripsReplyTagBeforeDrafting(t *testing.T) {
 	}
 	if tr.drafts[0].Text != "drafting" {
 		t.Fatalf("transport text = %q, want drafting", tr.drafts[0].Text)
+	}
+}
+
+func TestGatewayMessageToolServiceSuppressesHeartbeatOKDraft(t *testing.T) {
+	pipeline := &fakeGatewayMessagePipeline{
+		conversationBySession: map[sessionrt.SessionID]string{"sess-1": "telegram:123"},
+		heartbeatByConv: map[string]fakeHeartbeatFilterResult{
+			"telegram:123": {Suppress: true, IsHeartbeat: true},
+		},
+	}
+	tr := &fakeGatewayMessageTransport{}
+	service := &gatewayMessageToolService{pipeline: pipeline, transport: tr}
+
+	result, err := service.SendMessageDraft(context.Background(), agentcore.MessageDraftRequest{
+		SessionID: "sess-1",
+		Text:      "HEARTBEAT_OK",
+	})
+	if err != nil {
+		t.Fatalf("SendMessageDraft() error: %v", err)
+	}
+	if !result.Drafted {
+		t.Fatalf("drafted = false, want true")
+	}
+	if len(tr.drafts) != 0 {
+		t.Fatalf("transport draft count = %d, want 0", len(tr.drafts))
 	}
 }
 

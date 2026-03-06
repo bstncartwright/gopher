@@ -20,6 +20,10 @@ type gatewayMessagePipeline interface {
 	SenderForConversation(conversationID string) string
 }
 
+type gatewayMessageHeartbeatFilter interface {
+	FilterHeartbeatOutbound(conversationID, text string) (normalized string, suppress bool, isHeartbeat bool)
+}
+
 type gatewayMessageToolService struct {
 	pipeline       gatewayMessagePipeline
 	transport      transport.Transport
@@ -50,6 +54,7 @@ func (s *gatewayMessageToolService) SendMessage(ctx context.Context, req agentco
 	}
 
 	text := stripReplyToCurrentTag(strings.TrimSpace(req.Text))
+	text, suppress := filterHeartbeatOutbound(s.pipeline, conversationID, text)
 	attachments := make([]transport.OutboundAttachment, 0, len(req.Attachments))
 	for idx, attachment := range req.Attachments {
 		pathValue := strings.TrimSpace(attachment.Path)
@@ -63,6 +68,13 @@ func (s *gatewayMessageToolService) SendMessage(ctx context.Context, req agentco
 		})
 	}
 	if text == "" && len(attachments) == 0 {
+		if suppress {
+			s.clearSessionDraft(sessionID)
+			return agentcore.MessageSendResult{
+				Sent:           true,
+				ConversationID: strings.TrimSpace(conversationID),
+			}, nil
+		}
 		return agentcore.MessageSendResult{}, fmt.Errorf("text or attachments is required")
 	}
 
@@ -106,7 +118,15 @@ func (s *gatewayMessageToolService) SendMessageDraft(ctx context.Context, req ag
 		return agentcore.MessageDraftResult{}, fmt.Errorf("conversation is not bound for session %q", sessionID)
 	}
 	text := stripReplyToCurrentTag(strings.TrimSpace(req.Text))
+	text, suppress := filterHeartbeatOutbound(s.pipeline, conversationID, text)
 	if text == "" {
+		if suppress {
+			return agentcore.MessageDraftResult{
+				Drafted:        true,
+				ConversationID: strings.TrimSpace(conversationID),
+				DraftID:        req.DraftID,
+			}, nil
+		}
 		return agentcore.MessageDraftResult{}, fmt.Errorf("text is required")
 	}
 
@@ -236,4 +256,23 @@ func stripReplyToCurrentTag(text string) string {
 		cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, "[[reply_to_current]]"))
 	}
 	return cleaned
+}
+
+func filterHeartbeatOutbound(pipeline gatewayMessagePipeline, conversationID, text string) (string, bool) {
+	filter, ok := pipeline.(gatewayMessageHeartbeatFilter)
+	if !ok {
+		return text, false
+	}
+	normalized, suppress, _ := filter.FilterHeartbeatOutbound(conversationID, text)
+	if suppress {
+		slog.Debug(
+			"gateway_message_tool: suppressed heartbeat-only outbound",
+			"conversation_id", strings.TrimSpace(conversationID),
+		)
+		return "", true
+	}
+	if strings.TrimSpace(normalized) == "" {
+		return text, false
+	}
+	return normalized, false
 }

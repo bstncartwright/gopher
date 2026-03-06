@@ -287,14 +287,6 @@ func defaultServiceConfigPath(role string) string {
 	return filepath.Join(resolveServiceStateDir(), filename)
 }
 
-func defaultServiceGatewayConfigPath() string {
-	return defaultServiceConfigPath("gateway")
-}
-
-func defaultServiceNodeConfigPath() string {
-	return defaultServiceConfigPath("node")
-}
-
 func defaultServiceEnvPath() string {
 	return filepath.Join(resolveServiceStateDir(), "gopher.env")
 }

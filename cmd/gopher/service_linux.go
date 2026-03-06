@@ -288,7 +288,8 @@ func ensureServiceOwnedPath(path string, identity serviceIdentity) error {
 	if strings.TrimSpace(path) == "" || identity.User == "" {
 		return nil
 	}
-	return filepath.Walk(path, func(current string, walkErr error) error {
+	return filepath.Walk(path, func(current string, info os.FileInfo, walkErr error) error {
+		_ = info
 		if walkErr != nil {
 			return walkErr
 		}

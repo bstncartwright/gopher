@@ -69,3 +69,38 @@
   {{end}}
 </div>
 {{end}}
+
+{{if .Remotes}}
+<div class="overview-head">
+  <h2>Remote Delegation Targets</h2>
+</div>
+<div class="agent-grid">
+  {{range .Remotes}}
+  <article class="agent-card">
+    <header class="agent-head">
+      <h3>{{.DisplayName}}</h3>
+      <p class="agent-id">{{.TargetID}}</p>
+    </header>
+    <p class="agent-role">{{.Description}}</p>
+    <dl class="agent-kv">
+      <div class="agent-kv-row">
+        <dt>Health</dt>
+        <dd>{{.Health}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Endpoint</dt>
+        <dd class="node-id">{{.Endpoint}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Last Refresh</dt>
+        <dd>{{.LastRefresh}}</dd>
+      </div>
+      <div class="agent-kv-row">
+        <dt>Last Error</dt>
+        <dd>{{.LastError}}</dd>
+      </div>
+    </dl>
+  </article>
+  {{end}}
+</div>
+{{end}}

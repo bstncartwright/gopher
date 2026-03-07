@@ -79,11 +79,26 @@ func TestBuildCollaborationSectionMultiAgentMentionsAsyncDelegationCompletion(t 
 	if !strings.Contains(section, "`model_policy`") {
 		t.Fatalf("expected model policy guidance, got: %s", section)
 	}
+	if !strings.Contains(section, "action:\"reply\"") {
+		t.Fatalf("expected reply delegation guidance, got: %s", section)
+	}
 	if !strings.Contains(section, "delegation.completed") || !strings.Contains(section, "delegation.failed") {
 		t.Fatalf("expected async completion guidance, got: %s", section)
 	}
 	if !strings.Contains(section, "do not block this turn with `sleep`/poll loops") {
 		t.Fatalf("expected non-blocking completion guidance, got: %s", section)
+	}
+}
+
+func TestBuildRemoteDelegationSectionListsTargetsSeparately(t *testing.T) {
+	section := buildRemoteDelegationSection([]RemoteDelegationTarget{
+		{ID: "a2a:research", Description: "Deep research and synthesis"},
+	})
+	if !strings.Contains(section, "`a2a:research`") {
+		t.Fatalf("expected remote target id, got: %s", section)
+	}
+	if !strings.Contains(section, "Deep research and synthesis") {
+		t.Fatalf("expected remote target description, got: %s", section)
 	}
 }
 

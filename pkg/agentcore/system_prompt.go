@@ -13,20 +13,21 @@ import (
 )
 
 type systemPromptInput struct {
-	Workspace      string
-	AgentID        string
-	KnownAgents    []string
-	PromptMode     PromptMode
-	Tools          ToolRegistry
-	Policies       AgentPolicies
-	SkillsPrompt   string
-	ContextFiles   []BootstrapContextFile
-	IncludeWorking bool
-	Working        map[string]any
-	UserTimezone   string
-	Model          ai.Model
-	ExtraContext   string
-	Heartbeat      AgentHeartbeat
+	Workspace               string
+	AgentID                 string
+	KnownAgents             []string
+	RemoteDelegationTargets []RemoteDelegationTarget
+	PromptMode              PromptMode
+	Tools                   ToolRegistry
+	Policies                AgentPolicies
+	SkillsPrompt            string
+	ContextFiles            []BootstrapContextFile
+	IncludeWorking          bool
+	Working                 map[string]any
+	UserTimezone            string
+	Model                   ai.Model
+	ExtraContext            string
+	Heartbeat               AgentHeartbeat
 }
 
 func normalizePromptMode(mode PromptMode) PromptMode {
@@ -92,6 +93,13 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		sections = append(sections,
 			"## Collaboration",
 			collaboration,
+			"",
+		)
+	}
+	if remoteTargets := buildRemoteDelegationSection(input.RemoteDelegationTargets); remoteTargets != "" {
+		sections = append(sections,
+			"## Remote Delegation Targets",
+			remoteTargets,
 			"",
 		)
 	}
@@ -370,7 +378,7 @@ func buildToolUsageHints(registry ToolRegistry) string {
 		lines = append(lines, "- `gopher_update` runs the current executable's `update` command directly, avoiding PATH-related failures during self-update requests.")
 	}
 	if toolRegistryHas(registry, "delegate") {
-		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`,`summary`}; `create` requires `message`, accepts optional `target_agent` (omitting target auto-creates a subagent), and accepts optional `model_policy` for ephemeral workers. `create` returns after spawn; do not `sleep`/busy-wait and do not call `list`/`log`/`summary` in the same turn to wait for completion. Treat execution as async and continue when `delegation.completed`/`delegation.failed`/`delegation.cancelled` arrives (or inspect with `summary`/`list`/`log` only in a later turn when needed).")
+		lines = append(lines, "- `delegate` manages subagent sessions. Use `action` in {`create`,`list`,`kill`,`log`,`summary`,`reply`}; `create` requires `message`, accepts optional `target_agent` (omitting target auto-creates a subagent), and accepts optional `model_policy` for ephemeral workers. `reply` continues a delegation after the worker asks for more input. `create` returns after spawn; do not `sleep`/busy-wait and do not call `list`/`log`/`summary` in the same turn to wait for completion. Treat execution as async and continue when `delegation.completed`/`delegation.failed`/`delegation.cancelled` arrives (or inspect with `summary`/`list`/`log` only in a later turn when needed).")
 	}
 	if toolRegistryHas(registry, "cron") {
 		lines = append(lines, "- `cron` manages scheduled reminders and scheduled tasks. Use `mode:\"session\"` for reminders, nudges, or context-dependent follow-ups that should arrive inside the current thread. Use `mode:\"isolated\"` for scheduled work that should run independently and report back later. Example: \"Remind me tomorrow to email Summer\" => `mode:\"session\"`. Example: \"Every morning, scan overnight updates and tell me if anything matters\" => `mode:\"isolated\"`. Omit `session_id` only when the current session should be used. Scheduled task result messages are internal follow-up signals; decide whether to send any user-visible announcement.")
@@ -402,11 +410,41 @@ func buildCollaborationSection(input systemPromptInput) string {
 		lines = append(lines, "Known agents in this runtime: "+strings.Join(known, ", "))
 	}
 	if delegateEnabled && len(known) > 1 {
-		lines = append(lines, "When delegation helps, use `delegate` with `action:\"create\"` and a task-specific `message`; provide `target_agent` when you want a specific worker and `model_policy` to override an ephemeral worker model. `create` is async spawn: do not block this turn with `sleep`/poll loops and do not call `delegate` `list`/`log`/`summary` to wait; resume delegated follow-up only after a later `delegation.completed`, `delegation.failed`, or `delegation.cancelled` event.")
+		lines = append(lines, "When delegation helps, use `delegate` with `action:\"create\"` and a task-specific `message`; provide `target_agent` when you want a specific worker and `model_policy` to override an ephemeral worker model. Use `delegate` `action:\"reply\"` when a delegated worker asks for additional input. `create` is async spawn: do not block this turn with `sleep`/poll loops and do not call `delegate` `list`/`log`/`summary` to wait; resume delegated follow-up only after a later `delegation.completed`, `delegation.failed`, or `delegation.cancelled` event.")
 	} else if delegateEnabled {
-		lines = append(lines, "Delegation can auto-create ephemeral subagents in a single-agent runtime. Use `delegate` `action:\"create\"` with a task-specific `message`; optionally set `target_agent` to pick or name a worker and optionally set `model_policy` to override the ephemeral worker model. `create` is async spawn: do not block this turn with `sleep`/poll loops and do not call `delegate` `list`/`log`/`summary` to wait; resume delegated follow-up only after a later `delegation.completed`, `delegation.failed`, or `delegation.cancelled` event.")
+		lines = append(lines, "Delegation can auto-create ephemeral subagents in a single-agent runtime. Use `delegate` `action:\"create\"` with a task-specific `message`; optionally set `target_agent` to pick or name a worker and optionally set `model_policy` to override the ephemeral worker model. Use `delegate` `action:\"reply\"` when a delegated worker pauses for input. `create` is async spawn: do not block this turn with `sleep`/poll loops and do not call `delegate` `list`/`log`/`summary` to wait; resume delegated follow-up only after a later `delegation.completed`, `delegation.failed`, or `delegation.cancelled` event.")
 	} else if len(known) > 1 {
 		lines = append(lines, "Delegation requires the `delegate` tool; if missing from Tooling, ask the user to enable collaboration tools.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildRemoteDelegationSection(targets []RemoteDelegationTarget) string {
+	if len(targets) == 0 {
+		return ""
+	}
+	normalized := make([]RemoteDelegationTarget, 0, len(targets))
+	for _, target := range targets {
+		id := strings.TrimSpace(target.ID)
+		if id == "" {
+			continue
+		}
+		normalized = append(normalized, RemoteDelegationTarget{
+			ID:          id,
+			Description: strings.TrimSpace(target.Description),
+		})
+	}
+	if len(normalized) == 0 {
+		return ""
+	}
+	sort.Slice(normalized, func(i, j int) bool { return normalized[i].ID < normalized[j].ID })
+	lines := []string{"Remote delegation targets are available only through the `delegate` tool."}
+	for _, target := range normalized {
+		line := "- `" + target.ID + "`"
+		if target.Description != "" {
+			line += ": " + target.Description
+		}
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
 }

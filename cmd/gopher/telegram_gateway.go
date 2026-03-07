@@ -24,15 +24,16 @@ import (
 )
 
 type telegramDMBridge struct {
-	transport telegramBridgeTransport
-	mode      string
-	manager   sessionrt.SessionManager
-	pipeline  *gateway.DMPipeline
-	cron      *gateway.CronRunner
-	heartbeat *gateway.HeartbeatRunner
-	webhook   telegramWebhookRuntime
-	bindings  gateway.ConversationBindingStore
-	store     interface {
+	transport  telegramBridgeTransport
+	mode       string
+	manager    sessionrt.SessionManager
+	pipeline   *gateway.DMPipeline
+	cron       *gateway.CronRunner
+	heartbeat  *gateway.HeartbeatRunner
+	webhook    telegramWebhookRuntime
+	bindings   gateway.ConversationBindingStore
+	delegation *gatewaySessionDelegationToolService
+	store      interface {
 		sessionrt.EventStore
 		sessionrt.SessionRegistryStore
 	}
@@ -122,6 +123,9 @@ func startTelegramDMBridgeWithRuntime(
 	}
 
 	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router, remoteAgentExists)
+	if cfg.A2A.Enabled {
+		delegationTool.SetA2ABackend(ctx, newGatewayA2ABackend(cfg.A2A, nil))
+	}
 	for _, agent := range agentRuntime.Agents {
 		agent.Delegation = delegationTool
 	}
@@ -250,14 +254,15 @@ func startTelegramDMBridgeWithRuntime(
 	})
 
 	bridge := &telegramDMBridge{
-		transport: telegramBridge,
-		mode:      normalizeTelegramMode(cfg.Telegram.Mode),
-		manager:   manager,
-		pipeline:  pipeline,
-		cron:      cronRunner,
-		heartbeat: heartbeatRunner,
-		bindings:  bindingStore,
-		store:     store,
+		transport:  telegramBridge,
+		mode:       normalizeTelegramMode(cfg.Telegram.Mode),
+		manager:    manager,
+		pipeline:   pipeline,
+		cron:       cronRunner,
+		heartbeat:  heartbeatRunner,
+		bindings:   bindingStore,
+		delegation: delegationTool,
+		store:      store,
 	}
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	bridge.cancel = cancel

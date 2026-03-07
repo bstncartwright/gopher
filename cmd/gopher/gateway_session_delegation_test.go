@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bstncartwright/gopher/pkg/a2a"
 	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/ai"
+	"github.com/bstncartwright/gopher/pkg/config"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
 )
 
@@ -197,6 +200,122 @@ func newDynamicDelegationFixture(t *testing.T) (context.Context, *gatewaySession
 	return ctx, service, store, router, sourceAgent, manager, sourceSession
 }
 
+func newA2ADelegationFixture(t *testing.T) (context.Context, *gatewaySessionDelegationToolService, *agentcore.Agent, *sessionrt.Session) {
+	t.Helper()
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	sourceAgent := loadDelegationTestAgent(t, workspaceRoot, "milo")
+
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: noopAgentExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	sourceSession, err := manager.CreateSession(ctx, sessionrt.CreateSessionOptions{
+		Participants: []sessionrt.Participant{{ID: "milo", Type: sessionrt.ActorAgent}},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(source) error: %v", err)
+	}
+	service := newGatewaySessionDelegationToolService(manager, store, map[sessionrt.ActorID]*agentcore.Agent{
+		"milo": sourceAgent,
+	}, t.TempDir(), nil, nil, nil)
+	sourceAgent.Delegation = service
+	return ctx, service, sourceAgent, sourceSession
+}
+
+type fakeA2AClient struct {
+	mu             sync.Mutex
+	sendQueue      []a2a.Task
+	subscribeQueue map[string][]a2a.Task
+	pollQueue      map[string][]a2a.Task
+	subscribeErr   error
+	cancelErr      error
+	lastSend       []a2a.MessageSendRequest
+	cancelled      []string
+}
+
+func (f *fakeA2AClient) Discover(_ context.Context, remote a2a.Remote) (a2a.AgentCard, error) {
+	return a2a.AgentCard{
+		Name:        "Research",
+		Description: "Deep research",
+		URL:         remote.BaseURL,
+		Skills: []a2a.AgentSkill{{
+			ID:          "research",
+			Name:        "Research",
+			Description: "Deep research and synthesis",
+		}},
+	}, nil
+}
+
+func (f *fakeA2AClient) GetExtendedCard(_ context.Context, _ string, remote a2a.Remote) (a2a.AgentCard, error) {
+	return f.Discover(context.Background(), remote)
+}
+
+func (f *fakeA2AClient) SendMessage(_ context.Context, _ string, _ a2a.Remote, req a2a.MessageSendRequest) (a2a.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastSend = append(f.lastSend, req)
+	if len(f.sendQueue) == 0 {
+		return a2a.Task{}, fmt.Errorf("unexpected send")
+	}
+	task := f.sendQueue[0]
+	f.sendQueue = f.sendQueue[1:]
+	return task, nil
+}
+
+func (f *fakeA2AClient) GetTask(_ context.Context, _ string, _ a2a.Remote, taskID string) (a2a.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	queue := f.pollQueue[taskID]
+	if len(queue) == 0 {
+		return a2a.Task{}, fmt.Errorf("unexpected poll %s", taskID)
+	}
+	task := queue[0]
+	f.pollQueue[taskID] = queue[1:]
+	return task, nil
+}
+
+func (f *fakeA2AClient) SubscribeTask(_ context.Context, _ string, _ a2a.Remote, taskID string, emit func(a2a.Task) error) error {
+	if f.subscribeErr != nil {
+		return f.subscribeErr
+	}
+	f.mu.Lock()
+	queue := append([]a2a.Task(nil), f.subscribeQueue[taskID]...)
+	f.mu.Unlock()
+	for _, task := range queue {
+		if err := emit(task); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeA2AClient) CancelTask(_ context.Context, _ string, _ a2a.Remote, taskID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelled = append(f.cancelled, taskID)
+	return f.cancelErr
+}
+
+func waitForDelegationRecordStatus(t *testing.T, service *gatewaySessionDelegationToolService, delegationID string, status string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		record, ok := service.readDelegationRecords()[delegationID]
+		if ok && delegationStatus(record) == status {
+			return record
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for delegation %s status %s", delegationID, status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	ctx := context.Background()
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
@@ -272,6 +391,223 @@ func TestGatewaySessionDelegationCreatesSessionAndKickoff(t *testing.T) {
 	}
 	if got, _ := record["target_agent_id"].(string); got != "worker" {
 		t.Fatalf("target_agent_id = %q, want worker", got)
+	}
+}
+
+func TestGatewaySessionDelegationCreatesA2ADelegationAndCompletes(t *testing.T) {
+	ctx, service, sourceAgent, sourceSession := newA2ADelegationFixture(t)
+	client := &fakeA2AClient{
+		sendQueue: []a2a.Task{{
+			TaskID:    "task-1",
+			ContextID: "ctx-1",
+			Status:    a2a.TaskStateCompleted,
+			Message:   &a2a.Message{Parts: []a2a.Part{{Text: "Remote answer"}}},
+		}},
+	}
+	service.SetA2ABackend(ctx, newGatewayA2ABackend(config.A2AConfig{
+		Enabled:                   true,
+		DiscoveryTimeout:          time.Second,
+		RequestTimeout:            time.Second,
+		TaskPollInterval:          10 * time.Millisecond,
+		StreamIdleTimeout:         100 * time.Millisecond,
+		CardRefreshInterval:       time.Minute,
+		ResumeScanInterval:        20 * time.Millisecond,
+		CompatLegacyWellKnownPath: true,
+		Remotes: []config.A2ARemoteConfig{{
+			ID:             "research",
+			BaseURL:        "https://example.com/a2a",
+			Enabled:        true,
+			RequestTimeout: time.Second,
+		}},
+	}, client))
+	sourceAgent.Delegation = service
+
+	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   sourceAgent.ID,
+		TargetAgentID:   "a2a:research",
+		Message:         "Research the issue.",
+		Title:           "remote research",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	if result.TargetAgentID != "a2a:research" {
+		t.Fatalf("target agent id = %q", result.TargetAgentID)
+	}
+	waitForSessionControlAction(t, ctx, service.store, sourceSession.ID, "delegation.completed")
+	record := service.readDelegationRecords()[result.SessionID]
+	if stringFromMap(record, "remote_id") != "research" {
+		t.Fatalf("remote_id = %q", stringFromMap(record, "remote_id"))
+	}
+	if sourceAgent.RemoteDelegationTargets == nil || len(sourceAgent.RemoteDelegationTargets) == 0 {
+		t.Fatalf("expected remote delegation targets on source agent")
+	}
+}
+
+func TestGatewaySessionDelegationA2AInputRequiredCanReply(t *testing.T) {
+	ctx, service, sourceAgent, sourceSession := newA2ADelegationFixture(t)
+	client := &fakeA2AClient{
+		sendQueue: []a2a.Task{
+			{
+				TaskID:    "task-2",
+				ContextID: "ctx-2",
+				Status:    a2a.TaskStateInputRequired,
+				Message:   &a2a.Message{Parts: []a2a.Part{{Text: "What environment is failing?"}}},
+			},
+			{
+				TaskID:    "task-2",
+				ContextID: "ctx-2",
+				Status:    a2a.TaskStateCompleted,
+				Message:   &a2a.Message{Parts: []a2a.Part{{Text: "Thanks, done."}}},
+			},
+		},
+	}
+	service.SetA2ABackend(ctx, newGatewayA2ABackend(config.A2AConfig{
+		Enabled:                   true,
+		DiscoveryTimeout:          time.Second,
+		RequestTimeout:            time.Second,
+		TaskPollInterval:          10 * time.Millisecond,
+		StreamIdleTimeout:         100 * time.Millisecond,
+		CardRefreshInterval:       time.Minute,
+		ResumeScanInterval:        20 * time.Millisecond,
+		CompatLegacyWellKnownPath: true,
+		Remotes: []config.A2ARemoteConfig{{
+			ID:             "research",
+			BaseURL:        "https://example.com/a2a",
+			Enabled:        true,
+			RequestTimeout: time.Second,
+		}},
+	}, client))
+	sourceAgent.Delegation = service
+
+	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   sourceAgent.ID,
+		TargetAgentID:   "a2a:research",
+		Message:         "Investigate the deployment failure.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	waitForSessionControlAction(t, ctx, service.store, sourceSession.ID, "delegation.input_required")
+	record := waitForDelegationRecordStatus(t, service, result.SessionID, "active")
+	if !boolFromMap(record, "waiting_for_input") {
+		t.Fatalf("expected waiting_for_input")
+	}
+	replyResult, err := service.ReplyDelegationSession(ctx, agentcore.DelegationReplyRequest{
+		SourceSessionID: string(sourceSession.ID),
+		DelegationID:    result.SessionID,
+		Message:         "production-us-west-2",
+	})
+	if err != nil {
+		t.Fatalf("ReplyDelegationSession() error: %v", err)
+	}
+	if !replyResult.Accepted {
+		t.Fatalf("expected reply accepted")
+	}
+	waitForSessionControlAction(t, ctx, service.store, sourceSession.ID, "delegation.completed")
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.lastSend) != 2 {
+		t.Fatalf("send calls = %d, want 2", len(client.lastSend))
+	}
+	if client.lastSend[1].TaskID != "task-2" || client.lastSend[1].ContextID != "ctx-2" {
+		t.Fatalf("reply task/context = %q/%q", client.lastSend[1].TaskID, client.lastSend[1].ContextID)
+	}
+}
+
+func TestGatewaySessionDelegationA2APollingFallbackCompletes(t *testing.T) {
+	ctx, service, sourceAgent, sourceSession := newA2ADelegationFixture(t)
+	client := &fakeA2AClient{
+		sendQueue:    []a2a.Task{{TaskID: "task-3", ContextID: "ctx-3", Status: a2a.TaskStateSubmitted}},
+		subscribeErr: fmt.Errorf("stream unavailable"),
+		pollQueue: map[string][]a2a.Task{
+			"task-3": {{
+				TaskID:    "task-3",
+				ContextID: "ctx-3",
+				Status:    a2a.TaskStateCompleted,
+				Message:   &a2a.Message{Parts: []a2a.Part{{Text: "polled result"}}},
+			}},
+		},
+	}
+	service.SetA2ABackend(ctx, newGatewayA2ABackend(config.A2AConfig{
+		Enabled:                   true,
+		DiscoveryTimeout:          time.Second,
+		RequestTimeout:            time.Second,
+		TaskPollInterval:          10 * time.Millisecond,
+		StreamIdleTimeout:         100 * time.Millisecond,
+		CardRefreshInterval:       time.Minute,
+		ResumeScanInterval:        20 * time.Millisecond,
+		CompatLegacyWellKnownPath: true,
+		Remotes: []config.A2ARemoteConfig{{
+			ID:             "research",
+			BaseURL:        "https://example.com/a2a",
+			Enabled:        true,
+			RequestTimeout: time.Second,
+		}},
+	}, client))
+	sourceAgent.Delegation = service
+
+	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   sourceAgent.ID,
+		TargetAgentID:   "a2a:research",
+		Message:         "Do a remote job.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	waitForSessionControlAction(t, ctx, service.store, sourceSession.ID, "delegation.completed")
+	waitForDelegationRecordStatus(t, service, result.SessionID, "completed")
+}
+
+func TestGatewaySessionDelegationA2ACancelRecordsWarningWhenRemoteCancelFails(t *testing.T) {
+	ctx, service, sourceAgent, sourceSession := newA2ADelegationFixture(t)
+	client := &fakeA2AClient{
+		sendQueue: []a2a.Task{{TaskID: "task-4", ContextID: "ctx-4", Status: a2a.TaskStateSubmitted}},
+		cancelErr: fmt.Errorf("remote cancel unsupported"),
+	}
+	service.SetA2ABackend(ctx, newGatewayA2ABackend(config.A2AConfig{
+		Enabled:                   true,
+		DiscoveryTimeout:          time.Second,
+		RequestTimeout:            time.Second,
+		TaskPollInterval:          10 * time.Millisecond,
+		StreamIdleTimeout:         100 * time.Millisecond,
+		CardRefreshInterval:       time.Minute,
+		ResumeScanInterval:        20 * time.Millisecond,
+		CompatLegacyWellKnownPath: true,
+		Remotes: []config.A2ARemoteConfig{{
+			ID:             "research",
+			BaseURL:        "https://example.com/a2a",
+			Enabled:        true,
+			RequestTimeout: time.Second,
+		}},
+	}, client))
+	sourceAgent.Delegation = service
+
+	result, err := service.CreateDelegationSession(ctx, agentcore.DelegationCreateRequest{
+		SourceSessionID: string(sourceSession.ID),
+		SourceAgentID:   sourceAgent.ID,
+		TargetAgentID:   "a2a:research",
+		Message:         "Cancelable task.",
+	})
+	if err != nil {
+		t.Fatalf("CreateDelegationSession() error: %v", err)
+	}
+	killResult, err := service.KillDelegationSession(ctx, agentcore.DelegationKillRequest{
+		SourceSessionID: string(sourceSession.ID),
+		DelegationID:    result.SessionID,
+	})
+	if err != nil {
+		t.Fatalf("KillDelegationSession() error: %v", err)
+	}
+	if !killResult.Killed {
+		t.Fatalf("expected delegation killed")
+	}
+	record := waitForDelegationRecordStatus(t, service, result.SessionID, "cancelled")
+	if !strings.Contains(stringFromMap(record, "warning"), "remote cancel unsupported") {
+		t.Fatalf("warning = %q", stringFromMap(record, "warning"))
 	}
 }
 

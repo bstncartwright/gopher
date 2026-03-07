@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bstncartwright/gopher/pkg/config"
 	fabricts "github.com/bstncartwright/gopher/pkg/fabric/nats"
@@ -509,7 +510,26 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 			}, true
 		}
 	}
-	if err := startGatewayPanel(ctx, cfg, process, agentRuntime, panelStore, panelSessionMetadata, dataDir, logger); err != nil {
+	var remoteSnapshot func() []panel.RemoteInfo
+	if telegramBridge != nil && telegramBridge.delegation != nil {
+		remoteSnapshot = func() []panel.RemoteInfo {
+			snapshots := telegramBridge.delegation.A2ASnapshots()
+			rows := make([]panel.RemoteInfo, 0, len(snapshots))
+			for _, snapshot := range snapshots {
+				rows = append(rows, panel.RemoteInfo{
+					TargetID:    snapshot.TargetID,
+					DisplayName: snapshot.DisplayName,
+					Description: snapshot.Description,
+					Endpoint:    snapshot.Endpoint,
+					Healthy:     snapshot.Healthy,
+					LastRefresh: snapshot.LastRefresh.UTC().Format(time.RFC3339),
+					LastError:   snapshot.LastError,
+				})
+			}
+			return rows
+		}
+	}
+	if err := startGatewayPanel(ctx, cfg, process, agentRuntime, panelStore, panelSessionMetadata, remoteSnapshot, dataDir, logger); err != nil {
 		slog.Error("gateway_run: failed to start panel server", "error", err)
 		return err
 	}
@@ -677,6 +697,7 @@ func startGatewayPanel(
 	runtime *gatewayAgentRuntime,
 	store panel.SessionStore,
 	sessionMetadata panel.SessionMetadataResolver,
+	remoteSnapshot func() []panel.RemoteInfo,
 	controlDir string,
 	logger *log.Logger,
 ) error {
@@ -728,6 +749,7 @@ func startGatewayPanel(
 			}
 			return snapshot
 		},
+		RemoteSnapshot: remoteSnapshot,
 	})
 	if err != nil {
 		return fmt.Errorf("create observability panel server: %w", err)

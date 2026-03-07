@@ -22,7 +22,7 @@ func (t *delegateTool) Schema() ToolSchema {
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []any{"create", "list", "kill", "log", "summary"},
+					"enum":        []any{"create", "list", "kill", "log", "summary", "reply"},
 					"description": "Delegation action. `create` spawns a subagent asynchronously and returns immediately; do not call `list`/`log`/`summary` in the same turn to wait for completion.",
 				},
 				"target_agent": map[string]any{
@@ -35,7 +35,7 @@ func (t *delegateTool) Schema() ToolSchema {
 				},
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Required when `action` is `create`. Task-specific kickoff instruction for the delegated worker.",
+					"description": "Required when `action` is `create` or `reply`. Task-specific kickoff or follow-up instruction for the delegated worker.",
 				},
 				"title": map[string]any{
 					"type":        "string",
@@ -43,7 +43,7 @@ func (t *delegateTool) Schema() ToolSchema {
 				},
 				"delegation_id": map[string]any{
 					"type":        "string",
-					"description": "Required for `kill`, `log`, and `summary`. Delegated session id to operate on.",
+					"description": "Required for `kill`, `log`, `summary`, and `reply`. Delegated session id to operate on.",
 				},
 				"include_inactive": map[string]any{
 					"type":        "boolean",
@@ -257,6 +257,33 @@ func (t *delegateTool) Run(ctx context.Context, input ToolInput) (ToolOutput, er
 			Result: map[string]any{
 				"action":  "summary",
 				"summary": result,
+			},
+		}, nil
+	case "reply":
+		delegationID, err := requiredStringArg(input.Args, "delegation_id")
+		if err != nil {
+			slog.Error("delegate_tool: delegation_id arg required for reply")
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		}
+		message, err := requiredStringArg(input.Args, "message")
+		if err != nil {
+			slog.Error("delegate_tool: message arg required for reply")
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": err.Error()}}, err
+		}
+		result, replyErr := input.Agent.Delegation.ReplyDelegationSession(ctx, DelegationReplyRequest{
+			SourceSessionID: sessionID,
+			DelegationID:    strings.TrimSpace(delegationID),
+			Message:         strings.TrimSpace(message),
+		})
+		if replyErr != nil {
+			slog.Error("delegate_tool: failed to reply to delegation", "delegation_id", delegationID, "error", replyErr)
+			return ToolOutput{Status: ToolStatusError, Result: map[string]any{"error": replyErr.Error()}}, replyErr
+		}
+		return ToolOutput{
+			Status: ToolStatusOK,
+			Result: map[string]any{
+				"action":     "reply",
+				"delegation": result,
 			},
 		}, nil
 	default:

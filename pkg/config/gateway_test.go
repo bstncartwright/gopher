@@ -260,6 +260,105 @@ allowed_chat_id = "2002"
 	}
 }
 
+func TestLoadGatewayConfigParsesA2ARemotes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("A2A_TOKEN", "secret-token")
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.a2a]
+enabled = true
+discovery_timeout = "6s"
+request_timeout = "20s"
+task_poll_interval = "3s"
+stream_idle_timeout = "15s"
+card_refresh_interval = "2m"
+resume_scan_interval = "8s"
+compat_legacy_well_known_path = true
+
+[[gateway.a2a.remotes]]
+id = "research"
+display_name = "Research"
+base_url = "https://example.com/a2a"
+enabled = true
+request_timeout = "12s"
+tags = ["research"]
+
+[gateway.a2a.remotes.headers]
+Authorization = "Bearer ${A2A_TOKEN}"
+`)
+	cfg, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env: map[string]string{
+			"A2A_TOKEN": "secret-token",
+		},
+	})
+	if err != nil {
+		t.Fatalf("LoadGatewayConfig() error: %v", err)
+	}
+	if !cfg.A2A.Enabled {
+		t.Fatalf("a2a.enabled = false, want true")
+	}
+	if len(cfg.A2A.Remotes) != 1 {
+		t.Fatalf("a2a.remotes len = %d, want 1", len(cfg.A2A.Remotes))
+	}
+	if cfg.A2A.Remotes[0].Headers["Authorization"] != "Bearer secret-token" {
+		t.Fatalf("authorization header = %q", cfg.A2A.Remotes[0].Headers["Authorization"])
+	}
+}
+
+func TestLoadGatewayConfigRejectsDuplicateA2ARemotes(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.a2a]
+enabled = true
+
+[[gateway.a2a.remotes]]
+id = "research"
+base_url = "https://example.com/a"
+
+[[gateway.a2a.remotes]]
+id = "research"
+base_url = "https://example.com/b"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected duplicate a2a remotes validation error")
+	}
+}
+
+func TestLoadGatewayConfigRejectsMissingA2AHeaderEnv(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "gopher.toml"), `
+[gateway]
+node_id = "gw"
+
+[gateway.a2a]
+enabled = true
+
+[[gateway.a2a.remotes]]
+id = "research"
+base_url = "https://example.com/a"
+
+[gateway.a2a.remotes.headers]
+Authorization = "Bearer ${MISSING_A2A_TOKEN}"
+`)
+	_, _, err := LoadGatewayConfig(GatewayLoadOptions{
+		WorkingDir: dir,
+		Env:        map[string]string{},
+	})
+	if err == nil {
+		t.Fatalf("expected missing env validation error")
+	}
+}
+
 func TestLoadGatewayConfigAppliesTelegramWebhookEnvOverrides(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "gopher.toml"), `

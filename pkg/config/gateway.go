@@ -17,12 +17,13 @@ import (
 )
 
 const (
-	DefaultGatewayNodeID      = "gateway"
-	DefaultHeartbeatInterval  = 2 * time.Second
-	DefaultPruneInterval      = 3 * time.Second
-	DefaultCronPollInterval   = 1 * time.Second
-	DefaultClientConnectWait  = 5 * time.Second
-	DefaultClientReconnectGap = 2 * time.Second
+	DefaultGatewayNodeID       = "gateway"
+	DefaultHeartbeatInterval   = 2 * time.Second
+	DefaultPruneInterval       = 3 * time.Second
+	DefaultCronPollInterval    = 1 * time.Second
+	DefaultClientConnectWait   = 5 * time.Second
+	DefaultClientReconnectGap  = 2 * time.Second
+	DefaultA2ATaskPollInterval = 2 * time.Second
 )
 
 type GatewayConfig struct {
@@ -38,6 +39,7 @@ type GatewayConfig struct {
 	Panel             PanelConfig
 	Cron              CronConfig
 	Update            UpdateConfig
+	A2A               A2AConfig
 	PrimaryConfigPath string
 	LocalConfigPath   string
 }
@@ -78,6 +80,30 @@ type UpdateConfig struct {
 	Channel            string
 	CheckInterval      time.Duration
 	BinaryAssetPattern string
+}
+
+type A2AConfig struct {
+	Enabled                   bool
+	DiscoveryTimeout          time.Duration
+	RequestTimeout            time.Duration
+	TaskPollInterval          time.Duration
+	StreamIdleTimeout         time.Duration
+	CardRefreshInterval       time.Duration
+	ResumeScanInterval        time.Duration
+	CompatLegacyWellKnownPath bool
+	Remotes                   []A2ARemoteConfig
+}
+
+type A2ARemoteConfig struct {
+	ID               string
+	DisplayName      string
+	BaseURL          string
+	CardURL          string
+	Enabled          bool
+	Headers          map[string]string
+	AllowInsecureTLS bool
+	RequestTimeout   time.Duration
+	Tags             []string
 }
 
 type GatewayOverrides struct {
@@ -132,6 +158,7 @@ type rawGatewayConfig struct {
 	Panel        *rawPanelConfig     `toml:"panel"`
 	Cron         *rawCronConfig      `toml:"cron"`
 	Update       *rawUpdateConfig    `toml:"update"`
+	A2A          *rawA2AConfig       `toml:"a2a"`
 }
 
 type rawNATSConfig struct {
@@ -186,6 +213,30 @@ type rawUpdateConfig struct {
 	Channel            *string `toml:"channel"`
 	CheckInterval      *string `toml:"check_interval"`
 	BinaryAssetPattern *string `toml:"binary_asset_pattern"`
+}
+
+type rawA2AConfig struct {
+	Enabled                   *bool          `toml:"enabled"`
+	DiscoveryTimeout          *string        `toml:"discovery_timeout"`
+	RequestTimeout            *string        `toml:"request_timeout"`
+	TaskPollInterval          *string        `toml:"task_poll_interval"`
+	StreamIdleTimeout         *string        `toml:"stream_idle_timeout"`
+	CardRefreshInterval       *string        `toml:"card_refresh_interval"`
+	ResumeScanInterval        *string        `toml:"resume_scan_interval"`
+	CompatLegacyWellKnownPath *bool          `toml:"compat_legacy_well_known_path"`
+	Remotes                   []rawA2ARemote `toml:"remotes"`
+}
+
+type rawA2ARemote struct {
+	ID               *string           `toml:"id"`
+	DisplayName      *string           `toml:"display_name"`
+	BaseURL          *string           `toml:"base_url"`
+	CardURL          *string           `toml:"card_url"`
+	Enabled          *bool             `toml:"enabled"`
+	Headers          map[string]string `toml:"headers"`
+	AllowInsecureTLS *bool             `toml:"allow_insecure_tls"`
+	RequestTimeout   *string           `toml:"request_timeout"`
+	Tags             []string          `toml:"tags"`
 }
 
 func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error) {
@@ -259,6 +310,10 @@ func LoadGatewayConfig(opts GatewayLoadOptions) (GatewayConfig, []string, error)
 		slog.Debug("config_gateway: applied cli overrides")
 	}
 
+	if err := expandGatewayA2AEnvTemplates(&cfg, envMap); err != nil {
+		return GatewayConfig{}, nil, err
+	}
+
 	if err := validateGatewayConfig(&cfg); err != nil {
 		return GatewayConfig{}, nil, err
 	}
@@ -316,6 +371,16 @@ repo_name = "replace-private-repo"
 channel = "stable"
 check_interval = "1h"
 binary_asset_pattern = "linux"
+
+[gateway.a2a]
+enabled = false
+discovery_timeout = "5s"
+request_timeout = "30s"
+task_poll_interval = "2s"
+stream_idle_timeout = "30s"
+card_refresh_interval = "5m"
+resume_scan_interval = "10s"
+compat_legacy_well_known_path = true
 `) + "\n"
 }
 
@@ -386,6 +451,17 @@ func defaultGatewayConfig() GatewayConfig {
 			Channel:            "stable",
 			CheckInterval:      time.Hour,
 			BinaryAssetPattern: "linux",
+		},
+		A2A: A2AConfig{
+			Enabled:                   false,
+			DiscoveryTimeout:          5 * time.Second,
+			RequestTimeout:            30 * time.Second,
+			TaskPollInterval:          DefaultA2ATaskPollInterval,
+			StreamIdleTimeout:         30 * time.Second,
+			CardRefreshInterval:       5 * time.Minute,
+			ResumeScanInterval:        10 * time.Second,
+			CompatLegacyWellKnownPath: true,
+			Remotes:                   []A2ARemoteConfig{},
 		},
 	}
 }
@@ -580,6 +656,100 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 		}
 		if gateway.Update.BinaryAssetPattern != nil {
 			cfg.Update.BinaryAssetPattern = strings.TrimSpace(*gateway.Update.BinaryAssetPattern)
+		}
+	}
+	if gateway.A2A != nil {
+		if gateway.A2A.Enabled != nil {
+			cfg.A2A.Enabled = *gateway.A2A.Enabled
+		}
+		if gateway.A2A.DiscoveryTimeout != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.A2A.DiscoveryTimeout))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.a2a.discovery_timeout: %w", err)
+			}
+			cfg.A2A.DiscoveryTimeout = duration
+		}
+		if gateway.A2A.RequestTimeout != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.A2A.RequestTimeout))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.a2a.request_timeout: %w", err)
+			}
+			cfg.A2A.RequestTimeout = duration
+		}
+		if gateway.A2A.TaskPollInterval != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.A2A.TaskPollInterval))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.a2a.task_poll_interval: %w", err)
+			}
+			cfg.A2A.TaskPollInterval = duration
+		}
+		if gateway.A2A.StreamIdleTimeout != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.A2A.StreamIdleTimeout))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.a2a.stream_idle_timeout: %w", err)
+			}
+			cfg.A2A.StreamIdleTimeout = duration
+		}
+		if gateway.A2A.CardRefreshInterval != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.A2A.CardRefreshInterval))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.a2a.card_refresh_interval: %w", err)
+			}
+			cfg.A2A.CardRefreshInterval = duration
+		}
+		if gateway.A2A.ResumeScanInterval != nil {
+			duration, err := time.ParseDuration(strings.TrimSpace(*gateway.A2A.ResumeScanInterval))
+			if err != nil {
+				return fmt.Errorf("invalid gateway.a2a.resume_scan_interval: %w", err)
+			}
+			cfg.A2A.ResumeScanInterval = duration
+		}
+		if gateway.A2A.CompatLegacyWellKnownPath != nil {
+			cfg.A2A.CompatLegacyWellKnownPath = *gateway.A2A.CompatLegacyWellKnownPath
+		}
+		if gateway.A2A.Remotes != nil {
+			remotes := make([]A2ARemoteConfig, 0, len(gateway.A2A.Remotes))
+			for _, item := range gateway.A2A.Remotes {
+				remote := A2ARemoteConfig{
+					Enabled: true,
+					Headers: map[string]string{},
+					Tags:    []string{},
+				}
+				if item.ID != nil {
+					remote.ID = strings.TrimSpace(*item.ID)
+				}
+				if item.DisplayName != nil {
+					remote.DisplayName = strings.TrimSpace(*item.DisplayName)
+				}
+				if item.BaseURL != nil {
+					remote.BaseURL = strings.TrimSpace(*item.BaseURL)
+				}
+				if item.CardURL != nil {
+					remote.CardURL = strings.TrimSpace(*item.CardURL)
+				}
+				if item.Enabled != nil {
+					remote.Enabled = *item.Enabled
+				}
+				if item.Headers != nil {
+					remote.Headers = make(map[string]string, len(item.Headers))
+					for key, value := range item.Headers {
+						remote.Headers[key] = value
+					}
+				}
+				if item.AllowInsecureTLS != nil {
+					remote.AllowInsecureTLS = *item.AllowInsecureTLS
+				}
+				if item.RequestTimeout != nil {
+					duration, err := time.ParseDuration(strings.TrimSpace(*item.RequestTimeout))
+					if err != nil {
+						return fmt.Errorf("invalid gateway.a2a.remotes.request_timeout: %w", err)
+					}
+					remote.RequestTimeout = duration
+				}
+				remote.Tags = append([]string(nil), item.Tags...)
+				remotes = append(remotes, remote)
+			}
+			cfg.A2A.Remotes = remotes
 		}
 	}
 	return nil
@@ -858,6 +1028,24 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 	if cfg.Update.CheckInterval <= 0 {
 		return fmt.Errorf("gateway.update.check_interval must be > 0")
 	}
+	if cfg.A2A.DiscoveryTimeout <= 0 {
+		return fmt.Errorf("gateway.a2a.discovery_timeout must be > 0")
+	}
+	if cfg.A2A.RequestTimeout <= 0 {
+		return fmt.Errorf("gateway.a2a.request_timeout must be > 0")
+	}
+	if cfg.A2A.TaskPollInterval <= 0 {
+		return fmt.Errorf("gateway.a2a.task_poll_interval must be > 0")
+	}
+	if cfg.A2A.StreamIdleTimeout <= 0 {
+		return fmt.Errorf("gateway.a2a.stream_idle_timeout must be > 0")
+	}
+	if cfg.A2A.CardRefreshInterval <= 0 {
+		return fmt.Errorf("gateway.a2a.card_refresh_interval must be > 0")
+	}
+	if cfg.A2A.ResumeScanInterval <= 0 {
+		return fmt.Errorf("gateway.a2a.resume_scan_interval must be > 0")
+	}
 	if strings.TrimSpace(cfg.Cron.DefaultTimezone) == "" {
 		cfg.Cron.DefaultTimezone = "UTC"
 	}
@@ -932,7 +1120,101 @@ func validateGatewayConfig(cfg *GatewayConfig) error {
 			return fmt.Errorf("gateway.update.repo_name is required when update is enabled")
 		}
 	}
+	remoteIDs := map[string]struct{}{}
+	for i := range cfg.A2A.Remotes {
+		remote := &cfg.A2A.Remotes[i]
+		if remote.RequestTimeout <= 0 {
+			remote.RequestTimeout = cfg.A2A.RequestTimeout
+		}
+		if err := validateA2ARemoteConfig(remote); err != nil {
+			return err
+		}
+		if _, exists := remoteIDs[remote.ID]; exists {
+			return fmt.Errorf("gateway.a2a.remotes[%s] is duplicated", remote.ID)
+		}
+		remoteIDs[remote.ID] = struct{}{}
+	}
 	return nil
+}
+
+func validateA2ARemoteConfig(remote *A2ARemoteConfig) error {
+	if remote == nil {
+		return fmt.Errorf("gateway.a2a.remote is required")
+	}
+	id := strings.TrimSpace(remote.ID)
+	if id == "" {
+		return fmt.Errorf("gateway.a2a.remote id is required")
+	}
+	if strings.Contains(id, ":") {
+		return fmt.Errorf("gateway.a2a.remote id %q must not contain ':'", id)
+	}
+	baseURL := strings.TrimSpace(remote.BaseURL)
+	cardURL := strings.TrimSpace(remote.CardURL)
+	if baseURL == "" && cardURL == "" {
+		return fmt.Errorf("gateway.a2a.remotes[%s] requires base_url or card_url", id)
+	}
+	if baseURL != "" {
+		parsed, err := url.Parse(baseURL)
+		if err != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+			return fmt.Errorf("gateway.a2a.remotes[%s].base_url is invalid", id)
+		}
+	}
+	if cardURL != "" {
+		parsed, err := url.Parse(cardURL)
+		if err != nil || strings.TrimSpace(parsed.Scheme) == "" || strings.TrimSpace(parsed.Host) == "" {
+			return fmt.Errorf("gateway.a2a.remotes[%s].card_url is invalid", id)
+		}
+	}
+	if remote.RequestTimeout <= 0 {
+		return fmt.Errorf("gateway.a2a.remotes[%s].request_timeout must be > 0", id)
+	}
+	return nil
+}
+
+func expandGatewayA2AEnvTemplates(cfg *GatewayConfig, env map[string]string) error {
+	if cfg == nil {
+		return nil
+	}
+	for i := range cfg.A2A.Remotes {
+		remote := &cfg.A2A.Remotes[i]
+		if len(remote.Headers) == 0 {
+			continue
+		}
+		expanded := make(map[string]string, len(remote.Headers))
+		for key, value := range remote.Headers {
+			resolved, err := expandGatewayEnvTemplate(value, env)
+			if err != nil {
+				return fmt.Errorf("gateway.a2a.remotes[%s].headers[%s]: %w", remote.ID, key, err)
+			}
+			expanded[strings.TrimSpace(key)] = resolved
+		}
+		remote.Headers = expanded
+	}
+	return nil
+}
+
+func expandGatewayEnvTemplate(value string, env map[string]string) (string, error) {
+	out := value
+	for {
+		start := strings.Index(out, "${")
+		if start < 0 {
+			return out, nil
+		}
+		end := strings.Index(out[start:], "}")
+		if end < 0 {
+			return "", fmt.Errorf("unterminated environment placeholder")
+		}
+		end += start
+		key := strings.TrimSpace(out[start+2 : end])
+		if key == "" {
+			return "", fmt.Errorf("empty environment placeholder")
+		}
+		envValue, ok := env[key]
+		if !ok {
+			return "", fmt.Errorf("missing environment variable %q", key)
+		}
+		out = out[:start] + envValue + out[end+1:]
+	}
 }
 
 func validateLoopbackListenAddr(value string, fieldName string) error {

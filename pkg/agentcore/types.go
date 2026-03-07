@@ -599,24 +599,25 @@ type Agent struct {
 	Config    AgentConfig
 	Policies  AgentPolicies
 
-	Tools                 ToolRegistry
-	Memory                MemoryStore
-	MemoryFiles           *memfiles.Manager
-	MemorySearch          memory.MemorySearchManager
-	LongTermMemory        memory.MemoryManager
-	Assembler             ctxbundle.Assembler
-	Logger                EventLogger
-	Provider              AIProvider
-	Processes             *ProcessManager
-	Cron                  CronToolService
-	Delegation            DelegationToolService
-	HeartbeatService      HeartbeatToolService
-	MessageService        MessageToolService
-	ReactionService       ReactionToolService
-	Heartbeat             AgentHeartbeat
-	KnownAgents           []string
-	CaptureThinkingDeltas bool
-	SessionMemoryFlusher  SessionMemoryFlusher
+	Tools                   ToolRegistry
+	Memory                  MemoryStore
+	MemoryFiles             *memfiles.Manager
+	MemorySearch            memory.MemorySearchManager
+	LongTermMemory          memory.MemoryManager
+	Assembler               ctxbundle.Assembler
+	Logger                  EventLogger
+	Provider                AIProvider
+	Processes               *ProcessManager
+	Cron                    CronToolService
+	Delegation              DelegationToolService
+	HeartbeatService        HeartbeatToolService
+	MessageService          MessageToolService
+	ReactionService         ReactionToolService
+	Heartbeat               AgentHeartbeat
+	KnownAgents             []string
+	RemoteDelegationTargets []RemoteDelegationTarget
+	CaptureThinkingDeltas   bool
+	SessionMemoryFlusher    SessionMemoryFlusher
 
 	skills         []Skill
 	model          ai.Model
@@ -630,6 +631,11 @@ type Skill struct {
 	BaseDir                string
 	Instruction            string
 	DisableModelInvocation bool
+}
+
+type RemoteDelegationTarget struct {
+	ID          string
+	Description string
 }
 
 type Session struct {

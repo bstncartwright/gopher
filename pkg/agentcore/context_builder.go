@@ -90,19 +90,20 @@ func (a *Agent) buildProviderContextDetailedWithAttachments(ctx context.Context,
 	}
 
 	systemPrompt, err := buildAgentSystemPrompt(systemPromptInput{
-		Workspace:      a.Workspace,
-		AgentID:        a.ID,
-		KnownAgents:    a.KnownAgents,
-		PromptMode:     mode,
-		Tools:          activeTools,
-		Policies:       a.Policies,
-		SkillsPrompt:   skillsPrompt,
-		ContextFiles:   contextFiles,
-		IncludeWorking: includeWorking,
-		Working:        working,
-		UserTimezone:   a.Config.UserTimezone,
-		Model:          a.model,
-		Heartbeat:      a.Heartbeat,
+		Workspace:               a.Workspace,
+		AgentID:                 a.ID,
+		KnownAgents:             a.KnownAgents,
+		RemoteDelegationTargets: append([]RemoteDelegationTarget(nil), a.RemoteDelegationTargets...),
+		PromptMode:              mode,
+		Tools:                   activeTools,
+		Policies:                a.Policies,
+		SkillsPrompt:            skillsPrompt,
+		ContextFiles:            contextFiles,
+		IncludeWorking:          includeWorking,
+		Working:                 working,
+		UserTimezone:            a.Config.UserTimezone,
+		Model:                   a.model,
+		Heartbeat:               a.Heartbeat,
 	})
 	if err != nil {
 		return ai.Context{}, ctxbundle.ContextDiagnostics{}, fmt.Errorf("build system prompt: %w", err)

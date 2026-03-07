@@ -76,12 +76,23 @@ type AgentInfo struct {
 	MaxContextMessages   int
 }
 
+type RemoteInfo struct {
+	TargetID    string
+	DisplayName string
+	Description string
+	Endpoint    string
+	Healthy     bool
+	LastRefresh string
+	LastError   string
+}
+
 type ServerOptions struct {
 	ListenAddr      string
 	Store           SessionStore
 	SessionMetadata SessionMetadataResolver
 	NodeSnapshot    func() []scheduler.NodeInfo
 	AgentSnapshot   func() []AgentInfo
+	RemoteSnapshot  func() []RemoteInfo
 	ControlDir      string
 	CronStorePath   string
 }
@@ -92,6 +103,7 @@ type Server struct {
 	sessionMetadata SessionMetadataResolver
 	nodeSnapshot    func() []scheduler.NodeInfo
 	agentSnapshot   func() []AgentInfo
+	remoteSnapshot  func() []RemoteInfo
 	controlDir      string
 	cronStorePath   string
 	templates       *template.Template
@@ -174,8 +186,9 @@ type cronStoreDisk struct {
 }
 
 type agentsData struct {
-	Now    string
-	Agents []agentRow
+	Now     string
+	Agents  []agentRow
+	Remotes []remoteRow
 }
 
 type agentRow struct {
@@ -194,6 +207,16 @@ type agentRow struct {
 	ApplyPatchEnabled    string
 	CaptureThinking      string
 	MaxContextMessages   int
+}
+
+type remoteRow struct {
+	TargetID    string
+	DisplayName string
+	Description string
+	Endpoint    string
+	Health      string
+	LastRefresh string
+	LastError   string
 }
 
 type controlSummary struct {
@@ -322,6 +345,10 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if agentSnapshot == nil {
 		agentSnapshot = func() []AgentInfo { return nil }
 	}
+	remoteSnapshot := opts.RemoteSnapshot
+	if remoteSnapshot == nil {
+		remoteSnapshot = func() []RemoteInfo { return nil }
+	}
 	controlDir := strings.TrimSpace(opts.ControlDir)
 	cronStorePath := strings.TrimSpace(opts.CronStorePath)
 	if cronStorePath == "" && controlDir != "" {
@@ -334,6 +361,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		sessionMetadata: opts.SessionMetadata,
 		nodeSnapshot:    nodeSnapshot,
 		agentSnapshot:   agentSnapshot,
+		remoteSnapshot:  remoteSnapshot,
 		controlDir:      controlDir,
 		cronStorePath:   cronStorePath,
 		templates:       tpl,
@@ -794,9 +822,42 @@ func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].AgentID < rows[j].AgentID
 	})
+	remoteSnapshot := s.remoteSnapshot()
+	remoteRows := make([]remoteRow, 0, len(remoteSnapshot))
+	for _, info := range remoteSnapshot {
+		targetID := strings.TrimSpace(info.TargetID)
+		if targetID == "" {
+			continue
+		}
+		displayName := strings.TrimSpace(info.DisplayName)
+		if displayName == "" {
+			displayName = targetID
+		}
+		endpoint := strings.TrimSpace(info.Endpoint)
+		if endpoint == "" {
+			endpoint = "-"
+		}
+		health := "degraded"
+		if info.Healthy {
+			health = "healthy"
+		}
+		remoteRows = append(remoteRows, remoteRow{
+			TargetID:    targetID,
+			DisplayName: displayName,
+			Description: formatOptionalText(info.Description),
+			Endpoint:    endpoint,
+			Health:      health,
+			LastRefresh: formatOptionalText(info.LastRefresh),
+			LastError:   formatOptionalText(info.LastError),
+		})
+	}
+	sort.Slice(remoteRows, func(i, j int) bool {
+		return remoteRows[i].TargetID < remoteRows[j].TargetID
+	})
 	s.renderTemplate(w, "agents.html", agentsData{
-		Now:    time.Now().UTC().Format(time.RFC3339),
-		Agents: rows,
+		Now:     time.Now().UTC().Format(time.RFC3339),
+		Agents:  rows,
+		Remotes: remoteRows,
 	})
 }
 
@@ -812,6 +873,23 @@ func snapshotOverviewNodes(nodes []scheduler.NodeInfo) []overviewNode {
 		})
 	}
 	return rows
+}
+
+func formatOptionalText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return "-"
+		}
+		return strings.TrimSpace(typed)
+	case time.Time:
+		if typed.IsZero() {
+			return "-"
+		}
+		return typed.UTC().Format(time.RFC3339)
+	default:
+		return "-"
+	}
 }
 
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {

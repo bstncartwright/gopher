@@ -38,6 +38,10 @@ func (f *fakeDelegationToolService) GetDelegationSummary(_ context.Context, _ ag
 	return f.summaryResult, nil
 }
 
+func (f *fakeDelegationToolService) ReplyDelegationSession(_ context.Context, _ agentcore.DelegationReplyRequest) (agentcore.DelegationReplyResult, error) {
+	return agentcore.DelegationReplyResult{}, nil
+}
+
 func TestScheduledTaskCronDispatcherIsolatedDispatchAndPoll(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store})

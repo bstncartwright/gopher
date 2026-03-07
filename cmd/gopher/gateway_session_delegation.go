@@ -45,11 +45,13 @@ type gatewaySessionDelegationToolService struct {
 	store   gatewaySessionDelegationStore
 	router  *agentcore.ActorExecutorRouter
 	remote  func(sessionrt.ActorID) bool
+	a2a     *gatewayA2ABackend
 
 	mu             sync.RWMutex
 	agents         map[sessionrt.ActorID]*agentcore.Agent
 	ephemeral      map[string]ephemeralDelegationState
 	reservedWorker map[sessionrt.ActorID]struct{}
+	a2aMonitors    map[string]context.CancelFunc
 
 	dataDir string
 	logger  *log.Logger
@@ -85,6 +87,7 @@ func newGatewaySessionDelegationToolService(
 		agents:         agents,
 		ephemeral:      map[string]ephemeralDelegationState{},
 		reservedWorker: map[sessionrt.ActorID]struct{}{},
+		a2aMonitors:    map[string]context.CancelFunc{},
 		dataDir:        strings.TrimSpace(dataDir),
 		logger:         logger,
 		ttl:            delegationEphemeralTTL,
@@ -125,6 +128,9 @@ func (s *gatewaySessionDelegationToolService) CreateDelegationSession(ctx contex
 	}
 	if sourceSession == nil {
 		return agentcore.DelegationSession{}, fmt.Errorf("source session %q not found", sourceSessionID)
+	}
+	if isA2ATargetActorID(requestedTargetAgentID) {
+		return s.createA2ADelegationSession(ctx, sourceSessionID, sourceAgentID, requestedTargetAgentID, message, strings.TrimSpace(req.Title))
 	}
 
 	resolvedTargetAgentID, displayTargetAgentID, createdEphemeral, err := s.resolveDelegationTarget(ctx, sourceAgentID, requestedTargetAgentID, sourceAgent, requestedModelPolicy)
@@ -381,6 +387,18 @@ func (s *gatewaySessionDelegationToolService) handleDelegationTerminalState(
 		"merge_mode":               stringFromMap(record, "merge_mode"),
 		"diff_artifact_path":       diffArtifactPath,
 	}
+	if s.isA2ADelegationRecord(record) {
+		rec["target_kind"] = "a2a"
+		rec["remote_id"] = stringFromMap(record, "remote_id")
+		rec["task_id"] = stringFromMap(record, "task_id")
+		rec["context_id"] = stringFromMap(record, "context_id")
+		rec["waiting_for_input"] = false
+		rec["last_input_request"] = stringFromMap(record, "last_input_request")
+		rec["raw_card_version"] = stringFromMap(record, "raw_card_version")
+		if artifacts := record["artifacts_metadata"]; artifacts != nil {
+			rec["artifacts_metadata"] = artifacts
+		}
+	}
 	if strings.TrimSpace(reason) != "" {
 		rec["reason"] = strings.TrimSpace(reason)
 	}
@@ -578,6 +596,9 @@ func (s *gatewaySessionDelegationToolService) KillDelegationSession(ctx context.
 			Status:          status,
 			Killed:          false,
 		}, nil
+	}
+	if s.isA2ADelegationRecord(record) {
+		return s.killA2ADelegationSession(ctx, delegationID, record)
 	}
 
 	if err := s.manager.CancelSession(ctx, sessionrt.SessionID(delegationID)); err != nil {
@@ -1205,6 +1226,11 @@ func (s *gatewaySessionDelegationToolService) refreshKnownAgentsLocked() {
 			continue
 		}
 		agent.KnownAgents = append([]string(nil), known...)
+		if s.a2a != nil {
+			agent.RemoteDelegationTargets = s.a2a.PromptTargets()
+		} else {
+			agent.RemoteDelegationTargets = nil
+		}
 	}
 }
 

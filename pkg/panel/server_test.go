@@ -195,12 +195,16 @@ func TestPanelMainPageRenders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Gopher Control Panel") {
-		t.Fatalf("expected page heading, got: %s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, ">Overview</h1>") {
+		t.Fatalf("expected overview heading, got: %s", body)
+	}
+	if !strings.Contains(body, "Priority Queue") {
+		t.Fatalf("expected overview content, got: %s", body)
 	}
 }
 
-func TestPanelSessionsTabRendersActiveTab(t *testing.T) {
+func TestPanelSessionsTabRedirectsToWorkRoute(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
@@ -208,15 +212,15 @@ func TestPanelSessionsTabRendersActiveTab(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/admin?tab=sessions", nil)
 	srv.newMux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want 308", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "data-initial-tab=\"sessions\"") {
-		t.Fatalf("expected sessions tab in body data marker, got: %s", rec.Body.String())
+	if location := rec.Header().Get("Location"); location != "/admin/work" {
+		t.Fatalf("location = %q, want /admin/work", location)
 	}
 }
 
-func TestPanelQueryTabNormalizesActiveTab(t *testing.T) {
+func TestPanelQueryTabRedirectsToOverviewRoute(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
@@ -224,15 +228,15 @@ func TestPanelQueryTabNormalizesActiveTab(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/admin?tab=control-actions", nil)
 	srv.newMux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want 308", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "data-initial-tab=\"actions\"") {
-		t.Fatalf("expected actions tab in body data marker, got: %s", rec.Body.String())
+	if location := rec.Header().Get("Location"); location != "/admin" {
+		t.Fatalf("location = %q, want /admin", location)
 	}
 }
 
-func TestPanelCronTabRendersActiveTab(t *testing.T) {
+func TestPanelCronTabRedirectsToAutomationsRoute(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {
 		t.Fatalf("NewServer() error: %v", err)
@@ -240,11 +244,11 @@ func TestPanelCronTabRendersActiveTab(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/admin?tab=cron", nil)
 	srv.newMux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want 308", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "data-initial-tab=\"cron\"") {
-		t.Fatalf("expected cron tab in body data marker, got: %s", rec.Body.String())
+	if location := rec.Header().Get("Location"); location != "/admin/automations" {
+		t.Fatalf("location = %q, want /admin/automations", location)
 	}
 }
 
@@ -259,8 +263,94 @@ func TestPanelLegacyPageRedirectsToAdmin(t *testing.T) {
 	if rec.Code != http.StatusPermanentRedirect {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusPermanentRedirect)
 	}
-	if location := rec.Header().Get("Location"); location != "/admin?filter=tools&session=sess-9&tab=sessions" {
+	if location := rec.Header().Get("Location"); location != "/admin/work/sess-9?filter=tools" {
 		t.Fatalf("location = %q, want redirected admin URL", location)
+	}
+}
+
+func TestPanelWorkAndFleetRoutesRender(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	store.addSession("sess-1", sessionrt.SessionActive, []sessionrt.Event{
+		{SessionID: "sess-1", Seq: 1, Type: sessionrt.EventMessage, From: "user:1", Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "hi"}, Timestamp: now},
+	})
+	srv, err := NewServer(ServerOptions{
+		ListenAddr: "127.0.0.1:29329",
+		Store:      store,
+		AgentSnapshot: func() []AgentInfo {
+			return []AgentInfo{{AgentID: "main", Name: "Main", Role: "assistant"}}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	workRec := httptest.NewRecorder()
+	workReq := httptest.NewRequest(http.MethodGet, "/admin/work/sess-1?view=raw", nil)
+	srv.newMux().ServeHTTP(workRec, workReq)
+	if workRec.Code != http.StatusOK {
+		t.Fatalf("work status = %d, want 200", workRec.Code)
+	}
+	if !strings.Contains(workRec.Body.String(), "data-initial-session=\"sess-1\"") {
+		t.Fatalf("expected initial session marker, got: %s", workRec.Body.String())
+	}
+	if !strings.Contains(workRec.Body.String(), "Workspace") {
+		t.Fatalf("expected work workspace shell, got: %s", workRec.Body.String())
+	}
+
+	fleetRec := httptest.NewRecorder()
+	fleetReq := httptest.NewRequest(http.MethodGet, "/admin/fleet?view=agents", nil)
+	srv.newMux().ServeHTTP(fleetRec, fleetReq)
+	if fleetRec.Code != http.StatusOK {
+		t.Fatalf("fleet status = %d, want 200", fleetRec.Code)
+	}
+	if !strings.Contains(fleetRec.Body.String(), "Runtime Configuration") {
+		t.Fatalf("expected agents fleet view, got: %s", fleetRec.Body.String())
+	}
+}
+
+func TestPanelWorkAPIEndpoints(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	store.addSession("sess-api", sessionrt.SessionActive, []sessionrt.Event{
+		{SessionID: "sess-api", Seq: 1, Type: sessionrt.EventMessage, From: "user:1", Payload: sessionrt.Message{Role: sessionrt.RoleUser, Content: "hello"}, Timestamp: now},
+		{SessionID: "sess-api", Seq: 2, Type: sessionrt.EventToolCall, From: "agent:a", Payload: map[string]any{"name": "read", "arguments": map[string]any{"path": "/tmp/file"}}, Timestamp: now.Add(time.Second)},
+		{SessionID: "sess-api", Seq: 3, Type: sessionrt.EventToolResult, From: "agent:a", Payload: map[string]any{"name": "read", "status": "ok", "stdout": "done"}, Timestamp: now.Add(2 * time.Second)},
+	})
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	mux := srv.newMux()
+
+	sessionsRec := httptest.NewRecorder()
+	sessionsReq := httptest.NewRequest(http.MethodGet, "/admin/api/work/sessions", nil)
+	mux.ServeHTTP(sessionsRec, sessionsReq)
+	if sessionsRec.Code != http.StatusOK {
+		t.Fatalf("sessions api status = %d, want 200", sessionsRec.Code)
+	}
+	if !strings.Contains(sessionsRec.Body.String(), `"session_id":"sess-api"`) {
+		t.Fatalf("expected session payload, got: %s", sessionsRec.Body.String())
+	}
+
+	detailRec := httptest.NewRecorder()
+	detailReq := httptest.NewRequest(http.MethodGet, "/admin/api/work/session/sess-api", nil)
+	mux.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail api status = %d, want 200", detailRec.Code)
+	}
+	if !strings.Contains(detailRec.Body.String(), `"timeline"`) || !strings.Contains(detailRec.Body.String(), `"digest"`) {
+		t.Fatalf("expected timeline payload, got: %s", detailRec.Body.String())
+	}
+
+	eventRec := httptest.NewRecorder()
+	eventReq := httptest.NewRequest(http.MethodGet, "/admin/api/work/session/sess-api/events/2", nil)
+	mux.ServeHTTP(eventRec, eventReq)
+	if eventRec.Code != http.StatusOK {
+		t.Fatalf("event api status = %d, want 200", eventRec.Code)
+	}
+	if !strings.Contains(eventRec.Body.String(), `"seq":2`) {
+		t.Fatalf("expected event detail payload, got: %s", eventRec.Body.String())
 	}
 }
 

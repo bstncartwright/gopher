@@ -1,0 +1,93 @@
+<section
+  id="work-app"
+  class="work-app"
+  data-initial-session="{{.Work.InitialSession}}"
+  data-initial-filter="{{.Work.InitialFilter}}"
+  data-initial-view="{{.Work.InitialView}}"
+  data-initial-noise="{{.Work.InitialNoise}}"
+  data-initial-event="{{.Work.InitialEventSeq}}"
+>
+  {{if not .Work.HasSessionStore}}
+  <section class="surface">
+    <p class="empty-state">Session runtime is unavailable in this mode.</p>
+  </section>
+  {{else}}
+  <section class="work-shell">
+    <aside class="surface queue-panel">
+      <header class="surface-header compact">
+        <div>
+          <p class="eyebrow">Queue</p>
+          <h2>Sessions</h2>
+        </div>
+        <button type="button" class="ghost-btn mobile-only" data-work-filter-toggle aria-expanded="false">Filters</button>
+      </header>
+      <div class="filter-sheet" data-work-filter-sheet>
+        <div class="filter-bar">
+          <label class="sr-only" for="work-search">Filter sessions</label>
+          <input id="work-search" class="search-input" type="search" placeholder="Search sessions, rooms, or status…" autocomplete="off" spellcheck="false">
+          <div class="chip-row" data-work-status-row>
+            <button type="button" class="chip is-active" data-status-filter="all" aria-pressed="true">All</button>
+            <button type="button" class="chip" data-status-filter="active" aria-pressed="false">Active</button>
+            <button type="button" class="chip" data-status-filter="paused" aria-pressed="false">Paused</button>
+            <button type="button" class="chip" data-status-filter="failed" aria-pressed="false">Failed</button>
+          </div>
+        </div>
+      </div>
+      <div id="work-session-list" class="queue-list">
+        <p class="empty-state">Loading sessions…</p>
+      </div>
+    </aside>
+
+    <section class="surface workspace-panel">
+      <header class="surface-header compact workspace-header">
+        <div>
+          <p class="eyebrow">Workspace</p>
+          <h2 id="work-session-heading">Select a session</h2>
+          <p id="work-session-subtitle" class="surface-copy">Use the queue to open a session and inspect the timeline.</p>
+        </div>
+        <div class="workspace-toolbar">
+          <button type="button" class="ghost-btn desktop-hidden" data-work-queue-toggle aria-expanded="false">Queue</button>
+          <button type="button" class="ghost-btn" data-work-filter-toggle aria-expanded="false">Filters</button>
+        </div>
+      </header>
+
+      <div class="workspace-controls">
+        <div class="chip-row" data-work-filter-row>
+          <button type="button" class="chip is-active" data-work-filter="all" aria-pressed="true">All</button>
+          <button type="button" class="chip" data-work-filter="user" aria-pressed="false">User</button>
+          <button type="button" class="chip" data-work-filter="agent" aria-pressed="false">Agent</button>
+          <button type="button" class="chip" data-work-filter="tools" aria-pressed="false">Tools</button>
+          <button type="button" class="chip" data-work-filter="control" aria-pressed="false">Control</button>
+          <button type="button" class="chip" data-work-filter="errors" aria-pressed="false">Errors</button>
+        </div>
+        <div class="chip-row">
+          <button type="button" class="chip is-active" data-work-view="digest" aria-pressed="true">Digest</button>
+          <button type="button" class="chip" data-work-view="raw" aria-pressed="false">Raw</button>
+          <button type="button" class="chip is-active" data-work-noise="grouped" aria-pressed="true">Grouped Noise</button>
+          <button type="button" class="chip" data-work-noise="all" aria-pressed="false">All Events</button>
+        </div>
+      </div>
+
+      <div class="workspace-summary" id="work-session-summary">
+        <p class="empty-state">Session summary will appear here.</p>
+      </div>
+
+      <div class="workspace-grid">
+        <section class="timeline-panel">
+          <div class="timeline-toolbar">
+            <button type="button" class="ghost-btn" id="work-load-older" hidden>Load Older</button>
+            <span class="timeline-meta" id="work-timeline-meta">No events loaded.</span>
+          </div>
+          <div id="work-timeline" class="timeline-list" aria-live="polite">
+            <p class="empty-state">No session selected.</p>
+          </div>
+        </section>
+
+        <aside class="inspector-panel" id="work-inspector">
+          <p class="empty-state">Choose an event to inspect its details.</p>
+        </aside>
+      </div>
+    </section>
+  </section>
+  {{end}}
+</section>

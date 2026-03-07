@@ -1,0 +1,127 @@
+<section class="section-stack">
+  <section class="surface">
+    <header class="surface-header">
+      <div>
+        <p class="eyebrow">Automation Health</p>
+        <h2>Scheduled Jobs</h2>
+      </div>
+      <p class="surface-copy">Scheduled work grouped by urgency first, not by raw storage order.</p>
+    </header>
+    {{if not .Automations.HasCronStore}}
+    <p class="empty-state">Automation storage is unavailable for this runtime.</p>
+    {{else if .Automations.Error}}
+    <p class="empty-state">{{.Automations.Error}}</p>
+    {{else}}
+    <div class="summary-grid">
+      <div class="summary-card">
+        <span>Total</span>
+        <strong>{{.Automations.Summary.Total}}</strong>
+      </div>
+      <div class="summary-card">
+        <span>Enabled</span>
+        <strong>{{.Automations.Summary.Enabled}}</strong>
+      </div>
+      <div class="summary-card">
+        <span>Paused</span>
+        <strong>{{.Automations.Summary.Paused}}</strong>
+      </div>
+      <div class="summary-card danger">
+        <span>Failed</span>
+        <strong>{{.Automations.Summary.Failed}}</strong>
+      </div>
+    </div>
+    {{end}}
+  </section>
+
+  {{if .Automations.HasCronStore}}
+  <section class="surface">
+    <header class="surface-header compact">
+      <div>
+        <p class="eyebrow">Needs Attention</p>
+        <h2>Failures & Risk</h2>
+      </div>
+    </header>
+    {{if .Automations.AttentionJobs}}
+    <div class="automation-grid">
+      {{range .Automations.AttentionJobs}}
+      <article class="automation-card tone-{{.Tone}}" id="job-{{.ID}}">
+        <div class="automation-head">
+          <strong>{{.ID}}</strong>
+          <span class="pill tone-{{.Tone}}">{{.RunStatus}}</span>
+        </div>
+        <p>{{.Message}}</p>
+        <dl class="kv-grid">
+          <div><dt>Session</dt><dd>{{.SessionID}}</dd></div>
+          <div><dt>Next Run</dt><dd><time datetime="{{.NextRunAt}}" data-relative-time data-absolute-time="{{.NextRunAt}}">{{.NextRunAt}}</time></dd></div>
+          <div><dt>Last Run</dt><dd><time datetime="{{.LastRunAt}}" data-relative-time data-absolute-time="{{.LastRunAt}}">{{.LastRunAt}}</time></dd></div>
+          <div><dt>Cron</dt><dd>{{.CronExpr}}</dd></div>
+        </dl>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No failed automations need attention.</p>
+    {{end}}
+  </section>
+
+  <section class="surface">
+    <header class="surface-header compact">
+      <div>
+        <p class="eyebrow">Scheduled</p>
+        <h2>Enabled Jobs</h2>
+      </div>
+    </header>
+    {{if .Automations.ScheduledJobs}}
+    <div class="automation-grid">
+      {{range .Automations.ScheduledJobs}}
+      <article class="automation-card" id="job-{{.ID}}">
+        <div class="automation-head">
+          <strong>{{.ID}}</strong>
+          <span class="pill tone-active">{{.Schedule}}</span>
+        </div>
+        <p>{{.Message}}</p>
+        <dl class="kv-grid">
+          <div><dt>Session</dt><dd>{{.SessionID}}</dd></div>
+          <div><dt>Next Run</dt><dd><time datetime="{{.NextRunAt}}" data-relative-time data-absolute-time="{{.NextRunAt}}">{{.NextRunAt}}</time></dd></div>
+          <div><dt>Last Run</dt><dd>{{.RunStatus}}</dd></div>
+          <div><dt>Timezone</dt><dd>{{.Timezone}}</dd></div>
+        </dl>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No enabled jobs are scheduled.</p>
+    {{end}}
+  </section>
+
+  <section class="surface">
+    <header class="surface-header compact">
+      <div>
+        <p class="eyebrow">Paused</p>
+        <h2>Held Jobs</h2>
+      </div>
+    </header>
+    {{if .Automations.PausedJobs}}
+    <div class="automation-grid">
+      {{range .Automations.PausedJobs}}
+      <article class="automation-card muted" id="job-{{.ID}}">
+        <div class="automation-head">
+          <strong>{{.ID}}</strong>
+          <span class="pill tone-muted">{{.Schedule}}</span>
+        </div>
+        <p>{{.Message}}</p>
+        <dl class="kv-grid">
+          <div><dt>Session</dt><dd>{{.SessionID}}</dd></div>
+          <div><dt>Updated</dt><dd><time datetime="{{.UpdatedAt}}" data-relative-time data-absolute-time="{{.UpdatedAt}}">{{.UpdatedAt}}</time></dd></div>
+          <div><dt>Cron</dt><dd>{{.CronExpr}}</dd></div>
+          <div><dt>Timezone</dt><dd>{{.Timezone}}</dd></div>
+        </dl>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No paused jobs.</p>
+    {{end}}
+  </section>
+  {{end}}
+</section>

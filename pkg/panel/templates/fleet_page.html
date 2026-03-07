@@ -1,0 +1,110 @@
+<section class="section-stack">
+  <section class="surface">
+    <header class="surface-header">
+      <div>
+        <p class="eyebrow">Fleet Views</p>
+        <h2>Runtime Inventory</h2>
+      </div>
+      <p class="surface-copy">Runtime infrastructure stays available, but no longer competes with the main work surface.</p>
+    </header>
+    <div class="chip-row">
+      {{range .Fleet.ViewTabs}}
+      <a class="chip-link{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
+      {{end}}
+    </div>
+  </section>
+
+  {{if eq .Fleet.View "nodes"}}
+  <section class="surface">
+    <header class="surface-header compact">
+      <div>
+        <p class="eyebrow">Nodes</p>
+        <h2>Heartbeat & Capability Health</h2>
+      </div>
+    </header>
+    {{if .Fleet.NodeCards}}
+    <div class="fleet-grid">
+      {{range .Fleet.NodeCards}}
+      <article class="fleet-card tone-{{.Tone}}" id="node-{{.ID}}">
+        <div class="fleet-head">
+          <strong>{{.ID}}</strong>
+          <span class="pill tone-{{.Tone}}">{{.Status}}</span>
+        </div>
+        <dl class="kv-grid">
+          <div><dt>Role</dt><dd>{{.Role}}</dd></div>
+          <div><dt>Heartbeat</dt><dd><time datetime="{{.HeartbeatAt}}" data-relative-time data-absolute-time="{{.HeartbeatAt}}">{{.HeartbeatText}}</time></dd></div>
+          <div><dt>Capabilities</dt><dd>{{.Capabilities}}</dd></div>
+          <div><dt>Agents</dt><dd>{{.Agents}}</dd></div>
+        </dl>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No nodes are registered.</p>
+    {{end}}
+  </section>
+  {{else if eq .Fleet.View "agents"}}
+  <section class="surface">
+    <header class="surface-header compact">
+      <div>
+        <p class="eyebrow">Agents</p>
+        <h2>Runtime Configuration</h2>
+      </div>
+    </header>
+    {{if .Fleet.AgentCards}}
+    <div class="fleet-grid">
+      {{range .Fleet.AgentCards}}
+      <article class="fleet-card" id="agent-{{.ID}}">
+        <div class="fleet-head">
+          <strong>{{.Name}}</strong>
+          <span class="pill tone-neutral">{{.Role}}</span>
+        </div>
+        <dl class="kv-grid">
+          <div><dt>Agent ID</dt><dd>{{.ID}}</dd></div>
+          <div><dt>Workspace</dt><dd>{{.Workspace}}</dd></div>
+          <div><dt>Model</dt><dd>{{.Model}}</dd></div>
+          <div><dt>Tools</dt><dd>{{.EnabledTools}}</dd></div>
+          <div><dt>Required Caps</dt><dd>{{.RequiredCaps}}</dd></div>
+          <div><dt>Network</dt><dd>{{.Network}}</dd></div>
+          <div><dt>Thinking</dt><dd>{{.Thinking}}</dd></div>
+          <div><dt>Shell</dt><dd>{{.Shell}}</dd></div>
+        </dl>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No runtime agents are loaded.</p>
+    {{end}}
+  </section>
+  {{else}}
+  <section class="surface">
+    <header class="surface-header compact">
+      <div>
+        <p class="eyebrow">Remotes</p>
+        <h2>Remote Targets</h2>
+      </div>
+    </header>
+    {{if .Fleet.RemoteCards}}
+    <div class="fleet-grid">
+      {{range .Fleet.RemoteCards}}
+      <article class="fleet-card">
+        <div class="fleet-head">
+          <strong>{{.DisplayName}}</strong>
+          <span class="pill tone-neutral">{{.Health}}</span>
+        </div>
+        <dl class="kv-grid">
+          <div><dt>Target ID</dt><dd>{{.ID}}</dd></div>
+          <div><dt>Endpoint</dt><dd>{{.Endpoint}}</dd></div>
+          <div><dt>Description</dt><dd>{{.Description}}</dd></div>
+          <div><dt>Last Refresh</dt><dd>{{.LastRefresh}}</dd></div>
+          <div><dt>Last Error</dt><dd>{{.LastError}}</dd></div>
+        </dl>
+      </article>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No remote targets are registered.</p>
+    {{end}}
+  </section>
+  {{end}}
+</section>

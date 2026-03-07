@@ -1,0 +1,58 @@
+<section class="section-stack">
+  <section class="surface">
+    <header class="surface-header">
+      <div>
+        <p class="eyebrow">Attention</p>
+        <h2>Priority Queue</h2>
+      </div>
+      <p class="surface-copy">Open the items that need operator judgment before you drift into inventory browsing.</p>
+    </header>
+    <div class="attention-grid">
+      {{range .Overview.AttentionGroups}}
+      <article class="attention-card tone-{{.Tone}}">
+        <header class="attention-card-header">
+          <h3>{{.Title}}</h3>
+        </header>
+        {{if .Items}}
+        <div class="attention-list">
+          {{range .Items}}
+          <a class="attention-item" href="{{.Href}}">
+            <strong>{{.Title}}</strong>
+            <span>{{.Summary}}</span>
+            <small>{{.Meta}}</small>
+          </a>
+          {{end}}
+        </div>
+        {{else}}
+        <p class="empty-state">{{.EmptyText}}</p>
+        {{end}}
+      </article>
+      {{end}}
+    </div>
+  </section>
+
+  <section class="surface">
+    <header class="surface-header">
+      <div>
+        <p class="eyebrow">Recent Activity</p>
+        <h2>What Changed</h2>
+      </div>
+      <p class="surface-copy">A short feed of the most recent meaningful changes across sessions and control actions.</p>
+    </header>
+    {{if .Overview.ActivityItems}}
+    <div class="activity-list">
+      {{range .Overview.ActivityItems}}
+      <a class="activity-item tone-{{.Tone}}" href="{{.Href}}">
+        <div class="activity-main">
+          <strong>{{.Title}}</strong>
+          <span>{{.Summary}}</span>
+        </div>
+        <time class="activity-time" datetime="{{.Timestamp}}" data-relative-time data-absolute-time="{{.Timestamp}}">{{.Timestamp}}</time>
+      </a>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No recent activity yet.</p>
+    {{end}}
+  </section>
+</section>

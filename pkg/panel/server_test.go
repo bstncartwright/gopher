@@ -342,6 +342,9 @@ func TestPanelWorkAPIEndpoints(t *testing.T) {
 	if !strings.Contains(detailRec.Body.String(), `"timeline"`) || !strings.Contains(detailRec.Body.String(), `"digest"`) {
 		t.Fatalf("expected timeline payload, got: %s", detailRec.Body.String())
 	}
+	if !strings.Contains(detailRec.Body.String(), `"story"`) || !strings.Contains(detailRec.Body.String(), `"emoji":"✅"`) || !strings.Contains(detailRec.Body.String(), `"title":"Read /tmp/file"`) {
+		t.Fatalf("expected narrative work payload, got: %s", detailRec.Body.String())
+	}
 
 	eventRec := httptest.NewRecorder()
 	eventReq := httptest.NewRequest(http.MethodGet, "/admin/api/work/session/sess-api/events/2", nil)
@@ -351,6 +354,102 @@ func TestPanelWorkAPIEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(eventRec.Body.String(), `"seq":2`) {
 		t.Fatalf("expected event detail payload, got: %s", eventRec.Body.String())
+	}
+}
+
+func TestBuildTimelineEventsNarrativeFields(t *testing.T) {
+	now := time.Now().UTC()
+	events := []sessionrt.Event{
+		{
+			SessionID: "sess-narrative",
+			Seq:       1,
+			Type:      sessionrt.EventMessage,
+			From:      "user:1",
+			Timestamp: now,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleUser,
+				Content: "Please inspect the failed deploy",
+			},
+		},
+		{
+			SessionID: "sess-narrative",
+			Seq:       2,
+			Type:      sessionrt.EventAgentThinkingDelta,
+			From:      "agent:a",
+			Timestamp: now.Add(time.Second),
+			Payload: map[string]any{
+				"delta": "Checking recent build logs",
+			},
+		},
+		{
+			SessionID: "sess-narrative",
+			Seq:       3,
+			Type:      sessionrt.EventToolCall,
+			From:      "agent:a",
+			Timestamp: now.Add(2 * time.Second),
+			Payload: map[string]any{
+				"name": "web_search",
+				"arguments": map[string]any{
+					"query": "latest deploy error",
+				},
+			},
+		},
+		{
+			SessionID: "sess-narrative",
+			Seq:       4,
+			Type:      sessionrt.EventToolResult,
+			From:      "agent:a",
+			Timestamp: now.Add(3 * time.Second),
+			Payload: map[string]any{
+				"name":   "web_search",
+				"status": "error",
+				"stderr": "search backend timeout",
+			},
+		},
+		{
+			SessionID: "sess-narrative",
+			Seq:       5,
+			Type:      sessionrt.EventStatePatch,
+			From:      "agent:a",
+			Timestamp: now.Add(4 * time.Second),
+			Payload: map[string]any{
+				"model_id":                     "gpt-5-codex",
+				"model_provider":               "openai",
+				"estimated_input_tokens":       44120,
+				"overflow_retries":             2,
+				"overflow_stage":               "retry_2",
+				"tool_result_truncation_count": 3,
+			},
+		},
+	}
+
+	rows := buildTimelineEvents(events)
+	if len(rows) != 4 {
+		t.Fatalf("row count = %d, want 4 after merged tool execution", len(rows))
+	}
+	if rows[1].Emoji != "🧠" || rows[1].Category != "agent" || rows[1].Title != "Thinking about next step" {
+		t.Fatalf("unexpected thinking row: %#v", rows[1])
+	}
+	if rows[2].Emoji != "❌" || rows[2].ResultStatus != "failure" || !rows[2].Anomaly || rows[2].BundleKind != "tools" {
+		t.Fatalf("unexpected tool row: %#v", rows[2])
+	}
+	if rows[3].Emoji != "🧩" || rows[3].Tone != "warn" || !rows[3].IsMeaningful {
+		t.Fatalf("unexpected state patch row: %#v", rows[3])
+	}
+}
+
+func TestNormalizeWorkViewAcceptsNarrativeModes(t *testing.T) {
+	cases := map[string]string{
+		"":          "narrative",
+		"digest":    "narrative",
+		"narrative": "narrative",
+		"stream":    "stream",
+		"raw":       "raw",
+	}
+	for input, want := range cases {
+		if got := normalizeWorkView(input); got != want {
+			t.Fatalf("normalizeWorkView(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 

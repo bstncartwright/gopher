@@ -201,10 +201,20 @@ type workSessionSummary struct {
 
 type workSessionDetailResponse struct {
 	Session       workSessionSummary       `json:"session"`
+	Story         workSessionStory         `json:"story"`
 	Counts        map[string]int           `json:"counts"`
 	LatestAnomaly string                   `json:"latest_anomaly,omitempty"`
 	ContextHealth *workContextHealth       `json:"context_health,omitempty"`
 	Timeline      workTimelinePageResponse `json:"timeline"`
+}
+
+type workSessionStory struct {
+	Goal               string `json:"goal,omitempty"`
+	CurrentState       string `json:"current_state,omitempty"`
+	CurrentStateDetail string `json:"current_state_detail,omitempty"`
+	LatestConclusion   string `json:"latest_conclusion,omitempty"`
+	LastMeaningfulStep string `json:"last_meaningful_step,omitempty"`
+	LatestAnomaly      string `json:"latest_anomaly,omitempty"`
 }
 
 type workTimelinePageResponse struct {
@@ -222,19 +232,28 @@ type workEventDetailResponse struct {
 }
 
 type workTimelineEvent struct {
-	Seq        uint64   `json:"seq"`
-	Timestamp  string   `json:"timestamp"`
-	From       string   `json:"from"`
-	Type       string   `json:"type"`
-	TypeLabel  string   `json:"type_label"`
-	Category   string   `json:"category"`
-	Digest     string   `json:"digest"`
-	KeyFacts   []string `json:"key_facts"`
-	RawJSON    string   `json:"raw_json"`
-	Waiting    bool     `json:"waiting"`
-	Anomaly    bool     `json:"anomaly"`
-	GroupKey   string   `json:"group_key,omitempty"`
-	GroupLabel string   `json:"group_label,omitempty"`
+	Seq          uint64   `json:"seq"`
+	Timestamp    string   `json:"timestamp"`
+	From         string   `json:"from"`
+	Type         string   `json:"type"`
+	TypeLabel    string   `json:"type_label"`
+	Category     string   `json:"category"`
+	Digest       string   `json:"digest"`
+	Emoji        string   `json:"emoji"`
+	Title        string   `json:"title"`
+	Subtitle     string   `json:"subtitle,omitempty"`
+	Tone         string   `json:"tone"`
+	KeyFacts     []string `json:"key_facts"`
+	RawJSON      string   `json:"raw_json"`
+	Waiting      bool     `json:"waiting"`
+	Anomaly      bool     `json:"anomaly"`
+	IsMeaningful bool     `json:"is_meaningful"`
+	BundleKind   string   `json:"bundle_kind,omitempty"`
+	BundleID     string   `json:"bundle_id,omitempty"`
+	BundleTitle  string   `json:"bundle_title,omitempty"`
+	ResultStatus string   `json:"result_status,omitempty"`
+	GroupKey     string   `json:"group_key,omitempty"`
+	GroupLabel   string   `json:"group_label,omitempty"`
 }
 
 type workContextHealth struct {
@@ -273,7 +292,7 @@ func (s *Server) handleAdminEntry(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWorkPage(w http.ResponseWriter, r *http.Request) {
 	data := s.newPageViewData(r.Context(), sectionWork)
 	data.PageTitle = "Work"
-	data.PageSubtitle = "Inspect live sessions with an action-oriented queue, digest timeline, and event inspector."
+	data.PageSubtitle = "Inspect live sessions with an action-oriented queue, narrated work log, and event inspector."
 	data.ContentTemplate = "work_page.html"
 	data.Work = workPageData{
 		HasSessionStore: s.store != nil,
@@ -916,6 +935,7 @@ func (s *Server) buildWorkSessionDetail(ctx context.Context, sessionID string, l
 	}
 	resp := workSessionDetailResponse{
 		Session:       summary,
+		Story:         buildWorkSessionStory(summary, timeline, latestAnomaly),
 		Counts:        counts,
 		LatestAnomaly: latestAnomaly,
 		ContextHealth: toWorkContextHealth(extractContextHealth(contextEvents.Events)),
@@ -1051,7 +1071,6 @@ func buildTimelineEvents(events []sessionrt.Event) []workTimelineEvent {
 			toolName := toolNameFromPayloadMap(callMap)
 			merged := normalizePanelPayload(mergedToolExecutionPayload(toolName, callMap, nil, true))
 			row := newTimelineEvent(event, merged)
-			row.Waiting = true
 			rows = append(rows, row)
 			pending = append(pending, pendingTimelineTool{
 				Index:       len(rows) - 1,
@@ -1068,7 +1087,6 @@ func buildTimelineEvents(events []sessionrt.Event) []workTimelineEvent {
 				resolvedName := coalesceTrimmed(toolName, item.ToolName)
 				merged := normalizePanelPayload(mergedToolExecutionPayload(resolvedName, item.CallPayload, resultMap, false))
 				row := newTimelineEvent(item.CallEvent, merged)
-				row.Waiting = false
 				if label := toolTypeLabelFromName(resolvedName); label != "" {
 					row.TypeLabel = label
 				}
@@ -1080,7 +1098,7 @@ func buildTimelineEvents(events []sessionrt.Event) []workTimelineEvent {
 			rows = append(rows, newTimelineEvent(event, payload))
 		}
 	}
-	return rows
+	return applyTimelineBundleHints(rows)
 }
 
 func pendingToOldPending(items []pendingTimelineTool) []pendingToolCallRow {
@@ -1097,23 +1115,32 @@ func pendingToOldPending(items []pendingTimelineTool) []pendingToolCallRow {
 
 func newTimelineEvent(event sessionrt.Event, payload any) workTimelineEvent {
 	eventType := strings.TrimSpace(string(event.Type))
-	digest := summarizeTimelineEvent(eventType, payload)
+	waiting := truthyLooseValue(pickLooseValue(payload, "waiting", "pending", "in_progress"))
 	category := timelineEventCategory(eventType, payload)
-	groupKey, groupLabel := timelineNoiseDescriptor(eventType, payload)
+	anomaly := timelineEventAnomaly(eventType, payload, "")
+	presentation := describeTimelineEvent(eventType, payload, category, waiting, anomaly)
+	digest := summarizeTimelineEvent(eventType, payload, presentation)
+	groupKey, groupLabel := timelineNoiseDescriptor(eventType, payload, presentation)
 	return workTimelineEvent{
-		Seq:        event.Seq,
-		Timestamp:  formatTime(event.Timestamp),
-		From:       fallbackText(strings.TrimSpace(string(event.From)), "system"),
-		Type:       eventType,
-		TypeLabel:  eventTypeLabel(event, eventType),
-		Category:   category,
-		Digest:     digest,
-		KeyFacts:   timelineKeyFacts(eventType, payload, digest),
-		RawJSON:    prettyPayload(payload),
-		Waiting:    event.Type == sessionrt.EventToolCall,
-		Anomaly:    timelineEventAnomaly(eventType, payload, digest),
-		GroupKey:   groupKey,
-		GroupLabel: groupLabel,
+		Seq:          event.Seq,
+		Timestamp:    formatTime(event.Timestamp),
+		From:         fallbackText(strings.TrimSpace(string(event.From)), "system"),
+		Type:         eventType,
+		TypeLabel:    eventTypeLabel(event, eventType),
+		Category:     category,
+		Digest:       digest,
+		Emoji:        presentation.Emoji,
+		Title:        presentation.Title,
+		Subtitle:     presentation.Subtitle,
+		Tone:         presentation.Tone,
+		KeyFacts:     timelineKeyFacts(eventType, payload, digest, presentation),
+		RawJSON:      prettyPayload(payload),
+		Waiting:      waiting,
+		Anomaly:      anomaly,
+		IsMeaningful: presentation.IsMeaningful,
+		ResultStatus: presentation.ResultStatus,
+		GroupKey:     groupKey,
+		GroupLabel:   groupLabel,
 	}
 }
 
@@ -1149,111 +1176,25 @@ func looseMap(value any) map[string]any {
 	return clonePayloadMap(normalizePanelPayload(value))
 }
 
-func summarizeTimelineEvent(eventType string, payload any) string {
-	normalized := normalizeStatusTone(eventType)
-	switch normalized {
-	case "message":
-		role := fallbackText(pickLooseString(payload, "role", "speaker"), "message")
-		content := extractLooseText(pickLooseValue(payload, "content", "text", "message"))
-		if content == "" {
-			content = summarizeLooseValue(payload)
-		}
-		return role + ": " + clipPanelText(content, 220)
-	case "tool_call":
-		toolName := fallbackText(pickLooseString(payload, "tool_name", "name", "tool", "id"), "tool")
-		toolInput := pickLooseValue(payload, "arguments", "args", "input", "params", "payload")
-		toolResult := pickLooseValue(payload, "tool_result")
-		toolParamSummary := summarizeToolParams(toolName, toolInput)
-		if toolResult != nil {
-			status := pickLooseString(toolResult, "status", "state")
-			resultValue := pickLooseValue(toolResult, "result", "output", "value", "content", "error", "stdout")
-			parts := "Ran " + toolName
-			if toolParamSummary != "" {
-				parts += " with " + toolParamSummary
-			}
-			if status != "" {
-				parts += " (" + status + ")"
-			}
-			if resultValue != nil {
-				parts += ": " + clipPanelText(summarizeLooseValue(resultValue), 180)
-			}
-			return parts
-		}
-		if truthyLooseValue(pickLooseValue(payload, "waiting", "pending", "in_progress")) {
-			if toolParamSummary != "" {
-				return "Running " + toolName + " with " + toolParamSummary + "…"
-			}
-			return "Running " + toolName + "…"
-		}
-		if toolParamSummary != "" {
-			return "Calling " + toolName + " with " + toolParamSummary + "."
-		}
-		return "Calling " + toolName + "."
-	case "tool_result":
-		status := pickLooseString(payload, "status", "state")
-		resultValue := pickLooseValue(payload, "result", "output", "value", "content", "error", "stdout")
-		summary := "Tool result"
-		if status != "" {
-			summary += " (" + status + ")"
-		}
-		if resultValue != nil {
-			summary += ": " + clipPanelText(summarizeLooseValue(resultValue), 180)
-		}
-		return summary
-	case "error":
-		message := pickLooseString(payload, "error", "message", "detail", "reason")
-		if message == "" {
-			message = summarizeLooseValue(payload)
-		}
-		return "Error: " + clipPanelText(message, 220)
-	case "control":
-		action := pickLooseString(payload, "action", "command", "status", "state")
-		if action == "" {
-			action = summarizeLooseValue(payload)
-		}
-		return "Control event: " + clipPanelText(action, 220)
-	case "state_patch":
-		modelID := pickLooseString(payload, "model_id")
-		modelProvider := pickLooseString(payload, "model_provider")
-		reserve := pickLooseString(payload, "reserve_tokens")
-		estimated := pickLooseString(payload, "estimated_input_tokens")
-		retries := pickLooseString(payload, "overflow_retries")
-		stage := pickLooseString(payload, "overflow_stage")
-		truncations := pickLooseString(payload, "tool_result_truncation_count")
-		pieces := make([]string, 0, 6)
-		if modelID != "" || modelProvider != "" {
-			model := modelID
-			if modelProvider != "" {
-				if model == "" {
-					model = modelProvider
-				} else {
-					model += " (" + modelProvider + ")"
-				}
-			}
-			pieces = append(pieces, "model="+model)
-		}
-		if reserve != "" {
-			pieces = append(pieces, "reserve="+reserve)
-		}
-		if estimated != "" {
-			pieces = append(pieces, "estimated="+estimated)
-		}
-		if retries != "" {
-			pieces = append(pieces, "retries="+retries)
-		}
-		if stage != "" {
-			pieces = append(pieces, "stage="+stage)
-		}
-		if truncations != "" {
-			pieces = append(pieces, "tool_truncations="+truncations)
-		}
-		if len(pieces) == 0 {
-			return "State patch: " + clipPanelText(summarizeLooseValue(payload), 220)
-		}
-		return "State patch: " + strings.Join(pieces, " | ")
-	default:
-		return clipPanelText(summarizeLooseValue(payload), 220)
+type timelinePresentation struct {
+	Emoji        string
+	Title        string
+	Subtitle     string
+	Tone         string
+	ResultStatus string
+	IsMeaningful bool
+}
+
+func summarizeTimelineEvent(eventType string, payload any, presentation timelinePresentation) string {
+	title := clipPanelText(strings.TrimSpace(presentation.Title), 140)
+	subtitle := clipPanelText(strings.TrimSpace(presentation.Subtitle), 220)
+	if title == "" {
+		title = clipPanelText(summarizeLooseValue(payload), 140)
 	}
+	if subtitle == "" {
+		return title
+	}
+	return title + ": " + subtitle
 }
 
 func timelineEventCategory(eventType string, payload any) string {
@@ -1264,12 +1205,16 @@ func timelineEventCategory(eventType string, payload any) string {
 			return "user"
 		case "agent":
 			return "agent"
+		case "system":
+			return "control"
 		default:
-			return "system"
+			return "other"
 		}
+	case "agent_start", "agent_stop", "agent_thinking_delta":
+		return "agent"
 	case "tool_call", "tool_result":
 		return "tools"
-	case "control":
+	case "control", "state_patch":
 		return "control"
 	case "error":
 		return "errors"
@@ -1282,16 +1227,18 @@ func timelineEventAnomaly(eventType string, payload any, digest string) bool {
 	switch strings.ToLower(strings.TrimSpace(eventType)) {
 	case "error":
 		return true
-	case "tool_call", "tool_result":
-		statusPayload := pickLooseValue(payload, "tool_result")
-		if statusPayload == nil {
-			statusPayload = payload
-		}
-		status := strings.ToLower(strings.TrimSpace(pickLooseString(statusPayload, "status", "state")))
-		if status != "" && status != "ok" && status != "success" && status != "completed" {
+	case "state_patch":
+		if retries := strings.TrimSpace(pickLooseString(payload, "overflow_retries")); retries != "" && retries != "0" {
 			return true
 		}
-		if stderr := strings.TrimSpace(summarizeLooseValue(pickLooseValue(statusPayload, "error", "stderr"))); stderr != "" && stderr != "{}" {
+		if truncations := strings.TrimSpace(pickLooseString(payload, "tool_result_truncation_count")); truncations != "" && truncations != "0" {
+			return true
+		}
+		if stage := strings.TrimSpace(pickLooseString(payload, "overflow_stage")); stage != "" {
+			return true
+		}
+	case "tool_call", "tool_result":
+		if timelineToolResultStatus(payload) == "failure" {
 			return true
 		}
 	}
@@ -1299,7 +1246,7 @@ func timelineEventAnomaly(eventType string, payload any, digest string) bool {
 	return strings.Contains(normalized, "error") || strings.Contains(normalized, "failed") || strings.Contains(normalized, "exception") || strings.Contains(normalized, "overflow")
 }
 
-func timelineNoiseDescriptor(eventType string, payload any) (string, string) {
+func timelineNoiseDescriptor(eventType string, payload any, presentation timelinePresentation) (string, string) {
 	switch strings.ToLower(strings.TrimSpace(eventType)) {
 	case "tool_call", "tool_result":
 		toolName := pickLooseString(payload, "tool_name", "name", "tool", "id")
@@ -1321,20 +1268,34 @@ func timelineNoiseDescriptor(eventType string, payload any) (string, string) {
 			return "", ""
 		}
 		return "control:" + strings.ToLower(strings.TrimSpace(action)), "control/" + action
+	case "state_patch":
+		return "state_patch", "context updates"
+	case "agent_thinking_delta":
+		if !presentation.IsMeaningful {
+			return "agent:thinking", "thinking"
+		}
+		return "", ""
 	default:
 		return "", ""
 	}
 }
 
-func timelineKeyFacts(eventType string, payload any, digest string) []string {
+func timelineKeyFacts(eventType string, payload any, digest string, presentation timelinePresentation) []string {
 	normalized := strings.ToLower(strings.TrimSpace(eventType))
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 8)
 	switch normalized {
 	case "message":
 		role := fallbackText(pickLooseString(payload, "role", "speaker"), "message")
 		parts = append(parts, "Role: "+role)
 		if content := extractLooseText(pickLooseValue(payload, "content", "text", "message")); content != "" {
 			parts = append(parts, "Content: "+clipPanelText(content, 120))
+		}
+		if target := pickLooseString(payload, "target_actor_id"); target != "" {
+			parts = append(parts, "Target: "+target)
+		}
+	case "agent_thinking_delta":
+		if delta := extractLooseText(pickLooseValue(payload, "delta", "content", "text", "message")); delta != "" {
+			parts = append(parts, "Thinking: "+clipPanelText(delta, 140))
 		}
 	case "tool_call", "tool_result":
 		name := fallbackText(pickLooseString(payload, "tool_name", "name", "tool", "id"), "tool")
@@ -1343,12 +1304,27 @@ func timelineKeyFacts(eventType string, payload any, digest string) []string {
 		if action := pickLooseString(args, "action", "command", "name"); action != "" {
 			parts = append(parts, "Action: "+clipPanelText(action, 90))
 		}
-		statusPayload := pickLooseValue(payload, "tool_result")
-		if statusPayload == nil {
-			statusPayload = payload
+		if path := pickLooseString(args, "path", "file"); path != "" {
+			parts = append(parts, "Path: "+clipPanelText(path, 120))
 		}
-		if status := pickLooseString(statusPayload, "status", "state"); status != "" {
+		if command := pickLooseString(args, "cmd", "command"); command != "" {
+			parts = append(parts, "Command: "+clipPanelText(command, 120))
+		}
+		if query := pickLooseString(args, "query", "search_query", "q", "text"); query != "" {
+			parts = append(parts, "Query: "+clipPanelText(query, 120))
+		}
+		if url := pickLooseString(args, "url"); url != "" {
+			parts = append(parts, "URL: "+clipPanelText(url, 120))
+		}
+		if status := timelineToolResultStatusLabel(payload); status != "" {
 			parts = append(parts, "Status: "+status)
+		}
+		if outcome := timelineToolOutcomeSummary(payload); outcome != "" {
+			prefix := "Outcome: "
+			if presentation.ResultStatus == "failure" {
+				prefix = "Error: "
+			}
+			parts = append(parts, prefix+clipPanelText(outcome, 140))
 		}
 	case "error":
 		message := pickLooseString(payload, "error", "message", "detail", "reason")
@@ -1366,16 +1342,473 @@ func timelineKeyFacts(eventType string, payload any, digest string) []string {
 		if model := formatModelDisplay(pickLooseString(payload, "model_id"), pickLooseString(payload, "model_provider")); model != "" {
 			parts = append(parts, "Model: "+clipPanelText(model, 120))
 		}
+		if window := pickLooseString(payload, "model_context_window"); window != "" {
+			parts = append(parts, "Window: "+window)
+		}
+		if reserve := pickLooseString(payload, "reserve_tokens"); reserve != "" {
+			parts = append(parts, "Reserve: "+reserve)
+		}
 		if estimated := pickLooseString(payload, "estimated_input_tokens"); estimated != "" {
 			parts = append(parts, "Estimated: "+estimated)
 		}
 		if retries := pickLooseString(payload, "overflow_retries"); retries != "" {
 			parts = append(parts, "Retries: "+retries)
 		}
+		if stage := pickLooseString(payload, "overflow_stage"); stage != "" {
+			parts = append(parts, "Stage: "+stage)
+		}
+		if truncations := pickLooseString(payload, "tool_result_truncation_count"); truncations != "" {
+			parts = append(parts, "Tool truncations: "+truncations)
+		}
+	case "agent_start", "agent_stop":
+		parts = append(parts, "Lifecycle: "+presentation.Title)
 	default:
 		parts = append(parts, "Summary: "+clipPanelText(digest, 120))
 	}
 	return parts
+}
+
+func describeTimelineEvent(eventType string, payload any, category string, waiting bool, anomaly bool) timelinePresentation {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "message":
+		return describeTimelineMessage(payload)
+	case "agent_thinking_delta":
+		return describeTimelineThinking(payload)
+	case "tool_call", "tool_result":
+		return describeTimelineTool(payload, waiting)
+	case "control":
+		return describeTimelineControl(payload, anomaly)
+	case "state_patch":
+		return describeTimelineStatePatch(payload, anomaly)
+	case "error":
+		return describeTimelineError(payload)
+	case "agent_start":
+		return timelinePresentation{Emoji: "▶️", Title: "Agent started", Tone: "agent", IsMeaningful: false}
+	case "agent_stop":
+		return timelinePresentation{Emoji: "⏹️", Title: "Agent stopped", Tone: "control", IsMeaningful: false}
+	default:
+		return timelinePresentation{
+			Emoji:        "📌",
+			Title:        fallbackText(eventType, "event"),
+			Subtitle:     clipPanelText(summarizeLooseValue(payload), 220),
+			Tone:         normalizeStatusTone(category),
+			IsMeaningful: anomaly,
+		}
+	}
+}
+
+func describeTimelineMessage(payload any) timelinePresentation {
+	role := strings.ToLower(strings.TrimSpace(pickLooseString(payload, "role", "speaker")))
+	content := clipPanelText(extractLooseText(pickLooseValue(payload, "content", "text", "message")), 260)
+	if content == "" {
+		content = clipPanelText(summarizeLooseValue(payload), 220)
+	}
+	switch role {
+	case "user":
+		return timelinePresentation{
+			Emoji:        "🧑",
+			Title:        "New user ask",
+			Subtitle:     content,
+			Tone:         "user",
+			IsMeaningful: true,
+		}
+	case "agent":
+		return timelinePresentation{
+			Emoji:        "🤖",
+			Title:        "Agent replied",
+			Subtitle:     content,
+			Tone:         "agent",
+			IsMeaningful: true,
+		}
+	default:
+		return timelinePresentation{
+			Emoji:        "🖥️",
+			Title:        "System message",
+			Subtitle:     content,
+			Tone:         "control",
+			IsMeaningful: true,
+		}
+	}
+}
+
+func describeTimelineThinking(payload any) timelinePresentation {
+	delta := clipPanelText(extractLooseText(pickLooseValue(payload, "delta", "content", "text", "message")), 220)
+	if delta == "" {
+		delta = clipPanelText(summarizeLooseValue(payload), 180)
+	}
+	return timelinePresentation{
+		Emoji:        "🧠",
+		Title:        "Thinking about next step",
+		Subtitle:     delta,
+		Tone:         "agent",
+		IsMeaningful: delta != "" && delta != "{}",
+	}
+}
+
+func describeTimelineTool(payload any, waiting bool) timelinePresentation {
+	toolName := fallbackText(pickLooseString(payload, "tool_name", "name", "tool", "id"), "tool")
+	args := pickLooseValue(payload, "arguments", "args", "input", "params", "payload")
+	title := timelineToolActionTitle(toolName, args)
+	resultStatus := timelineToolResultStatus(payload)
+	subtitle := ""
+	tone := "tools"
+	emoji := "🛠️"
+	switch resultStatus {
+	case "success":
+		emoji = "✅"
+		tone = "active"
+		outcome := timelineToolOutcomeSummary(payload)
+		if outcome != "" {
+			subtitle = "Completed successfully. " + clipPanelText(outcome, 200)
+		} else {
+			subtitle = "Completed successfully."
+		}
+	case "failure":
+		emoji = "❌"
+		tone = "danger"
+		title += " failed"
+		outcome := timelineToolOutcomeSummary(payload)
+		if outcome != "" {
+			subtitle = clipPanelText(outcome, 200)
+		} else {
+			subtitle = "The tool returned an error."
+		}
+	default:
+		if waiting {
+			subtitle = "Waiting for result."
+			tone = "warn"
+		} else if params := summarizeToolParams(toolName, args); params != "" {
+			subtitle = "Input: " + params
+		}
+	}
+	return timelinePresentation{
+		Emoji:        emoji,
+		Title:        title,
+		Subtitle:     subtitle,
+		Tone:         tone,
+		ResultStatus: resultStatus,
+		IsMeaningful: true,
+	}
+}
+
+func describeTimelineControl(payload any, anomaly bool) timelinePresentation {
+	action := strings.TrimSpace(pickLooseString(payload, "action", "command", "status", "state"))
+	reason := clipPanelText(pickLooseString(payload, "reason", "message", "detail"), 180)
+	title := "Control update"
+	switch action {
+	case sessionrt.ControlActionSessionCreated:
+		title = "Session created"
+	case sessionrt.ControlActionSessionCancelled:
+		title = "Session cancelled"
+	case sessionrt.ControlActionSessionFailed:
+		title = "Session marked failed"
+	case sessionrt.ControlActionSessionCompleted:
+		title = "Session completed"
+	default:
+		if action != "" {
+			title = humanizeTimelineLabel(action)
+		}
+	}
+	tone := "control"
+	if anomaly {
+		tone = "danger"
+	}
+	return timelinePresentation{
+		Emoji:        "⚙️",
+		Title:        title,
+		Subtitle:     reason,
+		Tone:         tone,
+		IsMeaningful: reason != "" || anomaly || action == sessionrt.ControlActionSessionFailed || action == sessionrt.ControlActionSessionCompleted,
+	}
+}
+
+func describeTimelineStatePatch(payload any, anomaly bool) timelinePresentation {
+	pieces := make([]string, 0, 5)
+	if model := formatModelDisplay(pickLooseString(payload, "model_id"), pickLooseString(payload, "model_provider")); model != "" {
+		pieces = append(pieces, "Model "+clipPanelText(model, 80))
+	}
+	if estimated := pickLooseString(payload, "estimated_input_tokens"); estimated != "" {
+		pieces = append(pieces, "estimated "+estimated+" tokens")
+	}
+	if reserve := pickLooseString(payload, "reserve_tokens"); reserve != "" {
+		pieces = append(pieces, "reserve "+reserve)
+	}
+	if retries := pickLooseString(payload, "overflow_retries"); retries != "" && retries != "0" {
+		pieces = append(pieces, "overflow retries "+retries)
+	}
+	if stage := pickLooseString(payload, "overflow_stage"); stage != "" {
+		pieces = append(pieces, "stage "+stage)
+	}
+	if truncations := pickLooseString(payload, "tool_result_truncation_count"); truncations != "" && truncations != "0" {
+		pieces = append(pieces, "tool truncations "+truncations)
+	}
+	tone := "control"
+	if anomaly {
+		tone = "warn"
+	}
+	return timelinePresentation{
+		Emoji:        "🧩",
+		Title:        "Context updated",
+		Subtitle:     clipPanelText(strings.Join(pieces, " · "), 220),
+		Tone:         tone,
+		IsMeaningful: anomaly || len(pieces) > 0,
+	}
+}
+
+func describeTimelineError(payload any) timelinePresentation {
+	message := clipPanelText(pickLooseString(payload, "error", "message", "detail", "reason"), 220)
+	if message == "" {
+		message = clipPanelText(summarizeLooseValue(payload), 220)
+	}
+	return timelinePresentation{
+		Emoji:        "🚨",
+		Title:        "Error reported",
+		Subtitle:     message,
+		Tone:         "danger",
+		ResultStatus: "failure",
+		IsMeaningful: true,
+	}
+}
+
+func timelineToolResultStatus(payload any) string {
+	if truthyLooseValue(pickLooseValue(payload, "waiting", "pending", "in_progress")) {
+		return "waiting"
+	}
+	statusPayload := pickLooseValue(payload, "tool_result")
+	if statusPayload == nil {
+		statusPayload = payload
+	}
+	status := strings.ToLower(strings.TrimSpace(pickLooseString(statusPayload, "status", "state")))
+	if stderr := strings.TrimSpace(summarizeLooseValue(pickLooseValue(statusPayload, "error", "stderr"))); stderr != "" && stderr != "{}" {
+		return "failure"
+	}
+	switch {
+	case status == "":
+		if pickLooseValue(payload, "tool_result") != nil {
+			return "success"
+		}
+		return ""
+	case strings.Contains(status, "fail"), strings.Contains(status, "error"), strings.Contains(status, "timeout"):
+		return "failure"
+	case strings.Contains(status, "ok"), strings.Contains(status, "success"), strings.Contains(status, "done"), strings.Contains(status, "complete"):
+		return "success"
+	default:
+		return "failure"
+	}
+}
+
+func timelineToolResultStatusLabel(payload any) string {
+	statusPayload := pickLooseValue(payload, "tool_result")
+	if statusPayload == nil {
+		statusPayload = payload
+	}
+	status := strings.TrimSpace(pickLooseString(statusPayload, "status", "state"))
+	if status != "" {
+		return status
+	}
+	switch timelineToolResultStatus(payload) {
+	case "success":
+		return "ok"
+	case "failure":
+		return "failed"
+	case "waiting":
+		return "waiting"
+	default:
+		return ""
+	}
+}
+
+func timelineToolOutcomeSummary(payload any) string {
+	statusPayload := pickLooseValue(payload, "tool_result")
+	if statusPayload == nil {
+		statusPayload = payload
+	}
+	for _, key := range []string{"error", "stderr", "stdout", "result", "output", "value", "content"} {
+		if candidate := pickLooseValue(statusPayload, key); candidate != nil {
+			if summary := strings.TrimSpace(summarizeLooseValue(candidate)); summary != "" && summary != "{}" {
+				return clipPanelText(summary, 220)
+			}
+		}
+	}
+	return ""
+}
+
+func timelineToolActionTitle(toolName string, args any) string {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	switch name {
+	case "read":
+		if path := pickLooseString(args, "path", "file"); path != "" {
+			return "Read " + clipPanelText(path, 96)
+		}
+		return "Read file"
+	case "write":
+		if path := pickLooseString(args, "path", "file"); path != "" {
+			return "Write " + clipPanelText(path, 96)
+		}
+		return "Write file"
+	case "edit":
+		if path := pickLooseString(args, "path", "file"); path != "" {
+			return "Edit " + clipPanelText(path, 96)
+		}
+		return "Edit file"
+	case "apply_patch":
+		return "Patch files"
+	case "exec", "process":
+		if command := pickLooseString(args, "cmd", "command"); command != "" {
+			return "Run " + clipPanelText(command, 96)
+		}
+		return "Run command"
+	case "web_search", "search_mcp", "search":
+		if query := pickLooseString(args, "query", "search_query", "q", "text"); query != "" {
+			return "Search \"" + clipPanelText(query, 72) + "\""
+		}
+		return "Search the web"
+	case "web_fetch", "fetch", "fetch_mcp":
+		if rawURL := pickLooseString(args, "url"); rawURL != "" {
+			return "Fetch " + clipPanelText(rawURL, 96)
+		}
+		return "Fetch remote content"
+	case "delegate":
+		return "Delegate work"
+	case "heartbeat":
+		return "Send heartbeat"
+	case "cron":
+		return "Schedule automation"
+	case "memory":
+		return "Review memory"
+	default:
+		if summary := summarizeToolParams(toolName, args); summary != "" {
+			return humanizeTimelineLabel(toolName) + " " + clipPanelText(summary, 72)
+		}
+		return humanizeTimelineLabel(toolName)
+	}
+}
+
+func humanizeTimelineLabel(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "_", " "))
+	value = strings.TrimSpace(strings.ReplaceAll(value, ".", " "))
+	if value == "" {
+		return "Event"
+	}
+	parts := strings.Fields(value)
+	for idx, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[idx] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func applyTimelineBundleHints(rows []workTimelineEvent) []workTimelineEvent {
+	turnAnchorSeq := uint64(0)
+	for idx := range rows {
+		row := &rows[idx]
+		switch {
+		case row.Category == "user":
+			turnAnchorSeq = row.Seq
+			row.BundleKind = "turn"
+			row.BundleID = fmt.Sprintf("turn-%d", row.Seq)
+			row.BundleTitle = "User ask"
+		case row.Category == "agent" && row.Type == "message":
+			turnAnchorSeq = row.Seq
+			row.BundleKind = "turn"
+			row.BundleID = fmt.Sprintf("turn-%d", row.Seq)
+			row.BundleTitle = "Agent response"
+		case row.Category == "agent" && row.Type == "agent_thinking_delta":
+			if turnAnchorSeq == 0 {
+				turnAnchorSeq = row.Seq
+			}
+			row.BundleKind = "turn"
+			row.BundleID = fmt.Sprintf("turn-%d", turnAnchorSeq)
+			row.BundleTitle = "Agent work log"
+		case row.Category == "tools":
+			if turnAnchorSeq > 0 {
+				row.BundleKind = "tools"
+				row.BundleID = fmt.Sprintf("turn-%d-tools", turnAnchorSeq)
+				row.BundleTitle = "Tool work"
+			} else {
+				row.BundleKind = "tools"
+				row.BundleID = fmt.Sprintf("tools-%d", row.Seq)
+				row.BundleTitle = "Tool work"
+			}
+		case row.Category == "control":
+			if row.Type == "state_patch" {
+				if turnAnchorSeq > 0 {
+					row.BundleKind = "system"
+					row.BundleID = fmt.Sprintf("turn-%d-context", turnAnchorSeq)
+					row.BundleTitle = "Context and control"
+				} else {
+					row.BundleKind = "system"
+					row.BundleID = fmt.Sprintf("system-%d", row.Seq)
+					row.BundleTitle = "Context and control"
+				}
+				continue
+			}
+			row.BundleKind = "system"
+			row.BundleID = fmt.Sprintf("system-%d", row.Seq)
+			row.BundleTitle = "Control milestones"
+		case row.Category == "errors":
+			row.BundleKind = "anomaly"
+			row.BundleID = fmt.Sprintf("anomaly-%d", row.Seq)
+			row.BundleTitle = "Failures"
+		default:
+			if !row.IsMeaningful {
+				row.BundleKind = "system"
+				row.BundleID = fmt.Sprintf("system-%d", row.Seq)
+				row.BundleTitle = "Background events"
+			}
+		}
+	}
+	return rows
+}
+
+func buildWorkSessionStory(summary workSessionSummary, timeline []workTimelineEvent, latestAnomaly string) workSessionStory {
+	story := workSessionStory{
+		CurrentState:  strings.TrimSpace(summary.PriorityLabel),
+		LatestAnomaly: strings.TrimSpace(latestAnomaly),
+	}
+	switch summary.Status {
+	case "failed":
+		story.CurrentStateDetail = "The session is in a failed state."
+	case "paused":
+		story.CurrentStateDetail = "The session is paused."
+	case "completed":
+		story.CurrentStateDetail = "The session completed."
+	default:
+		if strings.TrimSpace(summary.WaitingReason) != "" {
+			story.CurrentStateDetail = strings.TrimSpace(summary.WaitingReason)
+		} else if summary.Working {
+			story.CurrentStateDetail = "The agent is actively working."
+		}
+	}
+	for idx := len(timeline) - 1; idx >= 0; idx-- {
+		event := timeline[idx]
+		switch {
+		case story.Goal == "" && event.Category == "user" && strings.TrimSpace(event.Subtitle) != "":
+			story.Goal = event.Subtitle
+		case story.LatestConclusion == "" && event.Category == "agent" && event.Type == "message":
+			story.LatestConclusion = firstNonEmpty(event.Subtitle, event.Title)
+		case story.LastMeaningfulStep == "" && event.IsMeaningful && event.Category != "user":
+			story.LastMeaningfulStep = firstNonEmpty(event.Digest, event.Title)
+		case story.LatestAnomaly == "" && event.Anomaly:
+			story.LatestAnomaly = firstNonEmpty(event.Digest, event.Title)
+		}
+		if story.Goal != "" && story.LatestConclusion != "" && story.LastMeaningfulStep != "" && story.LatestAnomaly != "" {
+			break
+		}
+	}
+	return story
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func pickLooseValue(value any, keys ...string) any {
@@ -1585,10 +2018,16 @@ func normalizeWorkFilter(value string) string {
 }
 
 func normalizeWorkView(value string) string {
-	if strings.ToLower(strings.TrimSpace(value)) == "raw" {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "raw":
 		return "raw"
+	case "stream":
+		return "stream"
+	case "digest", "narrative":
+		return "narrative"
+	default:
+		return "narrative"
 	}
-	return "digest"
 }
 
 func normalizeWorkNoise(value string) string {

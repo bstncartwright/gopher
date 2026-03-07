@@ -8,7 +8,7 @@
   var state = {
     sessionID: String(app.getAttribute("data-initial-session") || "").trim(),
     filter: String(app.getAttribute("data-initial-filter") || "all").trim(),
-    view: String(app.getAttribute("data-initial-view") || "digest").trim(),
+    view: String(app.getAttribute("data-initial-view") || "narrative").trim(),
     noise: String(app.getAttribute("data-initial-noise") || "grouped").trim(),
     selectedEventSeq: String(app.getAttribute("data-initial-event") || "").trim(),
     statusFilter: "all",
@@ -44,6 +44,24 @@
     return text.slice(0, max - 1) + "…";
   }
 
+  function firstText() {
+    for (var i = 0; i < arguments.length; i++) {
+      var value = String(arguments[i] || "").trim();
+      if (value) return value;
+    }
+    return "";
+  }
+
+  function humanize(value) {
+    return String(value || "")
+      .replace(/[_\.]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, function (match) {
+        return match.toUpperCase();
+      });
+  }
+
   function relativeTime(value) {
     if (window.GopherPanelTime && typeof window.GopherPanelTime.formatRelative === "function") {
       return window.GopherPanelTime.formatRelative(value);
@@ -73,8 +91,7 @@
   }
 
   function selectedTimelineEvent() {
-    if (!state.inspectorEvent) return null;
-    return state.inspectorEvent;
+    return state.inspectorEvent || null;
   }
 
   function syncURL(replace) {
@@ -85,7 +102,7 @@
     }
     var params = new URLSearchParams();
     if (state.filter !== "all") params.set("filter", state.filter);
-    if (state.view !== "digest") params.set("view", state.view);
+    if (state.view !== "narrative") params.set("view", state.view);
     if (state.noise !== "grouped") params.set("noise", state.noise);
     if (state.selectedEventSeq) params.set("event", state.selectedEventSeq);
     var next = path + (params.toString() ? "?" + params.toString() : "");
@@ -128,7 +145,9 @@
   function filteredSessions() {
     return state.sessions.filter(function (session) {
       var query = normalize(state.sessionQuery);
-      var haystack = normalize(session.title + " " + (session.conversation_id || "") + " " + session.status + " " + session.latest_digest);
+      var haystack = normalize(
+        session.title + " " + (session.conversation_id || "") + " " + session.status + " " + session.latest_digest
+      );
       var queryMatch = !query || haystack.indexOf(query) >= 0;
       var statusMatch = state.statusFilter === "all" || normalize(session.status) === state.statusFilter;
       return queryMatch && statusMatch;
@@ -236,8 +255,55 @@
     var keys = ["user", "agent", "tools", "control", "errors", "other"];
     return keys.map(function (key) {
       var value = counts && counts[key] ? counts[key] : 0;
-      return '<div class="session-summary-card"><span>' + escapeHTML(key) + '</span><strong>' + escapeHTML(String(value)) + '</strong></div>';
+      return '<div class="session-summary-card"><span>' + escapeHTML(humanize(key)) + '</span><strong>' + escapeHTML(String(value)) + '</strong></div>';
     }).join("");
+  }
+
+  function toneClass(tone) {
+    var value = normalize(tone);
+    if (!value) return "";
+    if (value === "success") value = "active";
+    if (value === "failure") value = "danger";
+    if (value === "neutral") value = "muted";
+    if (value === "tools") value = "active";
+    return " tone-" + value;
+  }
+
+  function cardToneClass(event) {
+    var value = normalize(event.tone);
+    if (event.anomaly || event.result_status === "failure") value = "danger";
+    else if (event.result_status === "success") value = "active";
+    else if (event.result_status === "waiting") value = "warn";
+    else if (!value) value = "muted";
+    return " toned-" + value;
+  }
+
+  function badgeForEvent(event) {
+    if (event.result_status === "success") {
+      return '<span class="pill tone-active">Success</span>';
+    }
+    if (event.result_status === "failure") {
+      return '<span class="pill tone-danger">Failed</span>';
+    }
+    if (event.result_status === "waiting") {
+      return '<span class="pill tone-warn">Running</span>';
+    }
+    if (event.anomaly) {
+      return '<span class="pill tone-danger">Review</span>';
+    }
+    if (event.is_meaningful) {
+      return '<span class="pill tone-neutral">Key step</span>';
+    }
+    return '<span class="pill tone-muted">Background</span>';
+  }
+
+  function renderStoryCard(label, value, detail, tone) {
+    return '' +
+      '<article class="story-card' + toneClass(tone) + '">' +
+        '<span>' + escapeHTML(label) + '</span>' +
+        '<strong>' + escapeHTML(value || "Unavailable") + '</strong>' +
+        (detail ? '<p class="story-copy">' + escapeHTML(detail) + '</p>' : "") +
+      '</article>';
   }
 
   function renderDetail() {
@@ -253,23 +319,37 @@
     if (!state.detail) {
       heading.textContent = "Select a session";
       subtitle.textContent = "Use the queue to open a session and inspect the timeline.";
-      summary.innerHTML = '<p class="empty-state">Session summary will appear here.</p>';
+      summary.innerHTML = '<p class="empty-state">Session story will appear here.</p>';
       return;
     }
     var session = state.detail.session;
+    var story = state.detail.story || {};
     heading.textContent = session.title;
     subtitle.textContent = session.conversation_id ? session.conversation_id : "Session " + session.session_id;
     summary.innerHTML = '' +
+      '<div class="story-grid">' +
+        renderStoryCard("Current State", story.current_state || session.priority_label, story.current_state_detail, session.status === "failed" ? "danger" : (session.waiting_on_human ? "warn" : "active")) +
+        renderStoryCard("Latest Goal", story.goal || "No recent user ask in this window.", "", "user") +
+        renderStoryCard("Latest Conclusion", story.latest_conclusion || "No recent agent conclusion in this window.", "", "agent") +
+        renderStoryCard("Last Meaningful Step", story.last_meaningful_step || "No meaningful work step in this window.", "", "active") +
+        renderStoryCard("Latest Anomaly", story.latest_anomaly || "None in current window.", "", story.latest_anomaly ? "danger" : "muted") +
+      '</div>' +
       '<div class="session-summary-grid">' +
         '<div class="session-summary-card"><span>Status</span><strong>' + escapeHTML(session.priority_label) + '</strong></div>' +
         '<div class="session-summary-card"><span>Updated</span><strong><time datetime="' + escapeHTML(session.updated_at) + '" data-relative-time data-absolute-time="' + escapeHTML(session.updated_at) + '">' + escapeHTML(session.updated_at) + '</time></strong></div>' +
         '<div class="session-summary-card"><span>Latest Anomaly</span><strong>' + escapeHTML(state.detail.latest_anomaly || "None in current window.") + '</strong></div>' +
         '<div class="session-summary-card"><span>Last Seq</span><strong>' + escapeHTML(String(session.last_seq || 0)) + '</strong></div>' +
       '</div>' +
-      '<div class="session-summary-grid" style="margin-top:12px;">' + countsMarkup(state.detail.counts || {}) + '</div>';
+      '<div class="session-summary-grid counts-grid">' + countsMarkup(state.detail.counts || {}) + '</div>';
     applyRelativeTimes(summary);
     document.getElementById("work-load-older").hidden = !state.hasOlder;
-    document.getElementById("work-timeline-meta").textContent = "Loaded " + (((state.detail.timeline && state.detail.timeline.events) || []).length) + " events";
+    document.getElementById("work-timeline-meta").textContent = timelineMetaText();
+  }
+
+  function timelineMetaText() {
+    var events = ((state.detail && state.detail.timeline && state.detail.timeline.events) || []).length;
+    var label = state.view === "raw" ? "Raw JSON" : (state.view === "stream" ? "Event Stream" : "Narrative");
+    return "Loaded " + events + " events · " + label;
   }
 
   function visibleEvents() {
@@ -280,13 +360,14 @@
     });
   }
 
-  function groupedTimeline(events) {
-    if (state.noise !== "grouped") {
+  function timelineItems(events) {
+    if (state.view !== "narrative" || state.noise !== "grouped") {
       return events.map(function (event) { return { kind: "event", event: event }; });
     }
     var items = [];
     var current = null;
-    function flushCurrent() {
+
+    function flush() {
       if (!current) return;
       if (current.events.length === 1) {
         items.push({ kind: "event", event: current.events[0] });
@@ -295,26 +376,27 @@
       }
       current = null;
     }
+
     for (var i = 0; i < events.length; i++) {
       var event = events[i];
-      var groupable = !!event.group_key && !event.anomaly && (event.category === "tools" || event.category === "control" || event.type === "state_patch");
-      if (!groupable) {
-        flushCurrent();
+      if (!event.bundle_id) {
+        flush();
         items.push({ kind: "event", event: event });
         continue;
       }
-      if (current && current.key === event.group_key) {
+      if (current && current.id === event.bundle_id) {
         current.events.push(event);
         continue;
       }
-      flushCurrent();
+      flush();
       current = {
-        key: event.group_key,
-        label: event.group_label || "Grouped activity",
+        id: event.bundle_id,
+        kind: event.bundle_kind || "bundle",
+        title: event.bundle_title || "Grouped activity",
         events: [event]
       };
     }
-    flushCurrent();
+    flush();
     return items;
   }
 
@@ -324,7 +406,7 @@
       container.innerHTML = '<p class="empty-state">No session selected.</p>';
       return;
     }
-    var items = groupedTimeline(visibleEvents());
+    var items = timelineItems(visibleEvents());
     if (!items.length) {
       container.innerHTML = '<p class="empty-state">No events match the current filter.</p>';
       return;
@@ -336,28 +418,29 @@
       return renderEventCard(item.event, false);
     }).join("");
     applyRelativeTimes(container);
-  }
-
-  function eventTone(event) {
-    if (event.anomaly) return " toned-danger";
-    if (event.category === "user" || event.category === "agent") return " toned-" + event.category;
-    return "";
+    document.getElementById("work-timeline-meta").textContent = timelineMetaText();
   }
 
   function renderBundle(bundle) {
+    var latest = bundle.events[bundle.events.length - 1];
+    var preview = firstText(latest.subtitle, latest.digest, latest.title);
+    var open = bundle.events.some(function (event) {
+      return String(event.seq) === String(state.selectedEventSeq);
+    }) ? " open" : "";
     var rows = bundle.events.map(function (event) {
       return '<div class="bundle-row">' + renderEventCard(event, true) + '</div>';
     }).join("");
-    var latest = bundle.events[bundle.events.length - 1];
-    var open = bundle.events.some(function (event) { return String(event.seq) === String(state.selectedEventSeq); }) ? " open" : "";
     return '' +
-      '<details class="event-bundle"' + open + '>' +
+      '<details class="event-bundle bundle-' + escapeHTML(normalize(bundle.kind || "bundle")) + '"' + open + '>' +
         '<summary>' +
           '<div class="bundle-head">' +
-            '<strong class="bundle-label">' + escapeHTML(bundle.label) + '</strong>' +
-            '<span class="bundle-meta">' + escapeHTML(String(bundle.events.length)) + ' events · <time datetime="' + escapeHTML(latest.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(latest.timestamp) + '">' + escapeHTML(latest.timestamp) + '</time></span>' +
+            '<div>' +
+              '<p class="bundle-label">' + escapeHTML(bundle.title) + '</p>' +
+              '<strong class="bundle-summary">' + escapeHTML(firstText(latest.title, latest.type_label, latest.type)) + '</strong>' +
+            '</div>' +
+            '<span class="bundle-meta">' + escapeHTML(String(bundle.events.length)) + ' steps · <time datetime="' + escapeHTML(latest.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(latest.timestamp) + '">' + escapeHTML(latest.timestamp) + '</time></span>' +
           '</div>' +
-          '<div class="bundle-item-copy">' + escapeHTML(latest.digest) + '</div>' +
+          '<div class="bundle-item-copy">' + escapeHTML(preview || "Expand to inspect this bundle.") + '</div>' +
         '</summary>' +
         '<div class="bundle-items">' + rows + '</div>' +
       '</details>';
@@ -365,18 +448,31 @@
 
   function renderEventCard(event, nested) {
     var selected = String(event.seq) === String(state.selectedEventSeq) ? " is-selected" : "";
+    var body = state.view === "raw"
+      ? clip(event.raw_json, 260)
+      : firstText(event.subtitle, event.digest, event.title);
+    var kicker = state.view === "stream"
+      ? humanize(event.type_label || event.type)
+      : humanize(event.category || event.type);
     return '' +
-      '<button type="button" class="event-card' + selected + eventTone(event) + '" data-event-seq="' + escapeHTML(String(event.seq)) + '">' +
+      '<button type="button" class="event-card' + selected + cardToneClass(event) + (nested ? " is-nested" : "") + '" data-event-seq="' + escapeHTML(String(event.seq)) + '">' +
         '<div class="event-card-head">' +
-          '<strong>' + escapeHTML(event.type_label || event.type) + '</strong>' +
-          '<span class="pill tone-' + escapeHTML(event.anomaly ? "danger" : "neutral") + '">#' + escapeHTML(String(event.seq)) + '</span>' +
+          '<div class="event-title-block">' +
+            '<span class="event-emoji" aria-hidden="true">' + escapeHTML(event.emoji || "📌") + '</span>' +
+            '<div class="event-title-copy">' +
+              '<p class="event-kicker">' + escapeHTML(kicker) + '</p>' +
+              '<strong class="event-title">' + escapeHTML(firstText(event.title, event.type_label, event.type)) + '</strong>' +
+            '</div>' +
+          '</div>' +
+          badgeForEvent(event) +
         '</div>' +
+        '<div class="event-card-copy">' + escapeHTML(body || "No narrative summary available.") + '</div>' +
         '<div class="event-meta">' +
           '<span>' + escapeHTML(event.from || "system") + '</span>' +
-          '<span>' + escapeHTML(event.category) + '</span>' +
+          '<span>#' + escapeHTML(String(event.seq)) + '</span>' +
+          '<span>' + escapeHTML(event.type) + '</span>' +
           '<time datetime="' + escapeHTML(event.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(event.timestamp) + '">' + escapeHTML(event.timestamp) + '</time>' +
         '</div>' +
-        '<div class="event-card-copy">' + escapeHTML(state.view === "raw" ? clip(event.raw_json, 220) : event.digest) + '</div>' +
       '</button>';
   }
 
@@ -388,22 +484,37 @@
     }
     var event = selectedTimelineEvent();
     if (!event) {
-      var health = state.detail.context_health;
+      var story = state.detail.story || {};
       container.innerHTML = '' +
         '<section class="inspector-section">' +
-          '<p class="eyebrow">Session Context</p>' +
+          '<p class="eyebrow">Session Story</p>' +
           '<h3>' + escapeHTML(state.detail.session.title) + '</h3>' +
-          '<p class="inspector-copy">' + escapeHTML(state.detail.latest_anomaly || "No anomaly in the current event window.") + '</p>' +
+          '<p class="inspector-copy">' + escapeHTML(firstText(story.current_state_detail, story.last_meaningful_step, state.detail.latest_anomaly, "Open a timeline step to inspect its details.")) + '</p>' +
+          '<div class="inspector-chip-row">' +
+            '<span class="pill tone-neutral">' + escapeHTML(story.current_state || state.detail.session.priority_label) + '</span>' +
+            (story.latest_anomaly ? '<span class="pill tone-danger">Anomaly</span>' : '<span class="pill tone-active">Readable</span>') +
+          '</div>' +
         '</section>' +
-        renderHealthSection(health);
+        renderStoryInspector(story) +
+        renderHealthSection(state.detail.context_health);
       return;
     }
     container.innerHTML = '' +
       '<section class="inspector-section">' +
         '<p class="eyebrow">Event Inspector</p>' +
-        '<h3>' + escapeHTML(event.type_label || event.type) + ' #' + escapeHTML(String(event.seq)) + '</h3>' +
+        '<div class="inspector-title-row">' +
+          '<span class="inspector-emoji" aria-hidden="true">' + escapeHTML(event.emoji || "📌") + '</span>' +
+          '<div>' +
+            '<h3>' + escapeHTML(firstText(event.title, event.type_label, event.type)) + '</h3>' +
+            '<p class="inspector-copy">' + escapeHTML(firstText(event.subtitle, event.digest, "No readable summary available.")) + '</p>' +
+          '</div>' +
+        '</div>' +
         (state.inspectorOutOfWindow ? '<p class="empty-state">This event was restored from the URL but is outside the currently loaded event window.</p>' : '') +
-        '<p class="inspector-copy">' + escapeHTML(event.digest) + '</p>' +
+        '<div class="inspector-chip-row">' +
+          badgeForEvent(event) +
+          '<span class="pill tone-neutral">#' + escapeHTML(String(event.seq)) + '</span>' +
+          (event.bundle_title ? '<span class="pill tone-muted">' + escapeHTML(event.bundle_title) + '</span>' : '') +
+        '</div>' +
       '</section>' +
       '<div class="inspector-tabs">' +
         '<button type="button" class="inspector-tab' + (state.inspectorTab === "summary" ? " is-active" : "") + '" data-inspector-tab="summary">Summary</button>' +
@@ -412,12 +523,33 @@
       (state.inspectorTab === "raw" ? renderRawSection(event) : renderSummarySection(event));
   }
 
+  function renderStoryInspector(story) {
+    return '' +
+      '<section class="inspector-section">' +
+        '<div class="kv-grid">' +
+          '<div><dt>Latest Goal</dt><dd>' + escapeHTML(story.goal || "-") + '</dd></div>' +
+          '<div><dt>Latest Conclusion</dt><dd>' + escapeHTML(story.latest_conclusion || "-") + '</dd></div>' +
+          '<div><dt>Last Meaningful Step</dt><dd>' + escapeHTML(story.last_meaningful_step || "-") + '</dd></div>' +
+          '<div><dt>Latest Anomaly</dt><dd>' + escapeHTML(story.latest_anomaly || "-") + '</dd></div>' +
+        '</div>' +
+      '</section>';
+  }
+
   function renderSummarySection(event) {
     var facts = Array.isArray(event.key_facts) ? event.key_facts : [];
     var items = facts.length ? facts.map(function (fact) {
       return '<li>' + escapeHTML(fact) + '</li>';
     }).join("") : '<li>No structured key facts available.</li>';
-    return '<section class="inspector-section"><ul class="activity-list">' + items + "</ul></section>";
+    return '' +
+      '<section class="inspector-section">' +
+        '<div class="kv-grid">' +
+          '<div><dt>From</dt><dd>' + escapeHTML(event.from || "system") + '</dd></div>' +
+          '<div><dt>Category</dt><dd>' + escapeHTML(humanize(event.category || event.type)) + '</dd></div>' +
+          '<div><dt>Type</dt><dd>' + escapeHTML(event.type) + '</dd></div>' +
+          '<div><dt>When</dt><dd><time datetime="' + escapeHTML(event.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(event.timestamp) + '">' + escapeHTML(relativeTime(event.timestamp)) + '</time></dd></div>' +
+        '</div>' +
+      '</section>' +
+      '<section class="inspector-section"><ul class="activity-list">' + items + "</ul></section>";
   }
 
   function renderRawSection(event) {
@@ -495,6 +627,16 @@
     selectEventFromState();
   }
 
+  function syncButtons(selector, attribute, activeValue) {
+    var nodes = document.querySelectorAll(selector);
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var match = (node.getAttribute(attribute) || "") === activeValue;
+      node.classList.toggle("is-active", match);
+      node.setAttribute("aria-pressed", match ? "true" : "false");
+    }
+  }
+
   function attachEvents() {
     app.addEventListener("click", function (event) {
       var sessionButton = event.target.closest("[data-session-id]");
@@ -516,15 +658,16 @@
       var filterButton = event.target.closest("[data-work-filter]");
       if (filterButton) {
         state.filter = filterButton.getAttribute("data-work-filter") || "all";
-        syncFilterButtons("[data-work-filter]", state.filter);
+        syncButtons("[data-work-filter]", "data-work-filter", state.filter);
         syncURL(false);
         renderTimeline();
         return;
       }
       var viewButton = event.target.closest("[data-work-view]");
       if (viewButton) {
-        state.view = viewButton.getAttribute("data-work-view") || "digest";
-        syncFilterButtons("[data-work-view]", state.view);
+        state.view = viewButton.getAttribute("data-work-view") || "narrative";
+        state.inspectorTab = state.view === "raw" ? "raw" : "summary";
+        syncButtons("[data-work-view]", "data-work-view", state.view);
         syncURL(false);
         renderTimeline();
         renderInspector();
@@ -533,7 +676,7 @@
       var noiseButton = event.target.closest("[data-work-noise]");
       if (noiseButton) {
         state.noise = noiseButton.getAttribute("data-work-noise") || "grouped";
-        syncFilterButtons("[data-work-noise]", state.noise);
+        syncButtons("[data-work-noise]", "data-work-noise", state.noise);
         syncURL(false);
         renderTimeline();
         return;
@@ -541,7 +684,7 @@
       var statusButton = event.target.closest("[data-status-filter]");
       if (statusButton) {
         state.statusFilter = statusButton.getAttribute("data-status-filter") || "all";
-        syncFilterButtons("[data-status-filter]", state.statusFilter);
+        syncButtons("[data-status-filter]", "data-status-filter", state.statusFilter);
         renderSessions();
         return;
       }
@@ -570,32 +713,25 @@
     }
 
     window.addEventListener("popstate", function () {
-      state.selectedEventSeq = new URLSearchParams(window.location.search || "").get("event") || "";
+      var params = new URLSearchParams(window.location.search || "");
+      state.filter = params.get("filter") || "all";
+      state.view = params.get("view") || "narrative";
+      state.noise = params.get("noise") || "grouped";
+      state.selectedEventSeq = params.get("event") || "";
+      syncButtons("[data-work-filter]", "data-work-filter", state.filter);
+      syncButtons("[data-work-view]", "data-work-view", state.view);
+      syncButtons("[data-work-noise]", "data-work-noise", state.noise);
       selectEventFromState();
+      renderTimeline();
+      renderInspector();
     });
   }
 
-  function syncFilterButtons(selector, activeValue) {
-    var nodes = document.querySelectorAll(selector);
-    for (var i = 0; i < nodes.length; i++) {
-      var node = nodes[i];
-      var match = (node.getAttribute(selector.slice(1, -1)) || "") === activeValue;
-      if (!match) {
-        if (selector === "[data-work-filter]") match = (node.getAttribute("data-work-filter") || "") === activeValue;
-        if (selector === "[data-work-view]") match = (node.getAttribute("data-work-view") || "") === activeValue;
-        if (selector === "[data-work-noise]") match = (node.getAttribute("data-work-noise") || "") === activeValue;
-        if (selector === "[data-status-filter]") match = (node.getAttribute("data-status-filter") || "") === activeValue;
-      }
-      node.classList.toggle("is-active", match);
-      node.setAttribute("aria-pressed", match ? "true" : "false");
-    }
-  }
-
   function init() {
-    syncFilterButtons("[data-work-filter]", state.filter);
-    syncFilterButtons("[data-work-view]", state.view);
-    syncFilterButtons("[data-work-noise]", state.noise);
-    syncFilterButtons("[data-status-filter]", state.statusFilter);
+    syncButtons("[data-work-filter]", "data-work-filter", state.filter);
+    syncButtons("[data-work-view]", "data-work-view", state.view);
+    syncButtons("[data-work-noise]", "data-work-noise", state.noise);
+    syncButtons("[data-status-filter]", "data-status-filter", state.statusFilter);
     attachEvents();
     refreshSessions().then(function () {
       if (state.sessionID) {

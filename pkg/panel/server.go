@@ -1252,7 +1252,7 @@ func newEventRow(event sessionrt.Event) eventRow {
 
 func shouldHideEventInPanel(eventType sessionrt.EventType) bool {
 	switch eventType {
-	case sessionrt.EventAgentDelta, sessionrt.EventAgentThinkingDelta:
+	case sessionrt.EventAgentDelta:
 		return true
 	default:
 		return false

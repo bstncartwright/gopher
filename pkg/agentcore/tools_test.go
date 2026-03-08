@@ -40,6 +40,9 @@ func TestBuildRegistryWebFetchAliasesAreDeduped(t *testing.T) {
 
 func TestBuildRegistryGroupCollaborationEnablesHeartbeat(t *testing.T) {
 	registry := buildRegistry([]string{"group:collaboration"}, defaultPolicies())
+	if _, ok := registry.Get("delegate_targets"); !ok {
+		t.Fatalf("expected delegate_targets tool to be enabled")
+	}
 	if _, ok := registry.Get("heartbeat"); !ok {
 		t.Fatalf("expected heartbeat tool to be enabled")
 	}

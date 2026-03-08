@@ -63,6 +63,7 @@ func startTelegramDMBridgeWithRuntime(
 	agentRuntime *gatewayAgentRuntime,
 	executor sessionrt.AgentExecutor,
 	remoteAgentExists func(sessionrt.ActorID) bool,
+	remoteTargets func() []agentcore.RemoteDelegationTarget,
 	logger *log.Logger,
 ) (*telegramDMBridge, error) {
 	var err error
@@ -122,7 +123,7 @@ func startTelegramDMBridgeWithRuntime(
 		agent.SessionMemoryFlusher = agentcore.NewStoreBackedSessionMemoryFlusher(store, agent.LongTermMemory, agent.ID)
 	}
 
-	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router, remoteAgentExists)
+	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router, remoteAgentExists, remoteTargets)
 	if cfg.A2A.Enabled {
 		delegationTool.SetA2ABackend(ctx, newGatewayA2ABackend(cfg.A2A, nil))
 	}

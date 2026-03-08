@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bstncartwright/gopher/pkg/agentcore"
 	"github.com/bstncartwright/gopher/pkg/config"
 	fabricts "github.com/bstncartwright/gopher/pkg/fabric/nats"
 	"github.com/bstncartwright/gopher/pkg/gateway"
@@ -477,10 +478,38 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	var telegramBridge *telegramDMBridge
 	if cfg.Telegram.Enabled {
 		slog.Info("gateway_run: telegram enabled, starting dm bridge")
-		telegramBridge, err = startTelegramDMBridgeWithRuntime(ctx, cfg, workspace, agentRuntime, process.executor, func(actorID sessionrt.ActorID) bool {
-			_, ok := process.registry.FindNodeByAgent(string(actorID))
-			return ok
-		}, logger)
+		telegramBridge, err = startTelegramDMBridgeWithRuntime(
+			ctx,
+			cfg,
+			workspace,
+			agentRuntime,
+			process.executor,
+			func(actorID sessionrt.ActorID) bool {
+				_, ok := process.registry.FindNodeByAgent(string(actorID))
+				return ok
+			},
+			func() []agentcore.RemoteDelegationTarget {
+				nodes := process.registry.Snapshot()
+				targets := make([]agentcore.RemoteDelegationTarget, 0)
+				for _, node := range nodes {
+					if node.IsGateway {
+						continue
+					}
+					for _, agentID := range node.Agents {
+						trimmed := strings.TrimSpace(agentID)
+						if trimmed == "" {
+							continue
+						}
+						targets = append(targets, agentcore.RemoteDelegationTarget{
+							ID:          trimmed,
+							Description: "Connected via node " + strings.TrimSpace(node.NodeID),
+						})
+					}
+				}
+				return targets
+			},
+			logger,
+		)
 		if err != nil {
 			slog.Error("gateway_run: failed to start telegram dm bridge", "error", err)
 			return err

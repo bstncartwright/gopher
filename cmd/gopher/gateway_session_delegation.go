@@ -45,6 +45,7 @@ type gatewaySessionDelegationToolService struct {
 	store   gatewaySessionDelegationStore
 	router  *agentcore.ActorExecutorRouter
 	remote  func(sessionrt.ActorID) bool
+	targets func() []agentcore.RemoteDelegationTarget
 	a2a     *gatewayA2ABackend
 
 	mu             sync.RWMutex
@@ -75,6 +76,7 @@ func newGatewaySessionDelegationToolService(
 	logger *log.Logger,
 	router *agentcore.ActorExecutorRouter,
 	remoteAgentExists func(sessionrt.ActorID) bool,
+	remoteTargets func() []agentcore.RemoteDelegationTarget,
 ) *gatewaySessionDelegationToolService {
 	if agents == nil {
 		agents = map[sessionrt.ActorID]*agentcore.Agent{}
@@ -84,6 +86,7 @@ func newGatewaySessionDelegationToolService(
 		store:          store,
 		router:         router,
 		remote:         remoteAgentExists,
+		targets:        remoteTargets,
 		agents:         agents,
 		ephemeral:      map[string]ephemeralDelegationState{},
 		reservedWorker: map[sessionrt.ActorID]struct{}{},
@@ -1221,17 +1224,62 @@ func (s *gatewaySessionDelegationToolService) refreshKnownAgentsLocked() {
 		known = append(known, strings.TrimSpace(string(actorID)))
 	}
 	sort.Strings(known)
+	remoteTargets := make([]agentcore.RemoteDelegationTarget, 0)
+	if s.targets != nil {
+		remoteTargets = append(remoteTargets, s.targets()...)
+	}
+	if s.a2a != nil {
+		remoteTargets = append(remoteTargets, s.a2a.PromptTargets()...)
+	}
+	remoteTargets = normalizeRemoteDelegationTargets(remoteTargets, known)
 	for _, agent := range s.agents {
 		if agent == nil {
 			continue
 		}
 		agent.KnownAgents = append([]string(nil), known...)
-		if s.a2a != nil {
-			agent.RemoteDelegationTargets = s.a2a.PromptTargets()
-		} else {
-			agent.RemoteDelegationTargets = nil
+		agent.RemoteDelegationTargets = append([]agentcore.RemoteDelegationTarget(nil), remoteTargets...)
+	}
+}
+
+func normalizeRemoteDelegationTargets(targets []agentcore.RemoteDelegationTarget, known []string) []agentcore.RemoteDelegationTarget {
+	if len(targets) == 0 {
+		return nil
+	}
+	localSet := make(map[string]struct{}, len(known))
+	for _, agentID := range known {
+		trimmed := strings.TrimSpace(agentID)
+		if trimmed == "" {
+			continue
+		}
+		localSet[trimmed] = struct{}{}
+	}
+	normalized := make(map[string]agentcore.RemoteDelegationTarget, len(targets))
+	for _, target := range targets {
+		id := strings.TrimSpace(target.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := localSet[id]; exists {
+			continue
+		}
+		normalized[id] = agentcore.RemoteDelegationTarget{
+			ID:          id,
+			Description: strings.TrimSpace(target.Description),
 		}
 	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(normalized))
+	for id := range normalized {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	out := make([]agentcore.RemoteDelegationTarget, 0, len(keys))
+	for _, id := range keys {
+		out = append(out, normalized[id])
+	}
+	return out
 }
 
 func (s *gatewaySessionDelegationToolService) touchDelegationActivity(delegationID string, at time.Time) {

@@ -46,6 +46,17 @@ func TestBuildToolUsageHintsDelegateMentionsOmittedTarget(t *testing.T) {
 	}
 }
 
+func TestBuildToolUsageHintsDelegateTargetsMentionsInspectingChoices(t *testing.T) {
+	registry := NewToolRegistry([]Tool{&delegateTargetsTool{}})
+	hints := buildToolUsageHints(registry)
+	if !strings.Contains(hints, "`delegate_targets` lists the local and remote delegation targets") {
+		t.Fatalf("expected delegate_targets hint, got: %s", hints)
+	}
+	if !strings.Contains(hints, "valid `target_agent` choices") {
+		t.Fatalf("expected target_agent guidance, got: %s", hints)
+	}
+}
+
 func TestBuildToolUsageHintsCronMentionsModeSelectionExamples(t *testing.T) {
 	registry := NewToolRegistry([]Tool{&cronTool{}})
 	hints := buildToolUsageHints(registry)
@@ -87,6 +98,18 @@ func TestBuildCollaborationSectionMultiAgentMentionsAsyncDelegationCompletion(t 
 	}
 	if !strings.Contains(section, "do not block this turn with `sleep`/poll loops") {
 		t.Fatalf("expected non-blocking completion guidance, got: %s", section)
+	}
+}
+
+func TestBuildCollaborationSectionMentionsDelegateTargetsWhenAvailable(t *testing.T) {
+	registry := NewToolRegistry([]Tool{&delegateTool{}, &delegateTargetsTool{}})
+	section := buildCollaborationSection(systemPromptInput{
+		AgentID:     "milo",
+		KnownAgents: []string{"milo", "worker"},
+		Tools:       registry,
+	})
+	if !strings.Contains(section, "Use `delegate_targets` when you need the current list") {
+		t.Fatalf("expected delegate_targets collaboration guidance, got: %s", section)
 	}
 }
 

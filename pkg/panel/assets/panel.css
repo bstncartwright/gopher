@@ -560,6 +560,7 @@ summary {
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  min-height: calc(100dvh - 260px);
 }
 
 .workspace-header {
@@ -585,8 +586,72 @@ summary {
 .workspace-summary {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 14px;
+  padding: 12px 14px;
   background: rgba(255, 255, 255, 0.02);
+}
+
+.session-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.session-brief-main {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.1fr) minmax(220px, 0.95fr);
+  gap: 10px;
+}
+
+.session-brief-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  min-width: 0;
+}
+
+.session-brief-card.is-primary {
+  background: rgba(110, 196, 183, 0.08);
+}
+
+.session-brief-card strong,
+.session-brief-card span {
+  display: block;
+}
+
+.session-brief-card span,
+.session-stat span {
+  color: var(--text-subtle);
+}
+
+.session-brief-card strong {
+  line-height: 1.3;
+}
+
+.session-brief-copy {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.session-stat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.session-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.session-stat strong {
+  font-size: 0.92rem;
 }
 
 .story-grid,
@@ -639,7 +704,8 @@ summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
   gap: 16px;
-  min-height: 0;
+  min-height: min(76dvh, calc(100dvh - 320px));
+  flex: 1 1 auto;
 }
 
 .timeline-panel,
@@ -908,6 +974,7 @@ summary {
 
   .work-shell,
   .workspace-grid,
+  .session-brief-main,
   .attention-grid,
   .automation-grid,
   .fleet-grid,

@@ -251,14 +251,6 @@
     });
   }
 
-  function countsMarkup(counts) {
-    var keys = ["user", "agent", "tools", "control", "errors", "other"];
-    return keys.map(function (key) {
-      var value = counts && counts[key] ? counts[key] : 0;
-      return '<div class="session-summary-card"><span>' + escapeHTML(humanize(key)) + '</span><strong>' + escapeHTML(String(value)) + '</strong></div>';
-    }).join("");
-  }
-
   function toneClass(tone) {
     var value = normalize(tone);
     if (!value) return "";
@@ -297,13 +289,21 @@
     return '<span class="pill tone-muted">Background</span>';
   }
 
-  function renderStoryCard(label, value, detail, tone) {
+  function renderBriefCard(label, value, detail, tone, primary) {
     return '' +
-      '<article class="story-card' + toneClass(tone) + '">' +
+      '<article class="session-brief-card' + toneClass(tone) + (primary ? " is-primary" : "") + '">' +
         '<span>' + escapeHTML(label) + '</span>' +
         '<strong>' + escapeHTML(value || "Unavailable") + '</strong>' +
-        (detail ? '<p class="story-copy">' + escapeHTML(detail) + '</p>' : "") +
+        (detail ? '<p class="session-brief-copy">' + escapeHTML(detail) + '</p>' : "") +
       '</article>';
+  }
+
+  function renderStatPill(label, value, tone) {
+    return '' +
+      '<div class="session-stat' + toneClass(tone) + '">' +
+        '<span>' + escapeHTML(label) + '</span>' +
+        '<strong>' + escapeHTML(String(value || "0")) + '</strong>' +
+      '</div>';
   }
 
   function renderDetail() {
@@ -324,23 +324,27 @@
     }
     var session = state.detail.session;
     var story = state.detail.story || {};
+    var counts = state.detail.counts || {};
     heading.textContent = session.title;
     subtitle.textContent = session.conversation_id ? session.conversation_id : "Session " + session.session_id;
     summary.innerHTML = '' +
-      '<div class="story-grid">' +
-        renderStoryCard("Current State", story.current_state || session.priority_label, story.current_state_detail, session.status === "failed" ? "danger" : (session.waiting_on_human ? "warn" : "active")) +
-        renderStoryCard("Latest Goal", story.goal || "No recent user ask in this window.", "", "user") +
-        renderStoryCard("Latest Conclusion", story.latest_conclusion || "No recent agent conclusion in this window.", "", "agent") +
-        renderStoryCard("Last Meaningful Step", story.last_meaningful_step || "No meaningful work step in this window.", "", "active") +
-        renderStoryCard("Latest Anomaly", story.latest_anomaly || "None in current window.", "", story.latest_anomaly ? "danger" : "muted") +
+      '<div class="session-brief">' +
+        '<div class="session-brief-main">' +
+          renderBriefCard("Current State", story.current_state || session.priority_label, story.current_state_detail, session.status === "failed" ? "danger" : (session.waiting_on_human ? "warn" : "active"), true) +
+          renderBriefCard("Latest Goal", story.goal || "No recent user ask in this window.", story.latest_conclusion || "No recent agent conclusion in this window.", "user", false) +
+          renderBriefCard("Readout", story.last_meaningful_step || "No meaningful work step in this window.", story.latest_anomaly || "No anomaly in the current window.", story.latest_anomaly ? "danger" : "agent", false) +
+        '</div>' +
+        '<div class="session-stat-strip">' +
+          renderStatPill("Updated", relativeTime(session.updated_at), "muted") +
+          renderStatPill("Last Seq", session.last_seq || 0, "muted") +
+          renderStatPill("User", counts.user || 0, "user") +
+          renderStatPill("Agent", counts.agent || 0, "agent") +
+          renderStatPill("Tools", counts.tools || 0, "active") +
+          renderStatPill("Control", counts.control || 0, "warn") +
+          renderStatPill("Errors", counts.errors || 0, counts.errors ? "danger" : "muted") +
+        '</div>' +
       '</div>' +
-      '<div class="session-summary-grid">' +
-        '<div class="session-summary-card"><span>Status</span><strong>' + escapeHTML(session.priority_label) + '</strong></div>' +
-        '<div class="session-summary-card"><span>Updated</span><strong><time datetime="' + escapeHTML(session.updated_at) + '" data-relative-time data-absolute-time="' + escapeHTML(session.updated_at) + '">' + escapeHTML(session.updated_at) + '</time></strong></div>' +
-        '<div class="session-summary-card"><span>Latest Anomaly</span><strong>' + escapeHTML(state.detail.latest_anomaly || "None in current window.") + '</strong></div>' +
-        '<div class="session-summary-card"><span>Last Seq</span><strong>' + escapeHTML(String(session.last_seq || 0)) + '</strong></div>' +
-      '</div>' +
-      '<div class="session-summary-grid counts-grid">' + countsMarkup(state.detail.counts || {}) + '</div>';
+      '';
     applyRelativeTimes(summary);
     document.getElementById("work-load-older").hidden = !state.hasOlder;
     document.getElementById("work-timeline-meta").textContent = timelineMetaText();

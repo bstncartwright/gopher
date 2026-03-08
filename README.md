@@ -2,7 +2,7 @@
 
 gopher is a lightweight, durable, distributed agent runtime for personal infrastructure.
 
-It is inspired by [open-claw](https://github.com/open-claw/open-claw) and [mini-claw](https://github.com/open-claw/mini-claw), but built around local workspaces, long-lived sessions, self-hosted deployment, and a Go runtime that can start simple and grow into a small distributed system.
+It is inspired by [open-claw](https://openclaw.ai) but built around local workspaces, long-lived sessions, self-hosted deployment, and a Go runtime that can start simple and grow into a small distributed system.
 
 ## what exists today
 

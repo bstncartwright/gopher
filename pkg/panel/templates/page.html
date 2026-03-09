@@ -7,10 +7,15 @@
   <title>Gopher Admin</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Teko:wght@500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{.PanelRoot}}/assets/panel.css">
 </head>
 <body class="section-{{.CurrentSection}}" data-panel-root="{{.PanelRoot}}">
+  <div class="noise-layer" aria-hidden="true"></div>
+  <div class="scanline-layer" aria-hidden="true"></div>
+  <div class="bg-orbit bg-orbit-a" aria-hidden="true"></div>
+  <div class="bg-orbit bg-orbit-b" aria-hidden="true"></div>
+
   <a class="skip-link" href="#main-content">Skip to main content</a>
 
   <header class="topbar">

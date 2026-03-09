@@ -143,3 +143,21 @@ func TestApplyReleaseRollbackOnRestartFailure(t *testing.T) {
 		t.Fatalf("rollback failed, binary = %q", string(blob))
 	}
 }
+
+func TestVerifyChecksumsMatchesExactAssetName(t *testing.T) {
+	wrongBlob := []byte("linux-tarball")
+	wrongHash := sha256.Sum256(wrongBlob)
+	rightBlob := []byte("linux-binary")
+	rightHash := sha256.Sum256(rightBlob)
+
+	checksums := strings.Join([]string{
+		fmt.Sprintf("%s  gopher-linux-amd64.tar.gz", hex.EncodeToString(wrongHash[:])),
+		fmt.Sprintf("%s  gopher-darwin-amd64", strings.Repeat("a", 64)),
+		fmt.Sprintf("%s  gopher-linux-amd64", hex.EncodeToString(rightHash[:])),
+		"",
+	}, "\n")
+
+	if err := verifyChecksums([]byte(checksums), "gopher-linux-amd64", rightBlob); err != nil {
+		t.Fatalf("verifyChecksums() error: %v", err)
+	}
+}

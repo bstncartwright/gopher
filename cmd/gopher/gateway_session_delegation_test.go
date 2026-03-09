@@ -440,7 +440,7 @@ func TestGatewaySessionDelegationCreatesA2ADelegationAndCompletes(t *testing.T) 
 	if stringFromMap(record, "remote_id") != "research" {
 		t.Fatalf("remote_id = %q", stringFromMap(record, "remote_id"))
 	}
-	if sourceAgent.RemoteDelegationTargets == nil || len(sourceAgent.RemoteDelegationTargets) == 0 {
+	if len(sourceAgent.RemoteDelegationTargets) == 0 {
 		t.Fatalf("expected remote delegation targets on source agent")
 	}
 }

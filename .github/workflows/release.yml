@@ -80,7 +80,7 @@ jobs:
       - name: setup go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 1.26.1
 
       - name: refresh model catalog
         run: go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go

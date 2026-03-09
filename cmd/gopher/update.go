@@ -79,7 +79,7 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 	flags.SetOutput(io.Discard)
 	owner := flags.String("owner", defaultUpdateRepoOwner, "github release owner")
 	repo := flags.String("repo", defaultUpdateRepoName, "github release repository")
-	token := flags.String("github-token", "", "github token (defaults to GOPHER_GITHUB_TOKEN or GOPHER_GITHUB_UPDATE_TOKEN)")
+	token := flags.String("github-token", "", "optional github token (defaults to GOPHER_GITHUB_TOKEN or GOPHER_GITHUB_UPDATE_TOKEN)")
 	binaryPath := flags.String("binary-path", "", "target binary path (defaults to current executable)")
 	assetPattern := flags.String("asset-pattern", "", "extra release asset name filter")
 	serviceName := flags.String("service-name", "", "optional systemd service to restart after update")
@@ -97,15 +97,13 @@ func runUpdateSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 		return fmt.Errorf("current binary version %q is not a release version; build with -ldflags \"-X main.binaryVersion=vX.Y.Z\"", currentVersion)
 	}
 	ghToken := resolvedGitHubToken(strings.TrimSpace(*token))
-	if ghToken == "" {
-		return fmt.Errorf("github token is required via --github-token, GOPHER_GITHUB_TOKEN, or GOPHER_GITHUB_UPDATE_TOKEN")
-	}
 	slog.Info(
 		"update: checking latest release",
 		"owner", strings.TrimSpace(*owner),
 		"repo", strings.TrimSpace(*repo),
 		"current_version", currentVersion,
 		"check_only", *checkOnly,
+		"using_github_token", ghToken != "",
 	)
 
 	release, err := latestReleaseForUpdate(ctx, strings.TrimSpace(*owner), strings.TrimSpace(*repo), ghToken)
@@ -226,7 +224,7 @@ func printUpdateUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --asset-pattern <text>  additional asset name filter")
 	fmt.Fprintln(out, "  --service-name <name>   systemd service to restart after update (default: auto-detect gateway service on linux)")
 	fmt.Fprintln(out, "  --no-service-restart    disable post-update systemd restart")
-	fmt.Fprintln(out, "  --github-token <token>  github token (or GOPHER_GITHUB_TOKEN / GOPHER_GITHUB_UPDATE_TOKEN)")
+	fmt.Fprintln(out, "  --github-token <token>  optional github token (or GOPHER_GITHUB_TOKEN / GOPHER_GITHUB_UPDATE_TOKEN)")
 }
 
 func inferDefaultServiceNameForUpdate() string {

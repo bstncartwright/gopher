@@ -47,3 +47,42 @@ func TestLatestReleaseAndSelectAsset(t *testing.T) {
 		t.Fatalf("SelectChecksumsAsset() error: %v", err)
 	}
 }
+
+func TestLatestReleaseWithoutTokenOmitsAuthorizationHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("authorization"); got != "" {
+			t.Fatalf("authorization header = %q, want empty", got)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","assets":[]}`))
+	}))
+	defer server.Close()
+
+	client := GitHubReleasesClient{
+		Owner:   "acme",
+		Repo:    "gopher",
+		BaseURL: server.URL,
+	}
+	if _, err := client.LatestRelease(context.Background()); err != nil {
+		t.Fatalf("LatestRelease() error: %v", err)
+	}
+}
+
+func TestSelectAssetMatchesDarwinAsset(t *testing.T) {
+	release := Release{
+		TagName: "v1.2.3",
+		Assets: []ReleaseAsset{
+			{Name: "gopher-linux-amd64", URL: "https://example.test/linux"},
+			{Name: "gopher-darwin-amd64", URL: "https://example.test/darwin-amd64"},
+			{Name: "gopher-darwin-arm64", URL: "https://example.test/darwin-arm64"},
+		},
+	}
+
+	asset, err := SelectAsset(release, "darwin", "arm64", "gopher")
+	if err != nil {
+		t.Fatalf("SelectAsset() error: %v", err)
+	}
+	if asset.Name != "gopher-darwin-arm64" {
+		t.Fatalf("asset = %q, want gopher-darwin-arm64", asset.Name)
+	}
+}

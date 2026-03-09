@@ -10,6 +10,22 @@ build:
   just generate-models
   go build -o gopher ./cmd/gopher
 
+build-release goos goarch:
+  just generate-models
+  mkdir -p dist
+  CGO_ENABLED=0 GOOS={{goos}} GOARCH={{goarch}} go build -trimpath -o dist/gopher-{{goos}}-{{goarch}} ./cmd/gopher
+
+build-linux:
+  just build-release linux amd64
+
+build-macos:
+  just build-release darwin amd64
+  just build-release darwin arm64
+
+build-all:
+  just build-linux
+  just build-macos
+
 # Apply Go formatting to all packages.
 fmt:
   go fmt ./...

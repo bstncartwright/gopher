@@ -747,7 +747,7 @@ func ensureEnvFile(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	initial := "GOPHER_GITHUB_TOKEN=\n"
+	initial := "# optional release auth token for private repositories\n"
 	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
 		return fmt.Errorf("write env file: %w", err)
 	}

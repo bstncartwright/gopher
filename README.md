@@ -13,7 +13,7 @@ It is inspired by [openclaw](https://openclaw.ai) but built around local workspa
 - persistent session state, replay, and jsonl event logs under a workspace-local `.gopher/`
 - local memory indexing, retrieval, and diagnostics
 - optional worker nodes over nats with capability-based routing and remote node admin
-- linux install, service, onboarding, auth, update, and reset tooling
+- linux service tooling plus cross-platform install, onboarding, auth, update, and reset tooling
 
 current focus:
 
@@ -117,7 +117,7 @@ notes:
 
 ## build
 
-`just build` is the normal build path:
+`just build` is the normal build path for the current host OS:
 
 ```bash
 just build
@@ -137,6 +137,14 @@ useful development commands:
 just fmt
 just lint
 go test ./...
+```
+
+cross-build release binaries into `dist/`:
+
+```bash
+just build-linux
+just build-macos
+just build-all
 ```
 
 ## quick start
@@ -172,7 +180,7 @@ after the gateway starts:
 - `agents/main/config.toml` is the place to change model/provider/runtime settings
 - additional local agents live under `agents/<id>/`
 
-if you prefer service-managed installs, use `gopher service install` or `./scripts/install.sh` instead of running in the foreground.
+if you prefer a release-based install, use `./scripts/install.sh`. linux can also use `gopher service install` for systemd-managed runs.
 
 ## cli overview
 
@@ -453,7 +461,7 @@ current distributed behavior:
 - provider auth env vars can be forwarded from gateway to selected nodes for remote execution
 - if a required capability is unavailable, the scheduler fails explicitly instead of silently degrading
 
-## services and linux installs
+## services and installs
 
 for local linux service management:
 
@@ -478,41 +486,47 @@ when installed as a service:
 - `gopher-gateway.service` runs `gopher gateway run --config <path>`
 - `gopher-node.service` runs `gopher node run --config <path>`
 
-the bootstrap installer is still available for linux release installs:
+the bootstrap installer supports linux and macOS release installs:
 
 ```bash
-GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --role gateway --with-nats
-GOPHER_GITHUB_TOKEN=<token> ./scripts/install.sh --role node
+./scripts/install.sh --role gateway --with-nats
+./scripts/install.sh --role node
 ```
 
 the installer:
 
-- downloads the correct linux release asset for the current arch
+- downloads the correct release asset for the current os/arch
 - verifies checksums
 - installs the binary
 - initializes config/env files when missing
-- installs and starts the relevant systemd unit
+- installs and starts the relevant systemd unit on linux by default
+
+macOS notes:
+
+- service installation is skipped by default because launchd integration is not implemented yet
+- `--with-nats` is currently linux-only
+- after install, run `gopher gateway run --config ~/.gopher/gopher.toml` or `gopher node run --config ~/.gopher/node.toml`
 
 ## updates
 
 binary update command:
 
 ```bash
-gopher update --check --github-token "$GOPHER_GITHUB_TOKEN"
-gopher update --github-token "$GOPHER_GITHUB_TOKEN"
+gopher update --check
+gopher update
 ```
 
 notes:
 
 - `gopher update` expects a release-versioned binary, not a `dev` build
 - it can restart the inferred service unless `--no-service-restart` is used
-- the update token can come from `--github-token`, `GOPHER_GITHUB_TOKEN`, or `GOPHER_GITHUB_UPDATE_TOKEN`
+- `--github-token` and the `GOPHER_GITHUB_TOKEN` / `GOPHER_GITHUB_UPDATE_TOKEN` env vars are optional, and only needed for private or rate-limited release access
 
 service-aware update commands:
 
 ```bash
-gopher service update check --config ~/.gopher/gopher.toml --github-token "$GOPHER_GITHUB_TOKEN"
-gopher service update apply --config ~/.gopher/gopher.toml --github-token "$GOPHER_GITHUB_TOKEN"
+gopher service update check --config ~/.gopher/gopher.toml
+gopher service update apply --config ~/.gopher/gopher.toml
 ```
 
 those use the gateway's `[gateway.update]` config block to resolve the release source and asset pattern.

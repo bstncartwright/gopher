@@ -32,9 +32,6 @@ func ApplyRelease(ctx context.Context, opts ApplyOptions) error {
 	if binaryPath == "" {
 		return fmt.Errorf("binary path is required")
 	}
-	if strings.TrimSpace(opts.Token) == "" {
-		return fmt.Errorf("github token is required")
-	}
 	if strings.TrimSpace(opts.AssetURL) == "" {
 		return fmt.Errorf("asset url is required")
 	}

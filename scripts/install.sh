@@ -12,8 +12,9 @@ ENV_PATH="${ENV_PATH:-}"
 ENV_PATH_SET="false"
 ROLE="${ROLE:-gateway}"
 WITH_NATS="false"
-INSTALL_SERVICE="true"
+INSTALL_SERVICE="${INSTALL_SERVICE:-}"
 INIT_CONFIG="true"
+GOOS=""
 
 usage() {
   cat <<'EOF'
@@ -31,20 +32,37 @@ options:
   --config-path <path>     config path (default: ~/.gopher/gopher.toml or ~/.gopher/node.toml)
   --env-path <path>        env file path (default: ~/.gopher/gopher.env)
   --role <gateway|node>    install role (default: gateway)
-  --with-nats              install+enable local nats service (gateway role only)
-  --no-service             skip systemd service installation
+  --with-nats              install+enable local nats service (gateway role only; linux only)
+  --no-service             skip service installation (default on macOS)
   --no-config-init         skip config file initialization
   -h, --help               show help
 
-required env:
-  GOPHER_GITHUB_TOKEN      github token with access to private repo releases
-  GOPHER_GITHUB_UPDATE_TOKEN
-                           alternate token env var (also accepted)
-
 examples:
-  GOPHER_GITHUB_TOKEN=... ./scripts/install.sh --role gateway --with-nats
-  GOPHER_GITHUB_TOKEN=... ./scripts/install.sh --role node
+  ./scripts/install.sh --role gateway --with-nats
+  ./scripts/install.sh --role node
+  GOPHER_GITHUB_TOKEN=... ./scripts/install.sh --version v1.2.3
 EOF
+}
+
+resolve_target_user() {
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    printf '%s\n' "${SUDO_USER}"
+    return 0
+  fi
+  id -un
+}
+
+resolve_home_for_user() {
+  python3 - <<'PY' "$1"
+import pwd
+import sys
+
+username = sys.argv[1]
+try:
+    print(pwd.getpwnam(username).pw_dir)
+except KeyError:
+    sys.exit(1)
+PY
 }
 
 while [[ $# -gt 0 ]]; do
@@ -122,19 +140,58 @@ if [[ "$ROLE" == "node" ]]; then
   fi
 fi
 
+case "$(uname -s)" in
+  Linux)
+    GOOS="linux"
+    if [[ -z "$INSTALL_SERVICE" ]]; then
+      INSTALL_SERVICE="true"
+    fi
+    ;;
+  Darwin)
+    GOOS="darwin"
+    if [[ -z "$INSTALL_SERVICE" ]]; then
+      INSTALL_SERVICE="false"
+    fi
+    ;;
+  *)
+    echo "unsupported operating system: $(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$INSTALL_SERVICE" == "true" && "$GOOS" != "linux" ]]; then
+  echo "service installation is currently supported on linux only; re-run with --no-service on macOS" >&2
+  exit 1
+fi
+if [[ "$WITH_NATS" == "true" && "$GOOS" != "linux" ]]; then
+  echo "--with-nats is currently supported on linux only" >&2
+  exit 1
+fi
+
 resolve_target_home() {
-  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-    getent passwd "${SUDO_USER}" | cut -d: -f6
-    return 0
+  local target_user
+  target_user="$(resolve_target_user)"
+  if [[ -n "$target_user" ]]; then
+    local home
+    home="$(resolve_home_for_user "$target_user" 2>/dev/null || true)"
+    if [[ -n "$home" ]]; then
+      printf '%s\n' "$home"
+      return 0
+    fi
   fi
   if [[ -n "${HOME:-}" ]]; then
     printf '%s\n' "${HOME}"
+    return 0
+  fi
+  if [[ "$GOOS" == "darwin" ]]; then
+    printf '%s\n' "/var/root"
     return 0
   fi
   printf '%s\n' "/root"
 }
 
 STATE_DIR="$(resolve_target_home)/.gopher"
+TARGET_USER="$(resolve_target_user)"
 if [[ "$CONFIG_PATH_SET" == "false" ]]; then
   if [[ "$ROLE" == "node" ]]; then
     CONFIG_PATH="${STATE_DIR}/node.toml"
@@ -146,32 +203,20 @@ if [[ "$ENV_PATH_SET" == "false" ]]; then
   ENV_PATH="${STATE_DIR}/gopher.env"
 fi
 
-for cmd in curl sha256sum python3 mktemp; do
+for cmd in curl python3 mktemp; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "missing required command: $cmd" >&2
     exit 1
   fi
 done
-
-# Backward-compatible token resolution:
-# - GOPHER_GITHUB_TOKEN (original installer var)
-# - GOPHER_GITHUB_UPDATE_TOKEN (runtime updater var)
-if [[ -z "${GOPHER_GITHUB_TOKEN:-}" && -n "${GOPHER_GITHUB_UPDATE_TOKEN:-}" ]]; then
-  GOPHER_GITHUB_TOKEN="${GOPHER_GITHUB_UPDATE_TOKEN}"
-fi
-if [[ -z "${GOPHER_GITHUB_TOKEN:-}" ]]; then
-  echo "GOPHER_GITHUB_TOKEN is required for private release download" >&2
-  echo "you can also set GOPHER_GITHUB_UPDATE_TOKEN" >&2
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  echo "missing required command: sha256sum or shasum" >&2
   exit 1
 fi
 
-case "$(uname -s)" in
-  Linux) ;;
-  *)
-    echo "this installer currently supports linux only" >&2
-    exit 1
-    ;;
-esac
+if [[ -z "${GOPHER_GITHUB_TOKEN:-}" && -n "${GOPHER_GITHUB_UPDATE_TOKEN:-}" ]]; then
+  GOPHER_GITHUB_TOKEN="${GOPHER_GITHUB_UPDATE_TOKEN}"
+fi
 
 ARCH_RAW="$(uname -m)"
 case "$ARCH_RAW" in
@@ -183,12 +228,17 @@ case "$ARCH_RAW" in
     ;;
 esac
 
-ASSET_NAME="gopher-linux-${GOARCH}"
+ASSET_NAME="gopher-${GOOS}-${GOARCH}"
 API_BASE="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases"
 if [[ "$VERSION_TAG" == "latest" ]]; then
   RELEASE_URL="${API_BASE}/latest"
 else
   RELEASE_URL="${API_BASE}/tags/${VERSION_TAG}"
+fi
+
+curl_auth_args=()
+if [[ -n "${GOPHER_GITHUB_TOKEN:-}" ]]; then
+  curl_auth_args=(-H "Authorization: Bearer ${GOPHER_GITHUB_TOKEN}")
 fi
 
 TMP_DIR="$(mktemp -d)"
@@ -199,7 +249,7 @@ trap cleanup EXIT
 
 RELEASE_JSON="$TMP_DIR/release.json"
 curl -fsSL \
-  -H "Authorization: Bearer ${GOPHER_GITHUB_TOKEN}" \
+  "${curl_auth_args[@]}" \
   -H "Accept: application/vnd.github+json" \
   "$RELEASE_URL" \
   -o "$RELEASE_JSON"
@@ -243,13 +293,13 @@ ASSET_PATH="$TMP_DIR/$ASSET_NAME"
 CHECKSUMS_PATH="$TMP_DIR/checksums.txt"
 
 curl -fsSL \
-  -H "Authorization: Bearer ${GOPHER_GITHUB_TOKEN}" \
+  "${curl_auth_args[@]}" \
   -H "Accept: application/octet-stream" \
   "$ASSET_URL" \
   -o "$ASSET_PATH"
 
 curl -fsSL \
-  -H "Authorization: Bearer ${GOPHER_GITHUB_TOKEN}" \
+  "${curl_auth_args[@]}" \
   -H "Accept: application/octet-stream" \
   "$CHECKSUMS_URL" \
   -o "$CHECKSUMS_PATH"
@@ -266,7 +316,14 @@ if [[ -z "$EXPECTED_SHA" ]]; then
   echo "checksum entry not found for $ASSET_NAME" >&2
   exit 1
 fi
-ACTUAL_SHA="$(sha256sum "$ASSET_PATH" | awk '{print $1}')"
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+    return 0
+  fi
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+ACTUAL_SHA="$(sha256_file "$ASSET_PATH")"
 if [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; then
   echo "checksum mismatch for $ASSET_NAME" >&2
   exit 1
@@ -281,6 +338,19 @@ run_as_root() {
     echo "root privileges required (install sudo or run as root)" >&2
     exit 1
   fi
+}
+
+run_as_target_user() {
+  if [[ "${EUID}" -eq 0 && "$TARGET_USER" != "root" ]]; then
+    sudo -u "$TARGET_USER" "$@"
+    return 0
+  fi
+  "$@"
+}
+
+create_env_file() {
+  local env_path="$1"
+  run_as_target_user bash -c 'umask 077; printf "%s\n" "# optional: GOPHER_GITHUB_TOKEN=..." > "$1"' _ "$env_path"
 }
 
 install_nats_service() {
@@ -311,12 +381,12 @@ if [[ "$ROLE" == "gateway" && "$WITH_NATS" == "true" ]]; then
 fi
 
 if [[ "$INIT_CONFIG" == "true" ]]; then
-  if ! run_as_root test -f "$CONFIG_PATH"; then
-    run_as_root mkdir -p "$(dirname "$CONFIG_PATH")"
+  if ! run_as_target_user test -f "$CONFIG_PATH"; then
+    run_as_target_user mkdir -p "$(dirname "$CONFIG_PATH")"
     if [[ "$ROLE" == "node" ]]; then
-      run_as_root "$INSTALL_DIR/$BINARY_NAME" node config init --path "$CONFIG_PATH"
+      run_as_target_user "$INSTALL_DIR/$BINARY_NAME" node config init --path "$CONFIG_PATH"
     else
-      run_as_root "$INSTALL_DIR/$BINARY_NAME" gateway config init --path "$CONFIG_PATH"
+      run_as_target_user "$INSTALL_DIR/$BINARY_NAME" gateway config init --path "$CONFIG_PATH"
     fi
     echo "initialized config at $CONFIG_PATH"
   else
@@ -324,11 +394,10 @@ if [[ "$INIT_CONFIG" == "true" ]]; then
   fi
 fi
 
-if ! run_as_root test -f "$ENV_PATH"; then
-  run_as_root mkdir -p "$(dirname "$ENV_PATH")"
-  run_as_root sh -c "printf '%s\n' 'GOPHER_GITHUB_TOKEN=' > '$ENV_PATH'"
-  run_as_root chmod 600 "$ENV_PATH"
-  echo "created env file at $ENV_PATH (set GOPHER_GITHUB_TOKEN before updates)"
+if ! run_as_target_user test -f "$ENV_PATH"; then
+  run_as_target_user mkdir -p "$(dirname "$ENV_PATH")"
+  create_env_file "$ENV_PATH"
+  echo "created env file at $ENV_PATH"
 fi
 
 if [[ "$INSTALL_SERVICE" == "true" ]]; then
@@ -343,9 +412,5 @@ if [[ "$INSTALL_SERVICE" == "true" ]]; then
     echo "service installed. check status with: $BINARY_NAME status"
   fi
 else
-  if [[ "$ROLE" == "node" ]]; then
-    echo "skipped service install for node role"
-  else
-    echo "skipped service install (--no-service)"
-  fi
+  echo "skipped service install"
 fi

@@ -100,6 +100,48 @@ func TestRunUpdateSubcommandApplyWhenNewerReleaseExists(t *testing.T) {
 	}
 }
 
+func TestRunUpdateSubcommandApplyWithoutToken(t *testing.T) {
+	restore := stubUpdateDependencies(t)
+	defer restore()
+
+	binaryVersion = "v1.2.3"
+	latestReleaseForUpdate = func(ctx context.Context, owner, repo, token string) (update.Release, error) {
+		_ = ctx
+		_ = owner
+		_ = repo
+		if token != "" {
+			t.Fatalf("token = %q, want empty", token)
+		}
+		return update.Release{
+			TagName: "v1.2.4",
+			Assets: []update.ReleaseAsset{
+				{Name: "gopher-" + runtime.GOOS + "-" + runtime.GOARCH, URL: "https://example.test/asset"},
+			},
+		}, nil
+	}
+	executablePathForUpdate = func() (string, error) {
+		return "/tmp/gopher", nil
+	}
+
+	applyCalled := false
+	applyReleaseForUpdate = func(ctx context.Context, opts update.ApplyOptions) error {
+		_ = ctx
+		applyCalled = true
+		if opts.Token != "" {
+			t.Fatalf("token = %q, want empty", opts.Token)
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	if err := runUpdateSubcommand(nil, &out, io.Discard); err != nil {
+		t.Fatalf("runUpdateSubcommand() error: %v", err)
+	}
+	if !applyCalled {
+		t.Fatalf("expected update to be applied")
+	}
+}
+
 func TestRunUpdateSubcommandAutoDetectsGatewayServiceName(t *testing.T) {
 	restore := stubUpdateDependencies(t)
 	defer restore()

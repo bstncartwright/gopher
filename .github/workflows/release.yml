@@ -60,15 +60,19 @@ jobs:
           echo "tag=${candidate}" >> "$GITHUB_OUTPUT"
 
   build:
-    name: build-linux-${{ matrix.goarch }}
+    name: build-${{ matrix.goos }}-${{ matrix.goarch }}
     needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        goarch:
-          - amd64
-          # - arm64 # temporarily disabled; keep for later re-enable
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -82,24 +86,25 @@ jobs:
         run: go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
 
       - name: run tests
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: go test ./...
 
       - name: build binary
         env:
           CGO_ENABLED: "0"
-          GOOS: linux
+          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           VERSION_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           mkdir -p dist
-          output="dist/gopher-linux-${{ matrix.goarch }}"
+          output="dist/gopher-${GOOS}-${GOARCH}"
           go build -trimpath -ldflags="-s -w -X main.binaryVersion=${VERSION_TAG}" -o "${output}" ./cmd/gopher
           sha256sum "${output}" > "${output}.sha256"
 
       - name: upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-linux-${{ matrix.goarch }}
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
 
@@ -118,9 +123,8 @@ jobs:
       - name: prepare release files
         run: |
           mkdir -p release
-          cp dist/release-linux-amd64/gopher-linux-amd64 release/
-          # cp dist/release-linux-arm64/gopher-linux-arm64 release/ # temporarily disabled
-          cat dist/release-linux-amd64/gopher-linux-amd64.sha256 > release/checksums.txt
+          find dist -type f -name 'gopher-*' ! -name '*.sha256' -exec cp {} release/ \;
+          find dist -type f -name 'gopher-*.sha256' -print | sort | xargs cat > release/checksums.txt
 
       - name: create github release
         uses: softprops/action-gh-release@v2
@@ -128,7 +132,5 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          # Add release/gopher-linux-arm64 back when arm64 build is re-enabled.
           files: |
-            release/gopher-linux-amd64
-            release/checksums.txt
+            release/*

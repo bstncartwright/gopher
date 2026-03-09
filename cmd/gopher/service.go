@@ -311,7 +311,7 @@ func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stde
 	configPath := flags.String("config", "gopher.toml", "gateway config path")
 	binaryPath := flags.String("binary-path", "/usr/local/bin/gopher", "binary path")
 	serviceName := flags.String("service-name", "gopher-gateway.service", "systemd service name")
-	token := flags.String("github-token", "", "github token (defaults to GOPHER_GITHUB_TOKEN)")
+	token := flags.String("github-token", "", "optional github token (defaults to GOPHER_GITHUB_TOKEN or GOPHER_GITHUB_UPDATE_TOKEN)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -331,13 +331,7 @@ func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stde
 	if err != nil {
 		return err
 	}
-	ghToken := strings.TrimSpace(*token)
-	if ghToken == "" {
-		ghToken = strings.TrimSpace(os.Getenv("GOPHER_GITHUB_TOKEN"))
-	}
-	if ghToken == "" {
-		return fmt.Errorf("github token is required via --github-token or GOPHER_GITHUB_TOKEN")
-	}
+	ghToken := resolvedGitHubToken(strings.TrimSpace(*token))
 	client := update.GitHubReleasesClient{
 		Owner: cfg.Update.RepoOwner,
 		Repo:  cfg.Update.RepoName,

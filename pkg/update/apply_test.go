@@ -72,6 +72,45 @@ func TestApplyReleaseSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyReleaseSuccessWithoutToken(t *testing.T) {
+	assetBlob := []byte("new-binary-content")
+	hash := sha256.Sum256(assetBlob)
+	checksums := fmt.Sprintf("%s  gopher-linux-amd64.tar.gz\n", hex.EncodeToString(hash[:]))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("authorization"); got != "" {
+			t.Fatalf("authorization header = %q, want empty", got)
+		}
+		switch r.URL.Path {
+		case "/asset":
+			_, _ = w.Write(assetBlob)
+		case "/checksums":
+			_, _ = w.Write([]byte(checksums))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "gopher")
+	if err := os.WriteFile(binaryPath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write initial binary: %v", err)
+	}
+	runner := &fakeRunner{}
+	err := ApplyRelease(context.Background(), ApplyOptions{
+		BinaryPath:   binaryPath,
+		ServiceName:  "gopher-gateway.service",
+		AssetURL:     server.URL + "/asset",
+		AssetName:    "gopher-linux-amd64.tar.gz",
+		ChecksumsURL: server.URL + "/checksums",
+		Runner:       runner,
+	})
+	if err != nil {
+		t.Fatalf("ApplyRelease() error: %v", err)
+	}
+}
+
 func TestApplyReleaseRollbackOnRestartFailure(t *testing.T) {
 	assetBlob := []byte("new-binary-content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

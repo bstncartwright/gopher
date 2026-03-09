@@ -45,9 +45,6 @@ func (c GitHubReleasesClient) LatestRelease(ctx context.Context) (Release, error
 	if owner == "" || repo == "" {
 		return Release{}, fmt.Errorf("github owner and repo are required")
 	}
-	if token == "" {
-		return Release{}, fmt.Errorf("github token is required")
-	}
 
 	baseURL := strings.TrimSpace(c.BaseURL)
 	if baseURL == "" {
@@ -65,7 +62,7 @@ func (c GitHubReleasesClient) LatestRelease(ctx context.Context) (Release, error
 		return Release{}, fmt.Errorf("create github latest release request: %w", err)
 	}
 	req.Header.Set("accept", "application/vnd.github+json")
-	req.Header.Set("authorization", "Bearer "+token)
+	setGitHubAuthorization(req, token)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -127,9 +124,6 @@ func DownloadWithToken(ctx context.Context, httpClient *http.Client, url, token 
 	if strings.TrimSpace(url) == "" {
 		return nil, fmt.Errorf("download url is required")
 	}
-	if strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("github token is required")
-	}
 	client := httpClient
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}
@@ -140,7 +134,7 @@ func DownloadWithToken(ctx context.Context, httpClient *http.Client, url, token 
 		return nil, fmt.Errorf("create download request: %w", err)
 	}
 	req.Header.Set("accept", "application/octet-stream")
-	req.Header.Set("authorization", "Bearer "+token)
+	setGitHubAuthorization(req, token)
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("update_github: asset download request failed", "url", strings.TrimSpace(url), "error", err)
@@ -158,4 +152,12 @@ func DownloadWithToken(ctx context.Context, httpClient *http.Client, url, token 
 	}
 	slog.Debug("update_github: downloaded release asset", "url", strings.TrimSpace(url), "bytes", len(blob))
 	return blob, nil
+}
+
+func setGitHubAuthorization(req *http.Request, token string) {
+	value := strings.TrimSpace(token)
+	if value == "" {
+		return
+	}
+	req.Header.Set("authorization", "Bearer "+value)
 }

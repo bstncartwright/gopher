@@ -511,8 +511,14 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		slog.Error("gateway_run: failed to start local session runtime", "error", err)
 		return err
 	}
-	newControlActionApplier(localRuntime.manager, dataDir, logger).Start(ctx)
-	newControlSessionWatcher(localRuntime.store, dataDir, logger).Start(ctx)
+	if localRuntime == nil || localRuntime.store == nil || localRuntime.manager == nil {
+		return fmt.Errorf("start local session runtime: runtime unavailable")
+	}
+	localManager := localRuntime.manager
+	localStore := localRuntime.store
+	localDelegation := localRuntime.delegation
+	newControlActionApplier(localManager, dataDir, logger).Start(ctx)
+	newControlSessionWatcher(localStore, dataDir, logger).Start(ctx)
 	var telegramBridge *telegramDMBridge
 	if cfg.Telegram.Enabled {
 		slog.Info("gateway_run: telegram enabled, starting dm bridge")
@@ -558,7 +564,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		slog.Info("gateway_run: telegram disabled")
 	}
 
-	var panelStore panel.SessionStore = localRuntime.store
+	panelStore := panel.SessionStore(localStore)
 	var panelSessionMetadata panel.SessionMetadataResolver
 	if telegramBridge != nil && telegramBridge.bindings != nil {
 		bindings := telegramBridge.bindings
@@ -574,9 +580,9 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		}
 	}
 	var remoteSnapshot func() []panel.RemoteInfo
-	if localRuntime != nil && localRuntime.delegation != nil {
+	if localDelegation != nil {
 		remoteSnapshot = func() []panel.RemoteInfo {
-			snapshots := localRuntime.delegation.A2ASnapshots()
+			snapshots := localDelegation.A2ASnapshots()
 			rows := make([]panel.RemoteInfo, 0, len(snapshots))
 			for _, snapshot := range snapshots {
 				rows = append(rows, panel.RemoteInfo{
@@ -592,7 +598,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 			return rows
 		}
 	}
-	if err := startGatewayPanel(ctx, cfg, process, agentRuntime, panelStore, localRuntime.manager, agentRuntime.DefaultActorID, panelSessionMetadata, remoteSnapshot, dataDir, logger); err != nil {
+	if err := startGatewayPanel(ctx, cfg, process, agentRuntime, panelStore, localManager, agentRuntime.DefaultActorID, panelSessionMetadata, remoteSnapshot, dataDir, logger); err != nil {
 		slog.Error("gateway_run: failed to start panel server", "error", err)
 		return err
 	}

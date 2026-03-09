@@ -14,6 +14,8 @@ import (
 
 	"github.com/bstncartwright/gopher/pkg/scheduler"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 const (
@@ -652,7 +654,7 @@ func (s *Server) buildOverviewActivity(sessions []workSessionSummary, actions []
 			summary = fallbackText(action.Error, "The control action failed.")
 		}
 		items = append(items, overviewActivityItem{
-			Title:     strings.Title(fallbackText(action.Action, "Control action")),
+			Title:     cases.Title(language.Und).String(fallbackText(action.Action, "Control action")),
 			Summary:   summary,
 			Timestamp: action.UpdatedAt,
 			Href:      adminRoot + "/work/" + action.SessionID,
@@ -1829,8 +1831,6 @@ func pickLooseString(value any, keys ...string) string {
 	switch typed := raw.(type) {
 	case string:
 		return strings.TrimSpace(typed)
-	case fmt.Stringer:
-		return strings.TrimSpace(typed.String())
 	case float64:
 		return strconv.FormatInt(int64(typed), 10)
 	case int:
@@ -1839,6 +1839,8 @@ func pickLooseString(value any, keys ...string) string {
 		return strconv.FormatInt(typed, 10)
 	case json.Number:
 		return typed.String()
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
 	default:
 		return ""
 	}

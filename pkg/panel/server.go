@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -113,12 +112,6 @@ type Server struct {
 	cronStorePath   string
 	templates       *template.Template
 	assets          fs.FS
-}
-
-type pageData struct {
-	HasSessionStore bool
-	ActiveTab       string
-	PanelRoot       string
 }
 
 type overviewNode struct {
@@ -486,45 +479,6 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("GET "+legacyPanelRoot+"/stream/session/{sessionID}", s.handleSessionStream)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/assets/panel.css", s.handleCSS)
 	return mux
-}
-
-func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
-	tab := ""
-	if r != nil {
-		tab = normalizePanelTab(r.URL.Query().Get("tab"))
-	}
-	s.renderTemplate(w, "page.html", pageData{
-		HasSessionStore: s.store != nil,
-		ActiveTab:       tab,
-		PanelRoot:       adminRoot,
-	})
-}
-
-func (s *Server) handleLegacyPage(w http.ResponseWriter, r *http.Request) {
-	s.redirectToCanonicalPage(w, r, "")
-}
-
-func (s *Server) handleLegacyPageTab(w http.ResponseWriter, r *http.Request) {
-	tab := normalizePanelTab(r.PathValue("tab"))
-	s.redirectToCanonicalPage(w, r, tab)
-}
-
-func (s *Server) redirectToCanonicalPage(w http.ResponseWriter, r *http.Request, tab string) {
-	params := urlValuesClone(r)
-	normalized := normalizePanelTab(tab)
-	if normalized == "" {
-		normalized = normalizePanelTab(params.Get("tab"))
-	}
-	if normalized != "" && normalized != "control" {
-		params.Set("tab", normalized)
-	} else {
-		params.Del("tab")
-	}
-	target := adminRoot
-	if encoded := params.Encode(); encoded != "" {
-		target += "?" + encoded
-	}
-	http.Redirect(w, r, target, http.StatusPermanentRedirect)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -1857,17 +1811,4 @@ func normalizePanelTab(value string) string {
 	default:
 		return ""
 	}
-}
-
-func urlValuesClone(r *http.Request) url.Values {
-	if r == nil || r.URL == nil {
-		return url.Values{}
-	}
-	out := url.Values{}
-	for key, values := range r.URL.Query() {
-		copied := make([]string, len(values))
-		copy(copied, values)
-		out[key] = copied
-	}
-	return out
 }

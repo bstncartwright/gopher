@@ -158,7 +158,9 @@ func (b *gatewayA2ABackend) SendMessage(ctx context.Context, target sessionrt.Ac
 	if err != nil {
 		return a2a.Task{}, nil, err
 	}
-	task, err := b.client.SendMessage(withTimeout(ctx, remote.Config.RequestTimeout), remote.Endpoint, buildA2ARemote(remote), req)
+	requestCtx, cancel := withTimeout(ctx, remote.Config.RequestTimeout)
+	defer cancel()
+	task, err := b.client.SendMessage(requestCtx, remote.Endpoint, buildA2ARemote(remote), req)
 	return task, remote, err
 }
 
@@ -167,7 +169,9 @@ func (b *gatewayA2ABackend) GetTask(ctx context.Context, remoteID string, taskID
 	if err != nil {
 		return a2a.Task{}, nil, err
 	}
-	task, err := b.client.GetTask(withTimeout(ctx, remote.Config.RequestTimeout), remote.Endpoint, buildA2ARemote(remote), taskID)
+	requestCtx, cancel := withTimeout(ctx, remote.Config.RequestTimeout)
+	defer cancel()
+	task, err := b.client.GetTask(requestCtx, remote.Endpoint, buildA2ARemote(remote), taskID)
 	return task, remote, err
 }
 
@@ -176,7 +180,9 @@ func (b *gatewayA2ABackend) SubscribeTask(ctx context.Context, remoteID string, 
 	if err != nil {
 		return err
 	}
-	return b.client.SubscribeTask(withTimeout(ctx, b.cfg.StreamIdleTimeout), remote.Endpoint, buildA2ARemote(remote), taskID, emit)
+	requestCtx, cancel := withTimeout(ctx, b.cfg.StreamIdleTimeout)
+	defer cancel()
+	return b.client.SubscribeTask(requestCtx, remote.Endpoint, buildA2ARemote(remote), taskID, emit)
 }
 
 func (b *gatewayA2ABackend) CancelTask(ctx context.Context, remoteID string, taskID string) error {
@@ -184,7 +190,9 @@ func (b *gatewayA2ABackend) CancelTask(ctx context.Context, remoteID string, tas
 	if err != nil {
 		return err
 	}
-	return b.client.CancelTask(withTimeout(ctx, remote.Config.RequestTimeout), remote.Endpoint, buildA2ARemote(remote), taskID)
+	requestCtx, cancel := withTimeout(ctx, remote.Config.RequestTimeout)
+	defer cancel()
+	return b.client.CancelTask(requestCtx, remote.Endpoint, buildA2ARemote(remote), taskID)
 }
 
 func (b *gatewayA2ABackend) resolveRemote(ctx context.Context, target sessionrt.ActorID) (*gatewayA2ARemoteState, error) {
@@ -216,7 +224,9 @@ func (b *gatewayA2ABackend) refreshRemote(ctx context.Context, id string) (*gate
 		return nil, fmt.Errorf("a2a target %q is disabled", a2aTargetPrefix+id)
 	}
 
-	card, err := b.client.Discover(withTimeout(ctx, b.cfg.DiscoveryTimeout), buildA2ARemote(current))
+	requestCtx, cancel := withTimeout(ctx, b.cfg.DiscoveryTimeout)
+	defer cancel()
+	card, err := b.client.Discover(requestCtx, buildA2ARemote(current))
 	now := b.now().UTC()
 
 	b.mu.Lock()
@@ -302,12 +312,8 @@ func normalizeRemoteEndpoint(cardURL string, baseURL string) string {
 		return strings.TrimRight(cardURL, "/")
 	}
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
-	if strings.HasSuffix(parsed.Path, "/.well-known/agent-card.json") {
-		parsed.Path = strings.TrimSuffix(parsed.Path, "/.well-known/agent-card.json")
-	}
-	if strings.HasSuffix(parsed.Path, "/.well-known/agent.json") {
-		parsed.Path = strings.TrimSuffix(parsed.Path, "/.well-known/agent.json")
-	}
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/.well-known/agent-card.json")
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/.well-known/agent.json")
 	if parsed.Path == "" {
 		parsed.Path = "/"
 	}
@@ -327,12 +333,11 @@ func buildA2ARemote(remote *gatewayA2ARemoteState) a2a.Remote {
 	}
 }
 
-func withTimeout(ctx context.Context, timeout time.Duration) context.Context {
+func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
-		return ctx
+		return ctx, func() {}
 	}
-	derived, _ := context.WithTimeout(ctx, timeout)
-	return derived
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (s *gatewaySessionDelegationToolService) SetA2ABackend(ctx context.Context, backend *gatewayA2ABackend) {

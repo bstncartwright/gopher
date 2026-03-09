@@ -21,7 +21,8 @@
     source: null,
     firstSeq: 0,
     lastSeq: 0,
-    hasOlder: false
+    hasOlder: false,
+    freshEventSeqs: {}
   };
 
   function escapeHTML(value) {
@@ -181,7 +182,7 @@
   function renderSessionGroup(label, sessions) {
     var rows = sessions.map(function (session) {
       var active = session.session_id === state.sessionID ? " is-active" : "";
-      var tone = session.status === "failed" ? " tone-danger" : (session.working ? " tone-active" : "");
+      var tone = session.status === "failed" ? " tone-danger" : (session.working ? " tone-active is-live" : "");
       return '' +
         '<button type="button" class="queue-item' + active + tone + '" data-session-id="' + escapeHTML(session.session_id) + '">' +
           '<div class="queue-item-head">' +
@@ -205,6 +206,7 @@
     state.inspectorEvent = null;
     state.inspectorOutOfWindow = false;
     state.inspectorTab = state.view === "raw" ? "raw" : "summary";
+    state.freshEventSeqs = {};
     syncURL(!!replace);
     fetchJSON(api("/api/work/session/" + encodeURIComponent(sessionID))).then(function (detail) {
       state.detail = detail;
@@ -307,6 +309,8 @@
   }
 
   function renderDetail() {
+    app.classList.toggle("has-session", !!state.detail);
+    app.setAttribute("data-session-status", state.detail && state.detail.session ? state.detail.session.status : "");
     renderSummary();
     renderTimeline();
     renderInspector();
@@ -431,11 +435,12 @@
     var open = bundle.events.some(function (event) {
       return String(event.seq) === String(state.selectedEventSeq);
     }) ? " open" : "";
+    var bundleTone = normalize(latest.tone || latest.category || "muted");
     var rows = bundle.events.map(function (event) {
       return '<div class="bundle-row">' + renderEventCard(event, true) + '</div>';
     }).join("");
     return '' +
-      '<details class="event-bundle bundle-' + escapeHTML(normalize(bundle.kind || "bundle")) + '"' + open + '>' +
+      '<details class="event-bundle bundle-' + escapeHTML(normalize(bundle.kind || "bundle")) + ' tone-' + escapeHTML(bundleTone) + '"' + open + '>' +
         '<summary>' +
           '<div class="bundle-head">' +
             '<div>' +
@@ -452,6 +457,7 @@
 
   function renderEventCard(event, nested) {
     var selected = String(event.seq) === String(state.selectedEventSeq) ? " is-selected" : "";
+    var fresh = state.freshEventSeqs[String(event.seq)] ? " is-fresh" : "";
     var body = state.view === "raw"
       ? clip(event.raw_json, 260)
       : firstText(event.subtitle, event.digest, event.title);
@@ -459,7 +465,7 @@
       ? humanize(event.type_label || event.type)
       : humanize(event.category || event.type);
     return '' +
-      '<button type="button" class="event-card' + selected + cardToneClass(event) + (nested ? " is-nested" : "") + '" data-event-seq="' + escapeHTML(String(event.seq)) + '">' +
+      '<button type="button" class="event-card' + selected + fresh + cardToneClass(event) + (nested ? " is-nested" : "") + '" data-event-seq="' + escapeHTML(String(event.seq)) + '">' +
         '<div class="event-card-head">' +
           '<div class="event-title-block">' +
             '<span class="event-emoji" aria-hidden="true">' + escapeHTML(event.emoji || "📌") + '</span>' +
@@ -596,9 +602,22 @@
     var seen = {};
     for (var i = 0; i < existing.length; i++) seen[String(existing[i].seq)] = true;
     for (var j = 0; j < events.length; j++) {
-      if (!seen[String(events[j].seq)]) existing.push(events[j]);
+      if (!seen[String(events[j].seq)]) {
+        state.freshEventSeqs[String(events[j].seq)] = true;
+        existing.push(events[j]);
+      }
     }
     state.detail.timeline.events = existing;
+    window.setTimeout(function () {
+      var changed = false;
+      for (var idx = 0; idx < events.length; idx++) {
+        if (state.freshEventSeqs[String(events[idx].seq)]) {
+          delete state.freshEventSeqs[String(events[idx].seq)];
+          changed = true;
+        }
+      }
+      if (changed) renderTimeline();
+    }, 1600);
   }
 
   function loadOlder() {

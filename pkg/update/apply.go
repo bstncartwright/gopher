@@ -109,20 +109,7 @@ func ApplyRelease(ctx context.Context, opts ApplyOptions) error {
 }
 
 func verifyChecksums(checksumBlob []byte, assetName string, blob []byte) error {
-	expected := ""
-	for _, line := range strings.Split(string(checksumBlob), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, assetName) {
-			parts := strings.Fields(line)
-			if len(parts) >= 1 {
-				expected = parts[0]
-				break
-			}
-		}
-	}
+	expected := checksumForAsset(checksumBlob, assetName)
 	if expected == "" {
 		return fmt.Errorf("checksum for %q not found", assetName)
 	}
@@ -132,6 +119,25 @@ func verifyChecksums(checksumBlob []byte, assetName string, blob []byte) error {
 		return fmt.Errorf("checksum mismatch for %q", assetName)
 	}
 	return nil
+}
+
+func checksumForAsset(checksumBlob []byte, assetName string) string {
+	for _, line := range strings.Split(string(checksumBlob), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		candidate := strings.TrimPrefix(parts[1], "*")
+		candidate = filepath.Base(candidate)
+		if candidate == assetName {
+			return parts[0]
+		}
+	}
+	return ""
 }
 
 func rollbackBinary(binaryPath, backupPath string) error {

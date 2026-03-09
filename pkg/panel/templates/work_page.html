@@ -51,7 +51,7 @@
         </div>
       </header>
 
-      <div class="workspace-controls">
+      <div class="workspace-console">
         <div class="chip-row" data-work-filter-row>
           <button type="button" class="chip is-active" data-work-filter="all" aria-pressed="true">All</button>
           <button type="button" class="chip" data-work-filter="user" aria-pressed="false">User</button>
@@ -69,11 +69,7 @@
         </div>
       </div>
 
-      <div class="workspace-summary" id="work-session-summary">
-        <p class="empty-state">Session story will appear here.</p>
-      </div>
-
-      <div class="workspace-grid">
+      <div class="workspace-stage">
         <section class="timeline-panel">
           <div class="timeline-toolbar">
             <button type="button" class="ghost-btn" id="work-load-older" hidden>Load Older</button>
@@ -84,9 +80,15 @@
           </div>
         </section>
 
-        <aside class="inspector-panel" id="work-inspector">
-          <p class="empty-state">Choose an event to inspect its details.</p>
-        </aside>
+        <div class="workspace-side">
+          <div class="workspace-summary" id="work-session-summary">
+            <p class="empty-state">Session story will appear here.</p>
+          </div>
+
+          <aside class="inspector-panel" id="work-inspector">
+            <p class="empty-state">Choose an event to inspect its details.</p>
+          </aside>
+        </div>
       </div>
     </section>
   </section>

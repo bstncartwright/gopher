@@ -475,6 +475,44 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 	defer process.Stop()
 
 	dataDir := resolveGatewayDataDir(workspace)
+	localRuntime, err := startGatewayLocalSessionRuntime(
+		ctx,
+		cfg,
+		workspace,
+		agentRuntime,
+		process.executor,
+		func(actorID sessionrt.ActorID) bool {
+			_, ok := process.registry.FindNodeByAgent(string(actorID))
+			return ok
+		},
+		func() []agentcore.RemoteDelegationTarget {
+			nodes := process.registry.Snapshot()
+			targets := make([]agentcore.RemoteDelegationTarget, 0)
+			for _, node := range nodes {
+				if node.IsGateway {
+					continue
+				}
+				for _, agentID := range node.Agents {
+					trimmed := strings.TrimSpace(agentID)
+					if trimmed == "" {
+						continue
+					}
+					targets = append(targets, agentcore.RemoteDelegationTarget{
+						ID:          trimmed,
+						Description: "Connected via node " + strings.TrimSpace(node.NodeID),
+					})
+				}
+			}
+			return targets
+		},
+		logger,
+	)
+	if err != nil {
+		slog.Error("gateway_run: failed to start local session runtime", "error", err)
+		return err
+	}
+	newControlActionApplier(localRuntime.manager, dataDir, logger).Start(ctx)
+	newControlSessionWatcher(localRuntime.store, dataDir, logger).Start(ctx)
 	var telegramBridge *telegramDMBridge
 	if cfg.Telegram.Enabled {
 		slog.Info("gateway_run: telegram enabled, starting dm bridge")
@@ -508,6 +546,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 				}
 				return targets
 			},
+			localRuntime,
 			logger,
 		)
 		if err != nil {
@@ -515,17 +554,12 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 			return err
 		}
 		defer telegramBridge.Stop()
-		newControlActionApplier(telegramBridge.manager, dataDir, logger).Start(ctx)
-		newControlSessionWatcher(telegramBridge.store, dataDir, logger).Start(ctx)
 	} else {
 		slog.Info("gateway_run: telegram disabled")
 	}
 
-	var panelStore panel.SessionStore
+	var panelStore panel.SessionStore = localRuntime.store
 	var panelSessionMetadata panel.SessionMetadataResolver
-	if telegramBridge != nil && telegramBridge.store != nil {
-		panelStore = telegramBridge.store
-	}
 	if telegramBridge != nil && telegramBridge.bindings != nil {
 		bindings := telegramBridge.bindings
 		panelSessionMetadata = func(sessionID sessionrt.SessionID) (panel.SessionMetadata, bool) {
@@ -540,9 +574,9 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 		}
 	}
 	var remoteSnapshot func() []panel.RemoteInfo
-	if telegramBridge != nil && telegramBridge.delegation != nil {
+	if localRuntime != nil && localRuntime.delegation != nil {
 		remoteSnapshot = func() []panel.RemoteInfo {
-			snapshots := telegramBridge.delegation.A2ASnapshots()
+			snapshots := localRuntime.delegation.A2ASnapshots()
 			rows := make([]panel.RemoteInfo, 0, len(snapshots))
 			for _, snapshot := range snapshots {
 				rows = append(rows, panel.RemoteInfo{
@@ -558,7 +592,7 @@ func runGatewayWithContext(ctx context.Context, cfg config.GatewayConfig, source
 			return rows
 		}
 	}
-	if err := startGatewayPanel(ctx, cfg, process, agentRuntime, panelStore, panelSessionMetadata, remoteSnapshot, dataDir, logger); err != nil {
+	if err := startGatewayPanel(ctx, cfg, process, agentRuntime, panelStore, localRuntime.manager, agentRuntime.DefaultActorID, panelSessionMetadata, remoteSnapshot, dataDir, logger); err != nil {
 		slog.Error("gateway_run: failed to start panel server", "error", err)
 		return err
 	}
@@ -725,6 +759,8 @@ func startGatewayPanel(
 	process *gatewayProcess,
 	runtime *gatewayAgentRuntime,
 	store panel.SessionStore,
+	chatManager sessionrt.SessionManager,
+	chatAgentID sessionrt.ActorID,
 	sessionMetadata panel.SessionMetadataResolver,
 	remoteSnapshot func() []panel.RemoteInfo,
 	controlDir string,
@@ -737,6 +773,8 @@ func startGatewayPanel(
 	panelServer, err := newGatewayPanel(panel.ServerOptions{
 		ListenAddr:      cfg.Panel.ListenAddr,
 		Store:           store,
+		ChatManager:     chatManager,
+		ChatAgentID:     chatAgentID,
 		SessionMetadata: sessionMetadata,
 		ControlDir:      filepath.Join(controlDir, "control"),
 		CronStorePath:   filepath.Join(controlDir, "cron", "jobs.json"),

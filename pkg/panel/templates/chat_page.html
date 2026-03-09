@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111619">
+  <title>Gopher Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{.ChatRoot}}/assets/panel.css">
+</head>
+<body class="chat-body" data-chat-root="{{.ChatRoot}}" data-admin-root="{{.AdminRoot}}" data-initial-session="{{.InitialSession}}">
+  <a class="skip-link" href="#chat-main">Skip to chat</a>
+
+  <header class="chat-topbar">
+    <div class="chat-brand">
+      <p class="page-kicker">Local-only surface</p>
+      <h1>Chat</h1>
+      <p class="page-subtitle">Run a session directly from this machine without routing through Telegram.</p>
+    </div>
+    <a class="ghost-btn chat-admin-link" href="{{.AdminRoot}}/work">Open Admin Work View</a>
+  </header>
+
+  <main id="chat-main" class="chat-app" data-chat-enabled="{{if .HasChat}}true{{else}}false{{end}}">
+    {{if not .HasChat}}
+    <section class="surface chat-empty-panel">
+      <p class="empty-state">Local chat is unavailable. Start the gateway with a local session runtime and a default agent to enable this page.</p>
+    </section>
+    {{else}}
+    <aside class="surface chat-sidebar">
+      <header class="surface-header compact chat-sidebar-header">
+        <div>
+          <p class="eyebrow">Sessions</p>
+          <h2>Local Threads</h2>
+        </div>
+        <button type="button" class="ghost-btn" id="chat-new-session">New Chat</button>
+      </header>
+      <div class="chat-sidebar-search">
+        <label class="sr-only" for="chat-search">Search chats</label>
+        <input id="chat-search" class="search-input" type="search" placeholder="Search local chats" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="chat-session-list" class="chat-session-list">
+        <p class="empty-state">Loading local chats…</p>
+      </div>
+    </aside>
+
+    <section class="surface chat-panel">
+      <header class="surface-header compact chat-panel-header">
+        <div>
+          <p class="eyebrow">Conversation</p>
+          <h2 id="chat-session-title">Select a local chat</h2>
+          <p id="chat-session-meta" class="surface-copy">Choose a thread or start a new one.</p>
+        </div>
+        <a id="chat-inspect-link" class="ghost-btn" href="{{.AdminRoot}}/work" target="_blank" rel="noreferrer">Inspect Timeline</a>
+      </header>
+
+      <div id="chat-transcript" class="chat-transcript" aria-live="polite">
+        <p class="empty-state">Messages will appear here.</p>
+      </div>
+
+      <form id="chat-compose" class="chat-compose">
+        <label class="sr-only" for="chat-message">Message</label>
+        <textarea id="chat-message" class="chat-textarea" rows="3" placeholder="Type a message to the local agent…" spellcheck="true"></textarea>
+        <div class="chat-compose-actions">
+          <span id="chat-status-note" class="chat-status-note">Idle.</span>
+          <button type="submit" class="ghost-btn chat-send-btn">Send</button>
+        </div>
+      </form>
+    </section>
+    {{end}}
+  </main>
+
+  <script>
+    (function () {
+      function formatRelative(value) {
+        var text = String(value || "").trim();
+        if (!text || text === "-") return "-";
+        var timestamp = Date.parse(text);
+        if (!isFinite(timestamp)) return text;
+        var diffSeconds = Math.round((Date.now() - timestamp) / 1000);
+        var future = diffSeconds < 0;
+        var abs = Math.abs(diffSeconds);
+        if (abs < 8) return "just now";
+        var amount = 0;
+        var unit = "";
+        if (abs < 60) { amount = abs; unit = "s"; }
+        else if (abs < 3600) { amount = Math.floor(abs / 60); unit = "m"; }
+        else if (abs < 86400) { amount = Math.floor(abs / 3600); unit = "h"; }
+        else { amount = Math.floor(abs / 86400); unit = "d"; }
+        return future ? "in " + amount + unit : amount + unit + " ago";
+      }
+      window.GopherChatTime = { formatRelative: formatRelative };
+    }());
+  </script>
+  {{if .HasChat}}
+  <script src="{{.ChatRoot}}/assets/chat.js"></script>
+  {{end}}
+</body>
+</html>

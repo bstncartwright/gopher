@@ -17,7 +17,6 @@ import (
 	"github.com/bstncartwright/gopher/pkg/config"
 	"github.com/bstncartwright/gopher/pkg/gateway"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
-	storepkg "github.com/bstncartwright/gopher/pkg/store"
 	"github.com/bstncartwright/gopher/pkg/transport"
 	telegramtransport "github.com/bstncartwright/gopher/pkg/transport/telegram"
 	"github.com/pelletier/go-toml/v2"
@@ -64,6 +63,7 @@ func startTelegramDMBridgeWithRuntime(
 	executor sessionrt.AgentExecutor,
 	remoteAgentExists func(sessionrt.ActorID) bool,
 	remoteTargets func() []agentcore.RemoteDelegationTarget,
+	localRuntime *gatewayLocalSessionRuntime,
 	logger *log.Logger,
 ) (*telegramDMBridge, error) {
 	var err error
@@ -90,82 +90,36 @@ func startTelegramDMBridgeWithRuntime(
 	if executor == nil {
 		executor = agentRuntime.Executor
 	}
+	if localRuntime == nil {
+		localRuntime, err = startGatewayLocalSessionRuntime(
+			ctx,
+			cfg,
+			workspace,
+			agentRuntime,
+			executor,
+			remoteAgentExists,
+			remoteTargets,
+			logger,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 	dataDir := resolveGatewayDataDir(workspace)
 	storeDir := filepath.Join(dataDir, "sessions")
-	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: storeDir})
-	if err != nil {
-		return nil, fmt.Errorf("create session store: %w", err)
-	}
+	store := localRuntime.store
+	manager := localRuntime.manager
+	delegationTool := localRuntime.delegation
 	bindingStorePath := filepath.Join(storeDir, "conversation_bindings.json")
 	bindingStore, err := gateway.NewFileConversationBindingStore(bindingStorePath)
 	if err != nil {
 		return nil, fmt.Errorf("create conversation binding store: %w", err)
 	}
-
-	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
-		Store:          store,
-		Executor:       executor,
-		AgentSelector:  gatewayMessageTargetSelector(agentRuntime.DefaultActorID),
-		RecoverOnStart: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create session manager: %w", err)
-	}
 	slog.Info(
-		"telegram_gateway: session manager created",
+		"telegram_gateway: session manager ready",
 		"agent_default_actor_id", agentRuntime.DefaultActorID,
 		"recover_on_start", true,
 	)
-	for _, agent := range agentRuntime.Agents {
-		if agent == nil || agent.LongTermMemory == nil {
-			continue
-		}
-		agent.SessionMemoryFlusher = agentcore.NewStoreBackedSessionMemoryFlusher(store, agent.LongTermMemory, agent.ID)
-	}
-
-	delegationTool := newGatewaySessionDelegationToolService(manager, store, agentRuntime.Agents, dataDir, logger, agentRuntime.Router, remoteAgentExists, remoteTargets)
-	if cfg.A2A.Enabled {
-		delegationTool.SetA2ABackend(ctx, newGatewayA2ABackend(cfg.A2A, nil))
-	}
-	for _, agent := range agentRuntime.Agents {
-		agent.Delegation = delegationTool
-	}
-
-	var cronRunner *gateway.CronRunner
-	if cfg.Cron.Enabled {
-		dispatcher, err := newScheduledTaskCronDispatcher(manager, delegationTool)
-		if err != nil {
-			return nil, fmt.Errorf("create cron dispatcher: %w", err)
-		}
-		cronFilePath := filepath.Join(dataDir, "cron", "jobs.json")
-		cronStore, err := gateway.NewFileCronStore(cronFilePath)
-		if err != nil {
-			return nil, fmt.Errorf("create cron store: %w", err)
-		}
-		cronService, err := gateway.NewCronService(gateway.CronServiceOptions{
-			Store:              cronStore,
-			Dispatcher:         dispatcher,
-			DefaultTimezone:    cfg.Cron.DefaultTimezone,
-			CatchupOnStartOnce: true,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create cron service: %w", err)
-		}
-		cronTool := newGatewayCronToolService(cronService)
-		for _, agent := range agentRuntime.Agents {
-			agent.Cron = cronTool
-		}
-		cronRunner, err = gateway.NewCronRunner(gateway.CronRunnerOptions{
-			Service:      cronService,
-			PollInterval: cfg.Cron.PollInterval,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create cron runner: %w", err)
-		}
-		if err := cronRunner.Start(ctx); err != nil {
-			return nil, fmt.Errorf("start cron runner: %w", err)
-		}
-	}
 
 	telegramBridge, err := newTelegramBridgeTransport(telegramtransport.Options{
 		BotToken:      cfg.Telegram.BotToken,
@@ -259,7 +213,7 @@ func startTelegramDMBridgeWithRuntime(
 		mode:       normalizeTelegramMode(cfg.Telegram.Mode),
 		manager:    manager,
 		pipeline:   pipeline,
-		cron:       cronRunner,
+		cron:       localRuntime.cron,
 		heartbeat:  heartbeatRunner,
 		bindings:   bindingStore,
 		delegation: delegationTool,

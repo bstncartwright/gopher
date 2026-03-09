@@ -32,6 +32,7 @@ const (
 	timelinePageLimit    = 50
 	timelineStreamLimit  = 200
 	adminRoot            = "/admin"
+	chatRoot             = "/chat"
 	legacyPanelRoot      = "/_gopher/panel"
 )
 
@@ -89,6 +90,8 @@ type RemoteInfo struct {
 type ServerOptions struct {
 	ListenAddr      string
 	Store           SessionStore
+	ChatManager     sessionrt.SessionManager
+	ChatAgentID     sessionrt.ActorID
 	SessionMetadata SessionMetadataResolver
 	NodeSnapshot    func() []scheduler.NodeInfo
 	AgentSnapshot   func() []AgentInfo
@@ -100,6 +103,8 @@ type ServerOptions struct {
 type Server struct {
 	listenAddr      string
 	store           SessionStore
+	chatManager     sessionrt.SessionManager
+	chatAgentID     sessionrt.ActorID
 	sessionMetadata SessionMetadataResolver
 	nodeSnapshot    func() []scheduler.NodeInfo
 	agentSnapshot   func() []AgentInfo
@@ -358,6 +363,8 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	return &Server{
 		listenAddr:      listenAddr,
 		store:           opts.Store,
+		chatManager:     opts.ChatManager,
+		chatAgentID:     opts.ChatAgentID,
 		sessionMetadata: opts.SessionMetadata,
 		nodeSnapshot:    nodeSnapshot,
 		agentSnapshot:   agentSnapshot,
@@ -453,6 +460,15 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("GET "+adminRoot+"/stream/session/{sessionID}", s.handleSessionStream)
 	mux.HandleFunc("GET "+adminRoot+"/assets/panel.css", s.handleCSS)
 	mux.HandleFunc("GET "+adminRoot+"/assets/work.js", s.handleWorkJS)
+
+	mux.HandleFunc("GET "+chatRoot, s.handleChatPage)
+	mux.HandleFunc("GET "+chatRoot+"/api/sessions", s.handleChatSessionsAPI)
+	mux.HandleFunc("POST "+chatRoot+"/api/sessions", s.handleChatCreateSessionAPI)
+	mux.HandleFunc("GET "+chatRoot+"/api/session/{sessionID}", s.handleChatSessionAPI)
+	mux.HandleFunc("POST "+chatRoot+"/api/session/{sessionID}/messages", s.handleChatSendMessageAPI)
+	mux.HandleFunc("GET "+chatRoot+"/api/session/{sessionID}/stream", s.handleChatSessionStream)
+	mux.HandleFunc("GET "+chatRoot+"/assets/panel.css", s.handleCSS)
+	mux.HandleFunc("GET "+chatRoot+"/assets/chat.js", s.handleChatJS)
 
 	mux.HandleFunc("GET "+legacyPanelRoot, s.handleLegacyPanelEntry)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/tab/{tab}", s.handleLegacyPanelTab)

@@ -27,6 +27,28 @@ type fakeSessionStore struct {
 	stream  map[sessionrt.SessionID]chan sessionrt.Event
 }
 
+type chatTestExecutor struct{}
+
+func (chatTestExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	if len(input.History) == 0 {
+		return sessionrt.AgentOutput{}, nil
+	}
+	last := input.History[len(input.History)-1]
+	payload, ok := last.Payload.(sessionrt.Message)
+	if !ok || payload.Role != sessionrt.RoleUser {
+		return sessionrt.AgentOutput{}, nil
+	}
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{{
+			Type: sessionrt.EventMessage,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleAgent,
+				Content: "Echo: " + payload.Content,
+			},
+		}},
+	}, nil
+}
+
 func newFakeSessionStore() *fakeSessionStore {
 	return &fakeSessionStore{
 		events:  map[sessionrt.SessionID][]sessionrt.Event{},
@@ -184,6 +206,28 @@ func (s *fakeSessionStore) ListSessions(_ context.Context) ([]sessionrt.SessionR
 	return records, nil
 }
 
+func newChatTestServer(t *testing.T) (*Server, *sessionrt.InMemoryEventStore, sessionrt.SessionManager) {
+	t.Helper()
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: chatTestExecutor{},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	srv, err := NewServer(ServerOptions{
+		ListenAddr:  "127.0.0.1:29329",
+		Store:       store,
+		ChatManager: manager,
+		ChatAgentID: "agent:local",
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+	return srv, store, manager
+}
+
 func TestPanelMainPageRenders(t *testing.T) {
 	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329"})
 	if err != nil {
@@ -306,6 +350,111 @@ func TestPanelWorkAndFleetRoutesRender(t *testing.T) {
 	}
 	if !strings.Contains(fleetRec.Body.String(), "Runtime Configuration") {
 		t.Fatalf("expected agents fleet view, got: %s", fleetRec.Body.String())
+	}
+}
+
+func TestChatPageRenders(t *testing.T) {
+	srv, _, _ := newChatTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/chat", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, ">Local Threads</h2>") {
+		t.Fatalf("expected local chat layout, got: %s", body)
+	}
+	if !strings.Contains(body, "Open Admin Work View") {
+		t.Fatalf("expected admin link, got: %s", body)
+	}
+}
+
+func TestChatAPIFlowCreatesAndListsLocalSession(t *testing.T) {
+	srv, store, manager := newChatTestServer(t)
+	mux := srv.newMux()
+
+	createRec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/chat/api/sessions", strings.NewReader(`{"message":"hello local"}`))
+	createReq.Header.Set("content-type", "application/json")
+	mux.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201 body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created chatSessionResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Session.SessionID == "" {
+		t.Fatalf("expected session id in create response")
+	}
+	if len(created.Messages) != 2 {
+		t.Fatalf("message count = %d, want 2", len(created.Messages))
+	}
+	if created.Messages[0].Role != "user" || created.Messages[1].Role != "agent" {
+		t.Fatalf("unexpected chat roles: %#v", created.Messages)
+	}
+
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/chat/api/sessions", nil)
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", listRec.Code)
+	}
+	if !strings.Contains(listRec.Body.String(), created.Session.SessionID) {
+		t.Fatalf("expected created session in list, got: %s", listRec.Body.String())
+	}
+
+	nonLocalSession, err := manager.CreateSession(context.Background(), sessionrt.CreateSessionOptions{
+		DisplayName: "External Thread",
+		Participants: []sessionrt.Participant{
+			{ID: "agent:local", Type: sessionrt.ActorAgent},
+			{ID: "user:other", Type: sessionrt.ActorHuman, Metadata: map[string]string{"name": "Elsewhere"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession(non-local) error: %v", err)
+	}
+	if err := manager.SendEvent(context.Background(), sessionrt.Event{
+		SessionID: nonLocalSession.ID,
+		From:      "user:other",
+		Type:      sessionrt.EventMessage,
+		Payload: sessionrt.Message{
+			Role:          sessionrt.RoleUser,
+			Content:       "should stay off chat page",
+			TargetActorID: "agent:local",
+		},
+	}); err != nil {
+		t.Fatalf("SendEvent(non-local) error: %v", err)
+	}
+
+	filteredRec := httptest.NewRecorder()
+	filteredReq := httptest.NewRequest(http.MethodGet, "/chat/api/sessions", nil)
+	mux.ServeHTTP(filteredRec, filteredReq)
+	if filteredRec.Code != http.StatusOK {
+		t.Fatalf("filtered list status = %d, want 200", filteredRec.Code)
+	}
+	body := filteredRec.Body.String()
+	if !strings.Contains(body, created.Session.SessionID) {
+		t.Fatalf("expected local session in filtered list, got: %s", body)
+	}
+	if strings.Contains(body, string(nonLocalSession.ID)) {
+		t.Fatalf("expected non-local session to be excluded, got: %s", body)
+	}
+
+	detailRec := httptest.NewRecorder()
+	detailReq := httptest.NewRequest(http.MethodGet, "/chat/api/session/"+created.Session.SessionID, nil)
+	mux.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want 200 body=%s", detailRec.Code, detailRec.Body.String())
+	}
+
+	storeEvents, err := store.List(context.Background(), sessionrt.SessionID(created.Session.SessionID))
+	if err != nil {
+		t.Fatalf("store.List() error: %v", err)
+	}
+	if !isLocalChatSession(storeEvents) {
+		t.Fatalf("expected created chat session to be tagged local")
 	}
 }
 

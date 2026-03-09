@@ -7,7 +7,7 @@
   <title>Gopher Admin</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{.PanelRoot}}/assets/panel.css">
 </head>
 <body class="section-{{.CurrentSection}}" data-panel-root="{{.PanelRoot}}">
@@ -17,11 +17,24 @@
     <div class="brand-mark">
       <span class="brand-kicker">Gopher</span>
       <strong class="brand-name">Admin Panel</strong>
+      <div class="brand-status">
+        <span class="signal-dot" aria-hidden="true"></span>
+        <span>System Live</span>
+      </div>
     </div>
-    <div class="page-intro">
-      <p class="page-kicker">{{.PageTitle}}</p>
-      <h1>{{.PageTitle}}</h1>
-      <p class="page-subtitle">{{.PageSubtitle}}</p>
+    <div class="topbar-main">
+      <div class="page-intro">
+        <p class="page-kicker">{{.PageTitle}}</p>
+        <h1>{{.PageTitle}}</h1>
+        <p class="page-subtitle">{{.PageSubtitle}}</p>
+      </div>
+      <div class="topbar-side">
+        <div class="live-pill">
+          <span class="signal-dot" aria-hidden="true"></span>
+          <span>Ops Bay Online</span>
+        </div>
+        <div class="section-code">{{.CurrentSection}}</div>
+      </div>
     </div>
   </header>
 

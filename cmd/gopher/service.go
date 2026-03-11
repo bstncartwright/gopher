@@ -19,6 +19,7 @@ import (
 
 type serviceRuntime interface {
 	Install(ctx context.Context, opts serviceInstallOptions) error
+	InstallUpdater(ctx context.Context, opts serviceUpdaterInstallOptions) error
 	Uninstall(ctx context.Context) error
 	Status(ctx context.Context, opts serviceStatusOptions) error
 	Start(ctx context.Context) error
@@ -32,6 +33,12 @@ type serviceInstallOptions struct {
 	EnvPath    string
 	BinaryPath string
 	Role       string
+}
+
+type serviceUpdaterInstallOptions struct {
+	ConfigPath string
+	EnvPath    string
+	BinaryPath string
 }
 
 type serviceLogsOptions struct {
@@ -154,6 +161,48 @@ func runServiceSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 			EnvPath:    envPathValue,
 			BinaryPath: strings.TrimSpace(*binaryPath),
 			Role:       normalizedRole,
+		}); err != nil {
+			return runWithSudoRetry(err)
+		}
+		return nil
+	case "install-updater":
+		flags := flag.NewFlagSet("service install-updater", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		configPath := flags.String("config", "", "gateway config path")
+		envPath := flags.String("env-file", "", "service env file")
+		binaryPath := flags.String("binary-path", defaultServiceBinaryPath(), "binary path for updater")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if len(flags.Args()) > 0 {
+			return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+		}
+		configPathValue := strings.TrimSpace(*configPath)
+		envPathValue := strings.TrimSpace(*envPath)
+		flags.Visit(func(f *flag.Flag) {
+			switch strings.TrimSpace(f.Name) {
+			case "config":
+				configPathValue = strings.TrimSpace(f.Value.String())
+			case "env-file":
+				envPathValue = strings.TrimSpace(f.Value.String())
+			}
+		})
+		if configPathValue == "" {
+			configPathValue = defaultServiceConfigPath("gateway")
+		}
+		if envPathValue == "" {
+			envPathValue = defaultServiceEnvPath()
+		}
+		slog.Info(
+			"service: install-updater requested",
+			"config_path", configPathValue,
+			"env_path", envPathValue,
+			"binary_path", strings.TrimSpace(*binaryPath),
+		)
+		if err := runtimeImpl.InstallUpdater(ctx, serviceUpdaterInstallOptions{
+			ConfigPath: configPathValue,
+			EnvPath:    envPathValue,
+			BinaryPath: strings.TrimSpace(*binaryPath),
 		}); err != nil {
 			return runWithSudoRetry(err)
 		}
@@ -376,6 +425,7 @@ func runServiceUpdateSubcommand(ctx context.Context, args []string, stdout, stde
 func printServiceUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage:")
 	fmt.Fprintln(out, "  gopher service install [--role gateway|node] [flags]")
+	fmt.Fprintln(out, "  gopher service install-updater [flags]")
 	fmt.Fprintln(out, "  gopher service uninstall")
 	fmt.Fprintln(out, "  gopher service status [--role auto|gateway|node]")
 	fmt.Fprintln(out, "  gopher service start")

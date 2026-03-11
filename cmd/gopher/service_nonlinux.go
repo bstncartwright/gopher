@@ -18,6 +18,11 @@ func (r *unsupportedServiceRuntime) Install(ctx context.Context, opts serviceIns
 	return fmt.Errorf("service install is only supported on linux")
 }
 
+func (r *unsupportedServiceRuntime) InstallUpdater(ctx context.Context, opts serviceUpdaterInstallOptions) error {
+	_ = opts
+	return fmt.Errorf("service install-updater is only supported on linux")
+}
+
 func (r *unsupportedServiceRuntime) Uninstall(ctx context.Context) error {
 	return fmt.Errorf("service uninstall is only supported on linux")
 }

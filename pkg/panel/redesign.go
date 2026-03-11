@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/bstncartwright/gopher/pkg/scheduler"
 	sessionrt "github.com/bstncartwright/gopher/pkg/session"
@@ -864,8 +865,7 @@ func (s *Server) buildWorkSessionSummary(ctx context.Context, record sessionrt.S
 	latestAnomaly := ""
 	hasAnomaly := false
 	if len(events) > 0 {
-		last := events[len(events)-1]
-		latestDigest = last.Digest
+		latestDigest = latestReadableTimelineDigest(events)
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].Anomaly {
 				hasAnomaly = true
@@ -895,6 +895,19 @@ func (s *Server) buildWorkSessionSummary(ctx context.Context, record sessionrt.S
 	}
 	summary.Story = buildWorkSessionStory(summary, events, latestAnomaly)
 	return summary
+}
+
+func latestReadableTimelineDigest(events []workTimelineEvent) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Anomaly || event.IsMeaningful || event.Category == "user" || event.Type == "message" {
+			return event.Digest
+		}
+	}
+	if len(events) == 0 {
+		return "No recent events."
+	}
+	return events[len(events)-1].Digest
 }
 
 func (s *Server) resolveSessionTitle(ctx context.Context, sessionID sessionrt.SessionID) (string, string) {
@@ -1443,13 +1456,41 @@ func describeTimelineThinking(payload any) timelinePresentation {
 	if delta == "" {
 		delta = clipPanelText(summarizeLooseValue(payload), 180)
 	}
+	lowSignal := isLowSignalThinkingDelta(delta)
 	return timelinePresentation{
 		Emoji:        "🧠",
-		Title:        "Thinking about next step",
+		Title:        thinkingDeltaTitle(lowSignal),
 		Subtitle:     delta,
 		Tone:         "agent",
-		IsMeaningful: delta != "" && delta != "{}",
+		IsMeaningful: delta != "" && delta != "{}" && !lowSignal,
 	}
+}
+
+func thinkingDeltaTitle(lowSignal bool) string {
+	if lowSignal {
+		return "Thinking fragment"
+	}
+	return "Thinking about next step"
+}
+
+func isLowSignalThinkingDelta(delta string) bool {
+	normalized := strings.TrimSpace(strings.Join(strings.Fields(delta), " "))
+	if normalized == "" || normalized == "{}" {
+		return false
+	}
+	wordCount := 0
+	for _, part := range strings.FieldsFunc(normalized, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '\'' && r != '-'
+	}) {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		wordCount++
+		if wordCount > 1 {
+			return false
+		}
+	}
+	return wordCount == 1
 }
 
 func describeTimelineTool(payload any, waiting bool) timelinePresentation {

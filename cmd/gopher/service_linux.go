@@ -248,6 +248,48 @@ func (r *linuxServiceRuntime) Install(ctx context.Context, opts serviceInstallOp
 	return nil
 }
 
+func (r *linuxServiceRuntime) InstallUpdater(ctx context.Context, opts serviceUpdaterInstallOptions) error {
+	if strings.TrimSpace(opts.BinaryPath) == "" {
+		return fmt.Errorf("binary path is required")
+	}
+	if strings.TrimSpace(opts.ConfigPath) == "" {
+		return fmt.Errorf("config path is required")
+	}
+	scope := resolveServiceSystemdScope()
+	unitDir, err := scope.unitDirectory()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", unitDir, err)
+	}
+	if strings.TrimSpace(opts.EnvPath) != "" {
+		if err := ensureEnvFile(opts.EnvPath); err != nil {
+			return err
+		}
+	}
+	enabled, err := r.installUpdaterUnits(serviceInstallOptions{
+		ConfigPath: strings.TrimSpace(opts.ConfigPath),
+		EnvPath:    strings.TrimSpace(opts.EnvPath),
+		BinaryPath: strings.TrimSpace(opts.BinaryPath),
+		Role:       "gateway",
+	}, unitDir)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return fmt.Errorf("gateway updates are disabled in %s; set [gateway.update].enabled = true before installing updater units", strings.TrimSpace(opts.ConfigPath))
+	}
+	if err := runSystemctlForService(ctx, scope.systemctlArgs("daemon-reload")...); err != nil {
+		return err
+	}
+	if err := runSystemctlForService(ctx, scope.systemctlArgs("enable", "--now", service.UpdateTimerUnitName)...); err != nil {
+		return err
+	}
+	fmt.Fprintf(r.stdout, "installed and started %s (%s scope)\n", service.UpdateTimerUnitName, scope.label())
+	return nil
+}
+
 func resolveServiceWorkingDir() string {
 	return resolveServiceStateDir()
 }

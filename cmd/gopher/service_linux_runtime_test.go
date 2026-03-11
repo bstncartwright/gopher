@@ -157,6 +157,130 @@ func TestResolveManagedServiceUnitExplicitNodeWhenInstalled(t *testing.T) {
 	}
 }
 
+func TestLinuxServiceInstallUpdaterWritesUnitsAndEnablesTimer(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	prevHome := serviceUserHomeDir
+	prevRunSystemctl := runSystemctlForService
+	defer func() {
+		serviceGetEUIDForLinux = prevGetEUID
+		serviceUserHomeDir = prevHome
+		runSystemctlForService = prevRunSystemctl
+	}()
+
+	tmp := t.TempDir()
+	serviceGetEUIDForLinux = func() int { return 1000 }
+	serviceUserHomeDir = func() (string, error) { return tmp, nil }
+
+	var systemctlCalls [][]string
+	runSystemctlForService = func(ctx context.Context, args ...string) error {
+		_ = ctx
+		systemctlCalls = append(systemctlCalls, append([]string{}, args...))
+		return nil
+	}
+
+	configPath := filepath.Join(tmp, ".gopher", "gopher.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configBody := `[gateway.update]
+enabled = true
+repo_owner = "bstncartwright"
+repo_name = "gopher"
+check_interval = "2h"
+binary_asset_pattern = "linux"
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	envPath := filepath.Join(tmp, ".gopher", "gopher.env")
+
+	var out bytes.Buffer
+	runtime := &linuxServiceRuntime{stdout: &out, stderr: &bytes.Buffer{}}
+	if err := runtime.InstallUpdater(context.Background(), serviceUpdaterInstallOptions{
+		ConfigPath: configPath,
+		EnvPath:    envPath,
+		BinaryPath: "/usr/local/bin/gopher",
+	}); err != nil {
+		t.Fatalf("InstallUpdater() error: %v", err)
+	}
+
+	serviceUnitPath := filepath.Join(tmp, ".config", "systemd", "user", "gopher-gateway-update.service")
+	timerUnitPath := filepath.Join(tmp, ".config", "systemd", "user", "gopher-gateway-update.timer")
+	serviceUnit, err := os.ReadFile(serviceUnitPath)
+	if err != nil {
+		t.Fatalf("read update service unit: %v", err)
+	}
+	if _, err := os.Stat(timerUnitPath); err != nil {
+		t.Fatalf("stat update timer unit: %v", err)
+	}
+	if !strings.Contains(string(serviceUnit), "/usr/local/bin/gopher service update apply --config "+configPath) {
+		t.Fatalf("update service unit missing exec start, got %q", string(serviceUnit))
+	}
+	if _, err := os.Stat(envPath); err != nil {
+		t.Fatalf("expected env file to be created: %v", err)
+	}
+
+	if len(systemctlCalls) != 2 {
+		t.Fatalf("systemctl calls = %#v, want 2 calls", systemctlCalls)
+	}
+	if got := strings.Join(systemctlCalls[0], " "); got != "--user daemon-reload" {
+		t.Fatalf("first systemctl call = %q, want %q", got, "--user daemon-reload")
+	}
+	if got := strings.Join(systemctlCalls[1], " "); got != "--user enable --now gopher-gateway-update.timer" {
+		t.Fatalf("second systemctl call = %q, want %q", got, "--user enable --now gopher-gateway-update.timer")
+	}
+	if !strings.Contains(out.String(), "installed and started gopher-gateway-update.timer") {
+		t.Fatalf("expected install-updater output, got %q", out.String())
+	}
+}
+
+func TestLinuxServiceInstallUpdaterRejectsDisabledUpdates(t *testing.T) {
+	prevGetEUID := serviceGetEUIDForLinux
+	prevHome := serviceUserHomeDir
+	prevRunSystemctl := runSystemctlForService
+	defer func() {
+		serviceGetEUIDForLinux = prevGetEUID
+		serviceUserHomeDir = prevHome
+		runSystemctlForService = prevRunSystemctl
+	}()
+
+	tmp := t.TempDir()
+	serviceGetEUIDForLinux = func() int { return 1000 }
+	serviceUserHomeDir = func() (string, error) { return tmp, nil }
+
+	runSystemctlCalled := false
+	runSystemctlForService = func(ctx context.Context, args ...string) error {
+		_ = ctx
+		_ = args
+		runSystemctlCalled = true
+		return nil
+	}
+
+	configPath := filepath.Join(tmp, ".gopher", "gopher.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(config.DefaultGatewayTOML()), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	runtime := &linuxServiceRuntime{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	err := runtime.InstallUpdater(context.Background(), serviceUpdaterInstallOptions{
+		ConfigPath: configPath,
+		EnvPath:    filepath.Join(tmp, ".gopher", "gopher.env"),
+		BinaryPath: "/usr/local/bin/gopher",
+	})
+	if err == nil {
+		t.Fatalf("expected install-updater error when updates are disabled")
+	}
+	if !strings.Contains(err.Error(), "gateway updates are disabled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runSystemctlCalled {
+		t.Fatalf("systemctl should not be called when updates are disabled")
+	}
+}
+
 func TestLinuxServiceUninstallReturnsPermissionErrors(t *testing.T) {
 	prevRunSystemctl := runSystemctlForService
 	prevRemoveFile := removeFileForService

@@ -338,7 +338,7 @@ func TestPanelWorkAndFleetRoutesRender(t *testing.T) {
 	if !strings.Contains(workRec.Body.String(), "data-initial-session=\"sess-1\"") {
 		t.Fatalf("expected initial session marker, got: %s", workRec.Body.String())
 	}
-	if !strings.Contains(workRec.Body.String(), "Workspace") {
+	if !strings.Contains(workRec.Body.String(), "work-session-summary") {
 		t.Fatalf("expected work workspace shell, got: %s", workRec.Body.String())
 	}
 

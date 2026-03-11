@@ -24,6 +24,12 @@ func (f *statusOnlyFakeRuntime) Install(ctx context.Context, opts serviceInstall
 	return nil
 }
 
+func (f *statusOnlyFakeRuntime) InstallUpdater(ctx context.Context, opts serviceUpdaterInstallOptions) error {
+	_ = ctx
+	_ = opts
+	return nil
+}
+
 func (f *statusOnlyFakeRuntime) Uninstall(ctx context.Context) error {
 	_ = ctx
 	return nil

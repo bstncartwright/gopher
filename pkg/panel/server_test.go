@@ -506,6 +506,79 @@ func TestPanelWorkAPIEndpoints(t *testing.T) {
 	}
 }
 
+func TestPanelWorkSessionsAPIIncludesStoryPreview(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	store.addSession("sess-preview", sessionrt.SessionActive, []sessionrt.Event{
+		{
+			SessionID: "sess-preview",
+			Seq:       1,
+			Type:      sessionrt.EventMessage,
+			From:      "user:1",
+			Timestamp: now,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleUser,
+				Content: "Please inspect the broken release pipeline",
+			},
+		},
+		{
+			SessionID: "sess-preview",
+			Seq:       2,
+			Type:      sessionrt.EventToolCall,
+			From:      "agent:a",
+			Timestamp: now.Add(time.Second),
+			Payload: map[string]any{
+				"name":      "read",
+				"arguments": map[string]any{"path": "/tmp/release.log"},
+			},
+		},
+		{
+			SessionID: "sess-preview",
+			Seq:       3,
+			Type:      sessionrt.EventToolResult,
+			From:      "agent:a",
+			Timestamp: now.Add(2 * time.Second),
+			Payload: map[string]any{
+				"name":   "read",
+				"status": "ok",
+				"stdout": "timeout near deploy step",
+			},
+		},
+	})
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/work/sessions", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload workSessionsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode sessions payload: %v", err)
+	}
+	if len(payload.Sessions) != 1 {
+		t.Fatalf("session count = %d, want 1", len(payload.Sessions))
+	}
+	session := payload.Sessions[0]
+	if session.Story.Goal != "Please inspect the broken release pipeline" {
+		t.Fatalf("goal = %q, want user ask", session.Story.Goal)
+	}
+	if session.Story.CurrentState != "Active" {
+		t.Fatalf("current_state = %q, want Active", session.Story.CurrentState)
+	}
+	if session.Story.CurrentStateDetail == "" {
+		t.Fatalf("expected current_state_detail in summary payload, got empty")
+	}
+	if session.Story.LastMeaningfulStep == "" {
+		t.Fatalf("expected last_meaningful_step in summary payload, got empty")
+	}
+}
+
 func TestBuildTimelineEventsNarrativeFields(t *testing.T) {
 	now := time.Now().UTC()
 	events := []sessionrt.Event{
@@ -584,6 +657,90 @@ func TestBuildTimelineEventsNarrativeFields(t *testing.T) {
 	}
 	if rows[3].Emoji != "🧩" || rows[3].Tone != "warn" || !rows[3].IsMeaningful {
 		t.Fatalf("unexpected state patch row: %#v", rows[3])
+	}
+}
+
+func TestBuildTimelineEventsMarksSingleWordThinkingAsLowSignal(t *testing.T) {
+	now := time.Now().UTC()
+	rows := buildTimelineEvents([]sessionrt.Event{
+		{
+			SessionID: "sess-low-signal",
+			Seq:       1,
+			Type:      sessionrt.EventAgentThinkingDelta,
+			From:      "agent:a",
+			Timestamp: now,
+			Payload: map[string]any{
+				"delta": "scheduled",
+			},
+		},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1", len(rows))
+	}
+	if rows[0].Title != "Thinking fragment" {
+		t.Fatalf("title = %q, want Thinking fragment", rows[0].Title)
+	}
+	if rows[0].IsMeaningful {
+		t.Fatalf("expected single-word thinking delta to be low-signal: %#v", rows[0])
+	}
+}
+
+func TestBuildWorkSessionDetailSkipsLowSignalThinkingInSummary(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	store.addSession("sess-low-signal", sessionrt.SessionActive, []sessionrt.Event{
+		{
+			SessionID: "sess-low-signal",
+			Seq:       1,
+			Type:      sessionrt.EventMessage,
+			From:      "user:1",
+			Timestamp: now,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleUser,
+				Content: "Review the deployment state",
+			},
+		},
+		{
+			SessionID: "sess-low-signal",
+			Seq:       2,
+			Type:      sessionrt.EventAgentThinkingDelta,
+			From:      "agent:a",
+			Timestamp: now.Add(time.Second),
+			Payload: map[string]any{
+				"delta": "Checking deployment status",
+			},
+		},
+		{
+			SessionID: "sess-low-signal",
+			Seq:       3,
+			Type:      sessionrt.EventAgentThinkingDelta,
+			From:      "agent:a",
+			Timestamp: now.Add(2 * time.Second),
+			Payload: map[string]any{
+				"delta": "scheduled",
+			},
+		},
+	})
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	detail, err := srv.buildWorkSessionDetail(context.Background(), "sess-low-signal", 40)
+	if err != nil {
+		t.Fatalf("buildWorkSessionDetail() error: %v", err)
+	}
+	if got, want := detail.Session.LatestDigest, "Thinking about next step: Checking deployment status"; got != want {
+		t.Fatalf("latest digest = %q, want %q", got, want)
+	}
+	if got, want := detail.Story.LastMeaningfulStep, "Thinking about next step: Checking deployment status"; got != want {
+		t.Fatalf("last meaningful step = %q, want %q", got, want)
+	}
+	if len(detail.Timeline.Events) != 3 {
+		t.Fatalf("timeline event count = %d, want 3", len(detail.Timeline.Events))
+	}
+	if detail.Timeline.Events[2].IsMeaningful {
+		t.Fatalf("expected trailing fragment to remain available but low-signal: %#v", detail.Timeline.Events[2])
 	}
 }
 

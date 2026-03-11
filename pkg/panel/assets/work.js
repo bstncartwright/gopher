@@ -139,18 +139,153 @@
         loadSession(state.sessionID, true);
       }
     }).catch(function (error) {
+      var insights = document.getElementById("work-session-insights");
+      if (insights) {
+        insights.innerHTML = "";
+      }
       document.getElementById("work-session-list").innerHTML = '<p class="empty-state">' + escapeHTML(error.message) + "</p>";
     });
   }
 
+  function sessionStory(session) {
+    return session && session.story ? session.story : {};
+  }
+
+  function sessionNeedsAttention(session) {
+    return session.status === "failed" || !!session.waiting_on_human || !!session.has_anomaly;
+  }
+
+  function sessionBucket(session) {
+    if (session.status === "failed" || !!session.waiting_on_human) return "attention";
+    if (!!session.has_anomaly) return "review";
+    if (!!session.working) return "running";
+    if (session.status === "paused") return "paused";
+    if (session.status === "completed") return "done";
+    return "active";
+  }
+
+  function matchesSessionFilter(session) {
+    switch (state.statusFilter) {
+      case "attention":
+        return sessionNeedsAttention(session);
+      case "waiting":
+        return !!session.waiting_on_human;
+      case "running":
+        return !!session.working;
+      case "review":
+        return !!session.has_anomaly;
+      case "paused":
+        return session.status === "paused";
+      case "done":
+        return session.status === "completed";
+      default:
+        return true;
+    }
+  }
+
+  function sessionSignals(session) {
+    var signals = [];
+    if (session.waiting_on_human) {
+      signals.push({ label: "Human", tone: "warn" });
+    }
+    if (session.status === "failed") {
+      signals.push({ label: "Failed", tone: "danger" });
+    } else if (session.has_anomaly) {
+      signals.push({ label: "Review", tone: "danger" });
+    }
+    if (session.working) {
+      signals.push({ label: "Live", tone: "active" });
+    }
+    if (!signals.length) {
+      signals.push({ label: humanize(session.status || "active"), tone: "neutral" });
+    }
+    return signals;
+  }
+
+  function sessionStateLabel(session) {
+    var story = sessionStory(session);
+    return firstText(story.current_state, session.priority_label, humanize(session.status));
+  }
+
+  function sessionPrimarySummary(session) {
+    var story = sessionStory(session);
+    return firstText(
+      story.current_state_detail,
+      session.waiting_reason,
+      story.latest_anomaly,
+      story.last_meaningful_step,
+      story.latest_conclusion,
+      session.latest_digest,
+      "No recent signal."
+    );
+  }
+
+  function sessionSecondarySummary(session) {
+    var story = sessionStory(session);
+    var goal = firstText(story.goal);
+    var progress = firstText(story.last_meaningful_step, story.latest_conclusion);
+    if (goal && progress && normalize(goal) !== normalize(progress)) {
+      return "Ask: " + clip(goal, 110) + "  Progress: " + clip(progress, 110);
+    }
+    if (goal) {
+      return "Ask: " + clip(goal, 220);
+    }
+    if (progress) {
+      return "Progress: " + clip(progress, 220);
+    }
+    return "";
+  }
+
+  function renderQueueInsights() {
+    var container = document.getElementById("work-session-insights");
+    if (!container) return;
+    if (!state.sessions.length) {
+      container.innerHTML = "";
+      return;
+    }
+    var counts = { total: state.sessions.length, attention: 0, waiting: 0, running: 0, review: 0, done: 0 };
+    state.sessions.forEach(function (session) {
+      if (sessionNeedsAttention(session)) counts.attention++;
+      if (session.waiting_on_human) counts.waiting++;
+      if (session.working) counts.running++;
+      if (session.has_anomaly) counts.review++;
+      if (session.status === "completed") counts.done++;
+    });
+    container.innerHTML = '' +
+      renderQueueInsightCard("Open", counts.total, "Total visible sessions", "neutral") +
+      renderQueueInsightCard("Attention", counts.attention, "Failed, blocked, or suspicious", counts.attention ? "danger" : "neutral") +
+      renderQueueInsightCard("Waiting", counts.waiting, "Sessions asking for a human decision", counts.waiting ? "warn" : "neutral") +
+      renderQueueInsightCard("Running", counts.running, "Live sessions still moving", counts.running ? "active" : "neutral");
+  }
+
+  function renderQueueInsightCard(label, value, detail, tone) {
+    return '' +
+      '<article class="queue-insight' + toneClass(tone) + '">' +
+        '<span class="queue-insight-label">' + escapeHTML(label) + '</span>' +
+        '<strong class="queue-insight-value">' + escapeHTML(String(value || 0)) + '</strong>' +
+        '<p class="queue-insight-copy">' + escapeHTML(detail || "") + '</p>' +
+      '</article>';
+  }
+
   function filteredSessions() {
     return state.sessions.filter(function (session) {
+      var story = sessionStory(session);
       var query = normalize(state.sessionQuery);
       var haystack = normalize(
-        session.title + " " + (session.conversation_id || "") + " " + session.status + " " + session.latest_digest
+        session.title + " " +
+        (session.conversation_id || "") + " " +
+        session.status + " " +
+        session.latest_digest + " " +
+        (session.waiting_reason || "") + " " +
+        (story.current_state || "") + " " +
+        (story.current_state_detail || "") + " " +
+        (story.goal || "") + " " +
+        (story.last_meaningful_step || "") + " " +
+        (story.latest_conclusion || "") + " " +
+        (story.latest_anomaly || "")
       );
       var queryMatch = !query || haystack.indexOf(query) >= 0;
-      var statusMatch = state.statusFilter === "all" || normalize(session.status) === state.statusFilter;
+      var statusMatch = matchesSessionFilter(session);
       return queryMatch && statusMatch;
     });
   }
@@ -158,22 +293,36 @@
   function renderSessions() {
     var container = document.getElementById("work-session-list");
     var sessions = filteredSessions();
+    renderQueueInsights();
     if (!sessions.length) {
       container.innerHTML = '<p class="empty-state">No sessions match the current filters.</p>';
       return;
     }
-    var priority = sessions.filter(function (item) {
-      return item.status === "failed" || item.waiting_on_human || item.has_anomaly;
+    var attention = sessions.filter(function (item) {
+      return sessionNeedsAttention(item);
     });
-    var recent = sessions.filter(function (item) {
-      return !(item.status === "failed" || item.waiting_on_human || item.has_anomaly);
+    var running = sessions.filter(function (item) {
+      return !sessionNeedsAttention(item) && sessionBucket(item) === "running";
+    });
+    var active = sessions.filter(function (item) {
+      var bucket = sessionBucket(item);
+      return !sessionNeedsAttention(item) && bucket !== "running" && bucket !== "done";
+    });
+    var completed = sessions.filter(function (item) {
+      return sessionBucket(item) === "done";
     });
     var html = "";
-    if (priority.length) {
-      html += renderSessionGroup("Needs Attention", priority);
+    if (attention.length) {
+      html += renderSessionGroup("Needs Attention", attention);
     }
-    if (recent.length) {
-      html += renderSessionGroup(priority.length ? "Recent Work" : "Sessions", recent);
+    if (running.length) {
+      html += renderSessionGroup("Running Now", running);
+    }
+    if (active.length) {
+      html += renderSessionGroup(html ? "Queued Work" : "Sessions", active);
+    }
+    if (completed.length) {
+      html += renderSessionGroup("Recently Done", completed);
     }
     container.innerHTML = html;
     applyRelativeTimes(container);
@@ -181,18 +330,29 @@
 
   function renderSessionGroup(label, sessions) {
     var rows = sessions.map(function (session) {
+      var story = sessionStory(session);
       var active = session.session_id === state.sessionID ? " is-active" : "";
       var tone = session.status === "failed" ? " tone-danger" : (session.working ? " tone-active is-live" : "");
+      var signals = sessionSignals(session).map(function (signal) {
+        return '<span class="pill tone-' + escapeHTML(signal.tone) + '">' + escapeHTML(signal.label) + '</span>';
+      }).join("");
+      var secondary = sessionSecondarySummary(session);
       return '' +
         '<button type="button" class="queue-item' + active + tone + '" data-session-id="' + escapeHTML(session.session_id) + '">' +
           '<div class="queue-item-head">' +
-            '<strong>' + escapeHTML(session.title) + '</strong>' +
-            '<span class="pill tone-' + escapeHTML(session.status === "failed" ? "danger" : (session.waiting_on_human ? "warn" : "neutral")) + '">' + escapeHTML(session.priority_label) + '</span>' +
+            '<div class="queue-item-heading">' +
+              '<strong>' + escapeHTML(session.title) + '</strong>' +
+              '<p class="queue-item-state">' + escapeHTML(sessionStateLabel(session)) + '</p>' +
+            '</div>' +
+            '<span class="pill tone-' + escapeHTML(session.status === "failed" ? "danger" : (session.waiting_on_human ? "warn" : (session.has_anomaly ? "danger" : "neutral"))) + '">' + escapeHTML(session.priority_label) + '</span>' +
           '</div>' +
-          '<div class="queue-item-copy">' + escapeHTML(session.latest_digest || "No recent digest.") + '</div>' +
+          '<div class="queue-item-copy">' + escapeHTML(sessionPrimarySummary(session)) + '</div>' +
+          (secondary ? '<div class="queue-item-context">' + escapeHTML(secondary) + '</div>' : '') +
+          (signals ? '<div class="queue-item-signals">' + signals + '</div>' : '') +
           '<div class="queue-meta">' +
-            '<span>' + escapeHTML(session.status) + '</span>' +
+            '<span>#' + escapeHTML(String(session.last_seq || 0)) + '</span>' +
             (session.conversation_id ? '<span>' + escapeHTML(session.conversation_id) + '</span>' : '') +
+            (story.latest_anomaly && !session.waiting_on_human && session.status !== "failed" ? '<span>review flagged</span>' : '') +
             '<time datetime="' + escapeHTML(session.updated_at) + '" data-relative-time data-absolute-time="' + escapeHTML(session.updated_at) + '">' + escapeHTML(session.updated_at) + '</time>' +
           '</div>' +
         '</button>';
@@ -365,6 +525,27 @@
     });
   }
 
+  function isLowSignalThinkingFragment(event) {
+    return normalize(event.type) === "agent_thinking_delta" && !event.is_meaningful;
+  }
+
+  function summarizeThinkingFragments(events) {
+    var parts = [];
+    var seen = {};
+    for (var i = 0; i < events.length; i++) {
+      var value = firstText(events[i].subtitle, events[i].digest, events[i].title);
+      value = clip(value, 24);
+      if (!value || seen[value]) continue;
+      seen[value] = true;
+      parts.push(value);
+      if (parts.length >= 6) break;
+    }
+    if (!parts.length) {
+      return "Hidden by default in narrative view.";
+    }
+    return parts.join(" · ");
+  }
+
   function timelineItems(events) {
     if (state.view !== "narrative" || state.noise !== "grouped") {
       return events.map(function (event) { return { kind: "event", event: event }; });
@@ -384,6 +565,27 @@
 
     for (var i = 0; i < events.length; i++) {
       var event = events[i];
+      if (isLowSignalThinkingFragment(event)) {
+        flush();
+        var fragmentEvents = [event];
+        while (i + 1 < events.length && isLowSignalThinkingFragment(events[i + 1])) {
+          fragmentEvents.push(events[i + 1]);
+          i += 1;
+        }
+        items.push({
+          kind: "bundle",
+          bundle: {
+            id: "thinking-fragments-" + String(fragmentEvents[0].seq) + "-" + String(fragmentEvents[fragmentEvents.length - 1].seq),
+            kind: "fragments",
+            title: "Thinking fragments",
+            summaryTitle: "Thinking fragments",
+            preview: summarizeThinkingFragments(fragmentEvents),
+            metaLabel: String(fragmentEvents.length) + (fragmentEvents.length === 1 ? " fragment" : " fragments"),
+            events: fragmentEvents
+          }
+        });
+        continue;
+      }
       if (!event.bundle_id) {
         flush();
         items.push({ kind: "event", event: event });
@@ -428,11 +630,12 @@
 
   function renderBundle(bundle) {
     var latest = bundle.events[bundle.events.length - 1];
-    var preview = firstText(latest.subtitle, latest.digest, latest.title);
+    var preview = firstText(bundle.preview, latest.subtitle, latest.digest, latest.title);
     var open = bundle.events.some(function (event) {
       return String(event.seq) === String(state.selectedEventSeq);
     }) ? " open" : "";
     var bundleTone = normalize(latest.tone || latest.category || "muted");
+    var metaLabel = firstText(bundle.metaLabel, String(bundle.events.length) + " steps");
     var rows = bundle.events.map(function (event) {
       return '<div class="bundle-row">' + renderEventCard(event, true) + '</div>';
     }).join("");
@@ -442,9 +645,9 @@
           '<div class="bundle-head">' +
             '<div>' +
               '<p class="bundle-label">' + escapeHTML(bundle.title) + '</p>' +
-              '<strong class="bundle-summary">' + escapeHTML(firstText(latest.title, latest.type_label, latest.type)) + '</strong>' +
+              '<strong class="bundle-summary">' + escapeHTML(firstText(bundle.summaryTitle, latest.title, latest.type_label, latest.type)) + '</strong>' +
             '</div>' +
-            '<span class="bundle-meta">' + escapeHTML(String(bundle.events.length)) + ' steps · <time datetime="' + escapeHTML(latest.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(latest.timestamp) + '">' + escapeHTML(latest.timestamp) + '</time></span>' +
+            '<span class="bundle-meta">' + escapeHTML(metaLabel) + ' · <time datetime="' + escapeHTML(latest.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(latest.timestamp) + '">' + escapeHTML(latest.timestamp) + '</time></span>' +
           '</div>' +
           '<div class="bundle-item-copy">' + escapeHTML(preview || "Expand to inspect this bundle.") + '</div>' +
         '</summary>' +

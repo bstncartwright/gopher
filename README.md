@@ -469,6 +469,7 @@ for local linux service management:
 gopher service install --role gateway
 gopher service install --role node
 
+gopher service install-updater --config ~/.gopher/gopher.toml
 gopher service status
 gopher service restart --role gateway
 gopher service logs --role node --lines 200
@@ -485,6 +486,7 @@ when installed as a service:
 
 - `gopher-gateway.service` runs `gopher gateway run --config <path>`
 - `gopher-node.service` runs `gopher node run --config <path>`
+- `gopher service install-updater` writes and enables `gopher-gateway-update.timer` when `[gateway.update].enabled = true`
 
 the bootstrap installer supports linux and macOS release installs:
 

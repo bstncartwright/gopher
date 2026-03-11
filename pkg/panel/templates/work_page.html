@@ -26,12 +26,16 @@
           <input id="work-search" class="search-input" type="search" placeholder="Search sessions, rooms, or status…" autocomplete="off" spellcheck="false">
           <div class="chip-row" data-work-status-row>
             <button type="button" class="chip is-active" data-status-filter="all" aria-pressed="true">All</button>
-            <button type="button" class="chip" data-status-filter="active" aria-pressed="false">Active</button>
+            <button type="button" class="chip" data-status-filter="attention" aria-pressed="false">Attention</button>
+            <button type="button" class="chip" data-status-filter="waiting" aria-pressed="false">Waiting</button>
+            <button type="button" class="chip" data-status-filter="running" aria-pressed="false">Running</button>
+            <button type="button" class="chip" data-status-filter="review" aria-pressed="false">Review</button>
             <button type="button" class="chip" data-status-filter="paused" aria-pressed="false">Paused</button>
-            <button type="button" class="chip" data-status-filter="failed" aria-pressed="false">Failed</button>
+            <button type="button" class="chip" data-status-filter="done" aria-pressed="false">Done</button>
           </div>
         </div>
       </div>
+      <div id="work-session-insights" class="queue-insights" aria-live="polite"></div>
       <div id="work-session-list" class="queue-list">
         <p class="empty-state">Loading sessions…</p>
       </div>

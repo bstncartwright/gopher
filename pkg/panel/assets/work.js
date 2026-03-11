@@ -368,6 +368,27 @@
     });
   }
 
+  function isLowSignalThinkingFragment(event) {
+    return normalize(event.type) === "agent_thinking_delta" && !event.is_meaningful;
+  }
+
+  function summarizeThinkingFragments(events) {
+    var parts = [];
+    var seen = {};
+    for (var i = 0; i < events.length; i++) {
+      var value = firstText(events[i].subtitle, events[i].digest, events[i].title);
+      value = clip(value, 24);
+      if (!value || seen[value]) continue;
+      seen[value] = true;
+      parts.push(value);
+      if (parts.length >= 6) break;
+    }
+    if (!parts.length) {
+      return "Hidden by default in narrative view.";
+    }
+    return parts.join(" · ");
+  }
+
   function timelineItems(events) {
     if (state.view !== "narrative" || state.noise !== "grouped") {
       return events.map(function (event) { return { kind: "event", event: event }; });
@@ -387,6 +408,27 @@
 
     for (var i = 0; i < events.length; i++) {
       var event = events[i];
+      if (isLowSignalThinkingFragment(event)) {
+        flush();
+        var fragmentEvents = [event];
+        while (i + 1 < events.length && isLowSignalThinkingFragment(events[i + 1])) {
+          fragmentEvents.push(events[i + 1]);
+          i += 1;
+        }
+        items.push({
+          kind: "bundle",
+          bundle: {
+            id: "thinking-fragments-" + String(fragmentEvents[0].seq) + "-" + String(fragmentEvents[fragmentEvents.length - 1].seq),
+            kind: "fragments",
+            title: "Thinking fragments",
+            summaryTitle: "Thinking fragments",
+            preview: summarizeThinkingFragments(fragmentEvents),
+            metaLabel: String(fragmentEvents.length) + (fragmentEvents.length === 1 ? " fragment" : " fragments"),
+            events: fragmentEvents
+          }
+        });
+        continue;
+      }
       if (!event.bundle_id) {
         flush();
         items.push({ kind: "event", event: event });
@@ -431,11 +473,12 @@
 
   function renderBundle(bundle) {
     var latest = bundle.events[bundle.events.length - 1];
-    var preview = firstText(latest.subtitle, latest.digest, latest.title);
+    var preview = firstText(bundle.preview, latest.subtitle, latest.digest, latest.title);
     var open = bundle.events.some(function (event) {
       return String(event.seq) === String(state.selectedEventSeq);
     }) ? " open" : "";
     var bundleTone = normalize(latest.tone || latest.category || "muted");
+    var metaLabel = firstText(bundle.metaLabel, String(bundle.events.length) + " steps");
     var rows = bundle.events.map(function (event) {
       return '<div class="bundle-row">' + renderEventCard(event, true) + '</div>';
     }).join("");
@@ -445,9 +488,9 @@
           '<div class="bundle-head">' +
             '<div>' +
               '<p class="bundle-label">' + escapeHTML(bundle.title) + '</p>' +
-              '<strong class="bundle-summary">' + escapeHTML(firstText(latest.title, latest.type_label, latest.type)) + '</strong>' +
+              '<strong class="bundle-summary">' + escapeHTML(firstText(bundle.summaryTitle, latest.title, latest.type_label, latest.type)) + '</strong>' +
             '</div>' +
-            '<span class="bundle-meta">' + escapeHTML(String(bundle.events.length)) + ' steps · <time datetime="' + escapeHTML(latest.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(latest.timestamp) + '">' + escapeHTML(latest.timestamp) + '</time></span>' +
+            '<span class="bundle-meta">' + escapeHTML(metaLabel) + ' · <time datetime="' + escapeHTML(latest.timestamp) + '" data-relative-time data-absolute-time="' + escapeHTML(latest.timestamp) + '">' + escapeHTML(latest.timestamp) + '</time></span>' +
           '</div>' +
           '<div class="bundle-item-copy">' + escapeHTML(preview || "Expand to inspect this bundle.") + '</div>' +
         '</summary>' +

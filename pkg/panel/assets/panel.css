@@ -1513,6 +1513,13 @@ summary {
   border-color: rgba(102, 195, 154, 0.18);
 }
 
+.event-bundle.bundle-fragments {
+  border-color: rgba(89, 210, 221, 0.26);
+  background:
+    linear-gradient(135deg, rgba(89, 210, 221, 0.08), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.02);
+}
+
 .event-bundle.bundle-system,
 .event-bundle.bundle-anomaly {
   border-color: rgba(231, 190, 103, 0.2);

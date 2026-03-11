@@ -14,6 +14,9 @@ type fakeServiceRuntime struct {
 	installCalled   bool
 	installOpts     serviceInstallOptions
 	installErr      error
+	updaterCalled   bool
+	updaterOpts     serviceUpdaterInstallOptions
+	updaterErr      error
 	uninstallCalled bool
 	uninstallErr    error
 	statusCalled    bool
@@ -36,6 +39,13 @@ func (f *fakeServiceRuntime) Install(ctx context.Context, opts serviceInstallOpt
 	f.installCalled = true
 	f.installOpts = opts
 	return f.installErr
+}
+
+func (f *fakeServiceRuntime) InstallUpdater(ctx context.Context, opts serviceUpdaterInstallOptions) error {
+	_ = ctx
+	f.updaterCalled = true
+	f.updaterOpts = opts
+	return f.updaterErr
 }
 
 func (f *fakeServiceRuntime) Uninstall(ctx context.Context) error {
@@ -188,6 +198,42 @@ func TestRunServiceSubcommandRoutesInstallNodeRole(t *testing.T) {
 	}
 	if fake.installOpts.EnvPath != defaultServiceEnvPath() {
 		t.Fatalf("install env path = %q, want %q", fake.installOpts.EnvPath, defaultServiceEnvPath())
+	}
+}
+
+func TestRunServiceSubcommandRoutesInstallUpdater(t *testing.T) {
+	prev := newServiceRuntime
+	prevGetEUID := serviceGetEUID
+	prevLookupUser := serviceLookupUser
+	defer func() { newServiceRuntime = prev }()
+	defer func() { serviceGetEUID = prevGetEUID }()
+	defer func() { serviceLookupUser = prevLookupUser }()
+	serviceGetEUID = func() int { return 1000 }
+	t.Setenv("HOME", "/tmp/gopher-home")
+	serviceLookupUser = func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	}
+	fake := &fakeServiceRuntime{}
+	newServiceRuntime = func(stdout, stderr io.Writer) serviceRuntime {
+		_ = stdout
+		_ = stderr
+		return fake
+	}
+	var out bytes.Buffer
+	if err := runServiceSubcommand([]string{"install-updater"}, &out, &out); err != nil {
+		t.Fatalf("runServiceSubcommand(install-updater) error: %v", err)
+	}
+	if !fake.updaterCalled {
+		t.Fatalf("expected install-updater to be called")
+	}
+	if fake.updaterOpts.ConfigPath != defaultServiceConfigPath("gateway") {
+		t.Fatalf("install-updater config path = %q, want %q", fake.updaterOpts.ConfigPath, defaultServiceConfigPath("gateway"))
+	}
+	if fake.updaterOpts.EnvPath != defaultServiceEnvPath() {
+		t.Fatalf("install-updater env path = %q, want %q", fake.updaterOpts.EnvPath, defaultServiceEnvPath())
+	}
+	if strings.TrimSpace(fake.updaterOpts.BinaryPath) == "" {
+		t.Fatalf("install-updater binary path should not be empty")
 	}
 }
 

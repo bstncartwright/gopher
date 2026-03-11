@@ -506,6 +506,79 @@ func TestPanelWorkAPIEndpoints(t *testing.T) {
 	}
 }
 
+func TestPanelWorkSessionsAPIIncludesStoryPreview(t *testing.T) {
+	store := newFakeSessionStore()
+	now := time.Now().UTC()
+	store.addSession("sess-preview", sessionrt.SessionActive, []sessionrt.Event{
+		{
+			SessionID: "sess-preview",
+			Seq:       1,
+			Type:      sessionrt.EventMessage,
+			From:      "user:1",
+			Timestamp: now,
+			Payload: sessionrt.Message{
+				Role:    sessionrt.RoleUser,
+				Content: "Please inspect the broken release pipeline",
+			},
+		},
+		{
+			SessionID: "sess-preview",
+			Seq:       2,
+			Type:      sessionrt.EventToolCall,
+			From:      "agent:a",
+			Timestamp: now.Add(time.Second),
+			Payload: map[string]any{
+				"name":      "read",
+				"arguments": map[string]any{"path": "/tmp/release.log"},
+			},
+		},
+		{
+			SessionID: "sess-preview",
+			Seq:       3,
+			Type:      sessionrt.EventToolResult,
+			From:      "agent:a",
+			Timestamp: now.Add(2 * time.Second),
+			Payload: map[string]any{
+				"name":   "read",
+				"status": "ok",
+				"stdout": "timeout near deploy step",
+			},
+		},
+	})
+	srv, err := NewServer(ServerOptions{ListenAddr: "127.0.0.1:29329", Store: store})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/work/sessions", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload workSessionsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode sessions payload: %v", err)
+	}
+	if len(payload.Sessions) != 1 {
+		t.Fatalf("session count = %d, want 1", len(payload.Sessions))
+	}
+	session := payload.Sessions[0]
+	if session.Story.Goal != "Please inspect the broken release pipeline" {
+		t.Fatalf("goal = %q, want user ask", session.Story.Goal)
+	}
+	if session.Story.CurrentState != "Active" {
+		t.Fatalf("current_state = %q, want Active", session.Story.CurrentState)
+	}
+	if session.Story.CurrentStateDetail == "" {
+		t.Fatalf("expected current_state_detail in summary payload, got empty")
+	}
+	if session.Story.LastMeaningfulStep == "" {
+		t.Fatalf("expected last_meaningful_step in summary payload, got empty")
+	}
+}
+
 func TestBuildTimelineEventsNarrativeFields(t *testing.T) {
 	now := time.Now().UTC()
 	events := []sessionrt.Event{

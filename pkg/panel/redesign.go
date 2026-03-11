@@ -186,20 +186,21 @@ type workSessionsResponse struct {
 }
 
 type workSessionSummary struct {
-	SessionID      string    `json:"session_id"`
-	Title          string    `json:"title"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	Status         string    `json:"status"`
-	Working        bool      `json:"working"`
-	WaitingOnHuman bool      `json:"waiting_on_human"`
-	WaitingReason  string    `json:"waiting_reason,omitempty"`
-	HasAnomaly     bool      `json:"has_anomaly"`
-	LatestDigest   string    `json:"latest_digest"`
-	UpdatedAt      string    `json:"updated_at"`
-	LastSeq        uint64    `json:"last_seq"`
-	PriorityLabel  string    `json:"priority_label"`
-	UpdatedAtTime  time.Time `json:"-"`
-	Priority       int       `json:"-"`
+	SessionID      string           `json:"session_id"`
+	Title          string           `json:"title"`
+	ConversationID string           `json:"conversation_id,omitempty"`
+	Status         string           `json:"status"`
+	Working        bool             `json:"working"`
+	WaitingOnHuman bool             `json:"waiting_on_human"`
+	WaitingReason  string           `json:"waiting_reason,omitempty"`
+	HasAnomaly     bool             `json:"has_anomaly"`
+	LatestDigest   string           `json:"latest_digest"`
+	Story          workSessionStory `json:"story"`
+	UpdatedAt      string           `json:"updated_at"`
+	LastSeq        uint64           `json:"last_seq"`
+	PriorityLabel  string           `json:"priority_label"`
+	UpdatedAtTime  time.Time        `json:"-"`
+	Priority       int              `json:"-"`
 }
 
 type workSessionDetailResponse struct {
@@ -861,12 +862,14 @@ func (s *Server) buildWorkSessionSummary(ctx context.Context, record sessionrt.S
 	page, _ := s.listSessionEventsBefore(ctx, record.SessionID, 0, 25)
 	events := buildTimelineEvents(page.Events)
 	latestDigest := "No recent events."
+	latestAnomaly := ""
 	hasAnomaly := false
 	if len(events) > 0 {
 		latestDigest = latestReadableTimelineDigest(events)
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].Anomaly {
 				hasAnomaly = true
+				latestAnomaly = events[i].Digest
 				latestDigest = events[i].Digest
 				break
 			}
@@ -874,7 +877,7 @@ func (s *Server) buildWorkSessionSummary(ctx context.Context, record sessionrt.S
 	}
 	status := sessionStatusText(record.Status)
 	priorityLabel, priority := sessionPriority(status, record.InFlight, strings.TrimSpace(waitingReason) != "", hasAnomaly)
-	return workSessionSummary{
+	summary := workSessionSummary{
 		SessionID:      string(record.SessionID),
 		Title:          title,
 		ConversationID: conversationID,
@@ -890,6 +893,8 @@ func (s *Server) buildWorkSessionSummary(ctx context.Context, record sessionrt.S
 		UpdatedAtTime:  updatedAt,
 		Priority:       priority,
 	}
+	summary.Story = buildWorkSessionStory(summary, events, latestAnomaly)
+	return summary
 }
 
 func latestReadableTimelineDigest(events []workTimelineEvent) string {
@@ -1840,6 +1845,15 @@ func buildWorkSessionStory(summary workSessionSummary, timeline []workTimelineEv
 		if story.Goal != "" && story.LatestConclusion != "" && story.LastMeaningfulStep != "" && story.LatestAnomaly != "" {
 			break
 		}
+	}
+	if story.LastMeaningfulStep == "" {
+		story.LastMeaningfulStep = firstNonEmpty(story.LatestConclusion, summary.LatestDigest)
+	}
+	if story.LatestConclusion == "" {
+		story.LatestConclusion = firstNonEmpty(story.LastMeaningfulStep, summary.LatestDigest)
+	}
+	if story.CurrentStateDetail == "" {
+		story.CurrentStateDetail = firstNonEmpty(story.LatestAnomaly, story.LastMeaningfulStep, story.LatestConclusion, summary.LatestDigest)
 	}
 	return story
 }

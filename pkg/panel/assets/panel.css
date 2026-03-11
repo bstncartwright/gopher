@@ -919,6 +919,44 @@ summary {
   padding-right: 4px;
 }
 
+.queue-insights {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.queue-insight {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
+  min-width: 0;
+}
+
+.queue-insight-label,
+.queue-item-label {
+  display: block;
+  color: var(--text-subtle);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.queue-insight-value {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.queue-insight-copy {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .queue-group-label {
   margin: 0 0 8px;
   color: rgba(242, 182, 93, 0.86);
@@ -985,6 +1023,33 @@ summary {
 .queue-item-copy,
 .bundle-item-copy {
   color: var(--text-muted);
+}
+
+.queue-item-heading {
+  min-width: 0;
+}
+
+.queue-item-heading strong {
+  display: block;
+}
+
+.queue-item-state {
+  margin: 4px 0 0;
+  color: var(--text-subtle);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.queue-item-context {
+  color: var(--text-subtle);
+  font-size: 0.79rem;
+  line-height: 1.45;
+}
+
+.queue-item-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .workspace-panel {
@@ -1659,6 +1724,7 @@ summary {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
+  .queue-insights,
   .work-shell,
   .workspace-stage,
   .workspace-side,

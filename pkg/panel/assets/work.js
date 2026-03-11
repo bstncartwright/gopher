@@ -495,16 +495,13 @@
       '<div class="session-brief">' +
         '<div class="session-brief-main">' +
           renderBriefCard("Current State", story.current_state || session.priority_label, story.current_state_detail, session.status === "failed" ? "danger" : (session.waiting_on_human ? "warn" : "active"), true) +
-          renderBriefCard("Latest Goal", story.goal || "No recent user ask in this window.", story.latest_conclusion || "No recent agent conclusion in this window.", "user", false) +
-          renderBriefCard("Readout", story.last_meaningful_step || "No meaningful work step in this window.", story.latest_anomaly || "No anomaly in the current window.", story.latest_anomaly ? "danger" : "agent", false) +
+          renderBriefCard("Latest Ask", story.goal || "No recent user ask in this window.", "", "user", false) +
+          renderBriefCard("Progress", firstText(story.last_meaningful_step, story.latest_conclusion, session.latest_digest, "No meaningful work step in this window."), story.latest_anomaly || "", story.latest_anomaly ? "danger" : "agent", false) +
         '</div>' +
         '<div class="session-stat-strip">' +
           renderStatPill("Updated", relativeTime(session.updated_at), "muted") +
-          renderStatPill("Last Seq", session.last_seq || 0, "muted") +
-          renderStatPill("User", counts.user || 0, "user") +
-          renderStatPill("Agent", counts.agent || 0, "agent") +
+          renderStatPill("Events", session.last_seq || 0, "muted") +
           renderStatPill("Tools", counts.tools || 0, "active") +
-          renderStatPill("Control", counts.control || 0, "warn") +
           renderStatPill("Errors", counts.errors || 0, counts.errors ? "danger" : "muted") +
         '</div>' +
       '</div>' +

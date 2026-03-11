@@ -16,7 +16,6 @@
     <aside class="surface queue-panel">
       <header class="surface-header compact">
         <div>
-          <p class="eyebrow">Queue</p>
           <h2>Sessions</h2>
         </div>
         <button type="button" class="ghost-btn mobile-only" data-work-filter-toggle aria-expanded="false">Filters</button>
@@ -44,8 +43,7 @@
 
     <section class="surface workspace-panel">
       <header class="surface-header compact workspace-header">
-        <div>
-          <p class="eyebrow">Workspace</p>
+        <div class="workspace-title-block">
           <h2 id="work-session-heading">Select a session</h2>
           <p id="work-session-subtitle" class="surface-copy">Use the queue to open a session and inspect the timeline.</p>
         </div>
@@ -54,6 +52,10 @@
           <button type="button" class="ghost-btn" data-work-filter-toggle aria-expanded="false">Filters</button>
         </div>
       </header>
+
+      <div class="workspace-summary" id="work-session-summary">
+        <p class="empty-state">Session story will appear here.</p>
+      </div>
 
       <div class="workspace-console">
         <div class="chip-row" data-work-filter-row>
@@ -84,15 +86,9 @@
           </div>
         </section>
 
-        <div class="workspace-side">
-          <div class="workspace-summary" id="work-session-summary">
-            <p class="empty-state">Session story will appear here.</p>
-          </div>
-
-          <aside class="inspector-panel" id="work-inspector">
-            <p class="empty-state">Choose an event to inspect its details.</p>
-          </aside>
-        </div>
+        <aside class="inspector-panel" id="work-inspector">
+          <p class="empty-state">Choose an event to inspect its details.</p>
+        </aside>
       </div>
     </section>
   </section>

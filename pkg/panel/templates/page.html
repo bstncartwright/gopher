@@ -43,6 +43,12 @@
     </div>
   </header>
 
+  <nav class="tab-nav" aria-label="Admin sections">
+    {{range .NavItems}}
+    <a class="tab-nav-link{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
+    {{end}}
+  </nav>
+
   <div class="status-strip" aria-label="Runtime summary">
     {{range .StatusStrip}}
     <div class="status-chip tone-{{.Tone}}">
@@ -53,12 +59,6 @@
   </div>
 
   <div class="app-shell">
-    <nav class="side-nav" aria-label="Admin sections">
-      {{range .NavItems}}
-      <a class="side-nav-link{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
-      {{end}}
-    </nav>
-
     <main id="main-content" class="content-panel">
       {{if eq .CurrentSection "overview"}}
       {{template "overview_page.html" .}}

@@ -147,6 +147,7 @@ func startTelegramDMBridgeWithRuntime(
 		{Command: "status", Description: "Show session and context status"},
 		{Command: "context", Description: "Context commands: clear or summarize"},
 		{Command: "trace", Description: "Trace commands: on/off/status"},
+		{Command: "thinking", Description: "Thinking stream: on/off/status"},
 		{Command: "model", Description: "Model commands: status or set provider:model"},
 	}); err != nil {
 		slog.Warn("telegram_gateway: register telegram bot commands failed", "error", err)

@@ -169,6 +169,7 @@ type pendingErrorFallback struct {
 type draftStreamState struct {
 	DraftID      int64
 	Text         string
+	ThinkingText string
 	ToolProgress []string
 	LastSentAt   time.Time
 	LastSentN    int
@@ -203,6 +204,7 @@ const (
 	dmDraftMinSendChars      = 48
 	dmDraftMinSendInterval   = 900 * time.Millisecond
 	dmDraftToolPrefix        = "Working:"
+	dmDraftThinkingPrefix    = "Thinking:"
 	heartbeatOKToken         = "HEARTBEAT_OK"
 	noReplyToken             = "NO_REPLY"
 	heartbeatAckDefaultChars = 300
@@ -211,6 +213,7 @@ const (
 	traceProvisionBackoff    = 30 * time.Second
 	dmModelCommandDisabled   = "Model switching is not available on this gateway."
 	dmModelCommandUsage      = "Usage: /model <provider:model> (or /model status)"
+	dmThinkingCommandUsage   = "Usage: /thinking <on|off|status>"
 )
 
 var dmTypingKeepaliveInterval = dmTypingKeepaliveDefault
@@ -573,6 +576,30 @@ func (p *DMPipeline) handleInboundCommand(ctx context.Context, inbound transport
 			return true, err
 		}
 		return true, nil
+	case "thinking.status":
+		if _, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
+			return true, err
+		}
+		p.sendCommandReply(conversationID, recipientID, inbound.EventID, thinkingStatusReply(p.thinkingModeForConversation(conversationID)))
+		return true, nil
+	case "thinking.on":
+		if _, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
+			return true, err
+		}
+		if err := p.setThinkingModeForConversation(conversationID, ThinkingModeOn); err != nil {
+			return true, err
+		}
+		p.sendCommandReply(conversationID, recipientID, inbound.EventID, thinkingStatusReply(ThinkingModeOn))
+		return true, nil
+	case "thinking.off":
+		if _, err := p.resolveConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
+			return true, err
+		}
+		if err := p.setThinkingModeForConversation(conversationID, ThinkingModeOff); err != nil {
+			return true, err
+		}
+		p.sendCommandReply(conversationID, recipientID, inbound.EventID, thinkingStatusReply(ThinkingModeOff))
+		return true, nil
 	case "context.clear":
 		if err := p.resetConversationSession(ctx, conversationID, inbound.ConversationName, inbound.SenderID, agentID, recipientID); err != nil {
 			return true, err
@@ -724,6 +751,20 @@ func parseDMCommand(text string) (dmCommand, bool) {
 				return dmCommand{}, false
 			}
 			return dmCommand{Kind: "model.set", Value: value}, true
+		}
+	case "thinking":
+		if len(fields) == 1 {
+			return dmCommand{Kind: "thinking.status"}, true
+		}
+		switch strings.ToLower(strings.TrimSpace(fields[1])) {
+		case "status":
+			return dmCommand{Kind: "thinking.status"}, true
+		case "on":
+			return dmCommand{Kind: "thinking.on"}, true
+		case "off":
+			return dmCommand{Kind: "thinking.off"}, true
+		default:
+			return dmCommand{}, false
 		}
 	case "context":
 		if len(fields) < 2 {
@@ -1528,6 +1569,10 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				p.sendToolCallDraft(conversationID, event)
 				continue
 			}
+			if event.Type == sessionrt.EventAgentThinkingDelta {
+				p.sendThinkingDraft(conversationID, event)
+				continue
+			}
 			if event.Type == sessionrt.EventAgentDelta {
 				p.sendDraftDelta(conversationID, event)
 				continue
@@ -2100,7 +2145,24 @@ func (p *DMPipeline) sendDraftDelta(conversationID string, event sessionrt.Event
 		return
 	}
 	p.updateAndSendDraft(conversationID, event.SessionID, false, func(state *draftStreamState) bool {
+		if p.thinkingEnabledForConversation(conversationID) && strings.TrimSpace(state.ThinkingText) != "" {
+			return false
+		}
 		state.Text += delta
+		return true
+	})
+}
+
+func (p *DMPipeline) sendThinkingDraft(conversationID string, event sessionrt.Event) {
+	if !p.thinkingEnabledForConversation(conversationID) {
+		return
+	}
+	delta := deltaTextFromPayload(event.Payload)
+	if delta == "" {
+		return
+	}
+	p.updateAndSendDraft(conversationID, event.SessionID, false, func(state *draftStreamState) bool {
+		state.ThinkingText += delta
 		return true
 	})
 }
@@ -2258,7 +2320,7 @@ func toolCallEmoji(name string) string {
 }
 
 func draftTextForState(state draftStreamState) string {
-	body := sanitizeDraftBody(state.Text)
+	body := draftBodyForState(state)
 	toolSummary := strings.TrimSpace(strings.Join(state.ToolProgress, " "))
 	switch {
 	case toolSummary == "":
@@ -2268,6 +2330,13 @@ func draftTextForState(state draftStreamState) string {
 	default:
 		return trimDraftText(dmDraftToolPrefix + " " + toolSummary + "\n\n" + body)
 	}
+}
+
+func draftBodyForState(state draftStreamState) string {
+	if thinking := strings.TrimSpace(sanitizeDraftBody(state.ThinkingText)); thinking != "" {
+		return dmDraftThinkingPrefix + "\n\n" + thinking
+	}
+	return sanitizeDraftBody(state.Text)
 }
 
 func sanitizeDraftBody(text string) string {
@@ -2402,6 +2471,45 @@ func (p *DMPipeline) EnsureTraceConversation(ctx context.Context, req TraceConve
 
 func (p *DMPipeline) TraceConversationFor(conversationID string) (string, bool) {
 	return p.traceConversationFor(conversationID)
+}
+
+func (p *DMPipeline) thinkingModeForConversation(conversationID string) string {
+	if p == nil || p.bindings == nil {
+		return ThinkingModeOff
+	}
+	binding, ok := p.bindings.GetByConversation(strings.TrimSpace(conversationID))
+	if !ok {
+		return ThinkingModeOff
+	}
+	mode := normalizeThinkingMode(binding.ThinkingMode)
+	if mode == "" {
+		return ThinkingModeOff
+	}
+	return mode
+}
+
+func (p *DMPipeline) thinkingEnabledForConversation(conversationID string) bool {
+	return p.thinkingModeForConversation(conversationID) == ThinkingModeOn
+}
+
+func (p *DMPipeline) setThinkingModeForConversation(conversationID, mode string) error {
+	if p == nil || p.bindings == nil {
+		return fmt.Errorf("conversation bindings are unavailable")
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return fmt.Errorf("conversation id is required")
+	}
+	mode = normalizeThinkingMode(mode)
+	if mode == "" {
+		return errors.New("usage: /thinking <on|off|status>")
+	}
+	binding, ok := p.bindings.GetByConversation(conversationID)
+	if !ok {
+		return fmt.Errorf("conversation %q is not bound", conversationID)
+	}
+	binding.ThinkingMode = mode
+	return p.bindings.Set(binding)
 }
 
 func (p *DMPipeline) ConversationForSession(sessionID sessionrt.SessionID) (string, bool) {
@@ -3339,6 +3447,13 @@ func (p *DMPipeline) sendTraceConversationReadyNotice(conversationID, traceConve
 
 func (p *DMPipeline) sendTraceCommandReply(conversationID, senderID, triggerEventID, text string) {
 	p.sendCommandReply(conversationID, senderID, triggerEventID, text)
+}
+
+func thinkingStatusReply(mode string) string {
+	if normalizeThinkingMode(mode) == ThinkingModeOn {
+		return "Thinking stream is on for this conversation."
+	}
+	return "Thinking stream is off for this conversation."
 }
 
 func (p *DMPipeline) sendCommandReply(conversationID, senderID, triggerEventID, text string) {

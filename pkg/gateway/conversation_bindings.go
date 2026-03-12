@@ -24,6 +24,8 @@ const (
 	TraceModeOff      = "off"
 	TraceModeReadOnly = "read_only"
 	TraceRenderCards  = "cards"
+	ThinkingModeOff   = "off"
+	ThinkingModeOn    = "on"
 )
 
 type ConversationBinding struct {
@@ -36,6 +38,7 @@ type ConversationBinding struct {
 	TraceConversationName string              `json:"trace_conversation_name,omitempty"`
 	TraceMode             string              `json:"trace_mode,omitempty"`
 	TraceRender           string              `json:"trace_render,omitempty"`
+	ThinkingMode          string              `json:"thinking_mode,omitempty"`
 	LastInboundEvent      string              `json:"last_inbound_event,omitempty"`
 	LastHeartbeatText     string              `json:"last_heartbeat_text,omitempty"`
 	LastHeartbeatSentAt   time.Time           `json:"last_heartbeat_sent_at,omitempty"`
@@ -118,6 +121,7 @@ func (s *FileConversationBindingStore) Set(binding ConversationBinding) error {
 			normalized.ConversationName = existing.ConversationName
 		}
 		normalized = mergeTraceFields(normalized, existing)
+		normalized = mergeThinkingFields(normalized, existing)
 		normalized = mergeHeartbeatFields(normalized, existing)
 	}
 	for conversationID, existing := range s.items {
@@ -250,6 +254,7 @@ func (s *InMemoryConversationBindingStore) Set(binding ConversationBinding) erro
 			normalized.ConversationName = existing.ConversationName
 		}
 		normalized = mergeTraceFields(normalized, existing)
+		normalized = mergeThinkingFields(normalized, existing)
 		normalized = mergeHeartbeatFields(normalized, existing)
 	}
 	for conversationID, existing := range s.items {
@@ -293,6 +298,7 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 	traceConversationName := strings.TrimSpace(binding.TraceConversationName)
 	traceMode := normalizeTraceMode(binding.TraceMode)
 	traceRender := normalizeTraceRender(binding.TraceRender)
+	thinkingMode := normalizeThinkingMode(binding.ThinkingMode)
 	lastInboundEvent := strings.TrimSpace(binding.LastInboundEvent)
 	lastHeartbeatText := strings.TrimSpace(binding.LastHeartbeatText)
 	lastHeartbeatSentAt := binding.LastHeartbeatSentAt.UTC()
@@ -317,6 +323,7 @@ func normalizeConversationBinding(binding ConversationBinding) (ConversationBind
 		TraceConversationName: traceConversationName,
 		TraceMode:             traceMode,
 		TraceRender:           traceRender,
+		ThinkingMode:          thinkingMode,
 		LastInboundEvent:      lastInboundEvent,
 		LastHeartbeatText:     lastHeartbeatText,
 		LastHeartbeatSentAt:   lastHeartbeatSentAt,
@@ -346,6 +353,7 @@ func cloneConversationBinding(in ConversationBinding) ConversationBinding {
 	out.TraceConversationName = strings.TrimSpace(out.TraceConversationName)
 	out.TraceMode = normalizeTraceMode(out.TraceMode)
 	out.TraceRender = normalizeTraceRender(out.TraceRender)
+	out.ThinkingMode = normalizeThinkingMode(out.ThinkingMode)
 	out.LastInboundEvent = strings.TrimSpace(out.LastInboundEvent)
 	out.LastHeartbeatText = strings.TrimSpace(out.LastHeartbeatText)
 	out.LastHeartbeatSentAt = out.LastHeartbeatSentAt.UTC()
@@ -384,6 +392,13 @@ func mergeTraceFields(target ConversationBinding, existing ConversationBinding) 
 	return target
 }
 
+func mergeThinkingFields(target ConversationBinding, existing ConversationBinding) ConversationBinding {
+	if strings.TrimSpace(target.ThinkingMode) == "" {
+		target.ThinkingMode = existing.ThinkingMode
+	}
+	return target
+}
+
 func mergeHeartbeatFields(target ConversationBinding, existing ConversationBinding) ConversationBinding {
 	if strings.TrimSpace(target.LastHeartbeatText) == "" {
 		target.LastHeartbeatText = existing.LastHeartbeatText
@@ -392,6 +407,19 @@ func mergeHeartbeatFields(target ConversationBinding, existing ConversationBindi
 		target.LastHeartbeatSentAt = existing.LastHeartbeatSentAt
 	}
 	return target
+}
+
+func normalizeThinkingMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
+	case ThinkingModeOff:
+		return ThinkingModeOff
+	case ThinkingModeOn:
+		return ThinkingModeOn
+	default:
+		return ""
+	}
 }
 
 func normalizeTraceRender(value string) string {

@@ -2502,7 +2502,7 @@ func (p *DMPipeline) setThinkingModeForConversation(conversationID, mode string)
 	}
 	mode = normalizeThinkingMode(mode)
 	if mode == "" {
-		return fmt.Errorf(dmThinkingCommandUsage)
+		return errors.New("usage: /thinking <on|off|status>")
 	}
 	binding, ok := p.bindings.GetByConversation(conversationID)
 	if !ok {

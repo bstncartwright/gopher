@@ -4340,6 +4340,20 @@ func TestDMPipelineThinkingDraftPrefersThinkingDeltasWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestDMPipelineRunBackgroundRecoversAndFinishesProcessing(t *testing.T) {
+	pipeline := &DMPipeline{
+		processing: map[string]int{"telegram:777": 1},
+	}
+
+	pipeline.runBackground("test_panic", "telegram:777", "sess-1", func() {
+		panic("boom")
+	})
+
+	waitFor(t, 2*time.Second, func() bool {
+		return !pipeline.IsConversationProcessing("telegram:777")
+	})
+}
+
 func TestDMPipelineStreamsToolCallEmojisBeforeFinalReply(t *testing.T) {
 	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
 	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -643,7 +644,7 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 		"text_length", len(messageText),
 		"attachment_count", len(attachments),
 	)
-	return handler(ctx, transport.InboundMessage{
+	inbound := transport.InboundMessage{
 		ConversationID:   conversationID,
 		ConversationName: conversationName,
 		SenderID:         "telegram-user:" + userID,
@@ -651,7 +652,23 @@ func (t *Transport) dispatchEvent(ctx context.Context, event telegramEvent) erro
 		EventID:          strconv.FormatInt(event.Message.MessageID, 10),
 		Text:             messageText,
 		Attachments:      attachments,
-	})
+	}
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		slog.Error(
+			"telegram transport: inbound handler panic",
+			"update_id", event.UpdateID,
+			"conversation_id", conversationID,
+			"sender_id", inbound.SenderID,
+			"event_id", inbound.EventID,
+			"panic", fmt.Sprint(recovered),
+			"stack", string(debug.Stack()),
+		)
+	}()
+	return handler(ctx, inbound)
 }
 
 func (t *Transport) sendAPI(ctx context.Context, method string, payload map[string]any) error {

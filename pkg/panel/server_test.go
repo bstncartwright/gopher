@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,6 +27,32 @@ type fakeSessionStore struct {
 	events  map[sessionrt.SessionID][]sessionrt.Event
 	records map[sessionrt.SessionID]sessionrt.SessionRecord
 	stream  map[sessionrt.SessionID]chan sessionrt.Event
+}
+
+type failingTemplateResponseWriter struct {
+	header           http.Header
+	writeCalls       int
+	writeHeaderCalls int
+	writeErr         error
+}
+
+func (w *failingTemplateResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *failingTemplateResponseWriter) Write(p []byte) (int, error) {
+	w.writeCalls++
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
+	return len(p), nil
+}
+
+func (w *failingTemplateResponseWriter) WriteHeader(statusCode int) {
+	w.writeHeaderCalls++
 }
 
 type chatTestExecutor struct{}
@@ -367,6 +395,40 @@ func TestChatPageRenders(t *testing.T) {
 	}
 	if !strings.Contains(body, "Open Admin Work View") {
 		t.Fatalf("expected admin link, got: %s", body)
+	}
+}
+
+func TestRenderTemplateSkipsErrorResponseOnClientDisconnect(t *testing.T) {
+	srv := &Server{
+		templates: template.Must(template.New("test").Parse(`{{define "test.html"}}hello{{end}}`)),
+	}
+	writer := &failingTemplateResponseWriter{writeErr: syscall.EPIPE}
+
+	srv.renderTemplate(writer, "test.html", nil)
+
+	if writer.writeCalls != 1 {
+		t.Fatalf("write calls = %d, want 1", writer.writeCalls)
+	}
+	if writer.writeHeaderCalls != 0 {
+		t.Fatalf("write header calls = %d, want 0", writer.writeHeaderCalls)
+	}
+}
+
+func TestPanelRecoveryMiddlewareReturnsInternalServerError(t *testing.T) {
+	srv := &Server{}
+	handler := srv.withPanicRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("chat route exploded")
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/chat/api/sessions", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "internal server error") {
+		t.Fatalf("expected internal server error body, got: %q", rec.Body.String())
 	}
 }
 

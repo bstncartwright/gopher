@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -1288,7 +1289,7 @@ func (p *DMPipeline) resetConversationSession(ctx context.Context, conversationI
 }
 
 func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID, senderID, inboundEventID string) {
-	go func() {
+	p.runBackground("dispatch_inbound_event", conversationID, event.SessionID, func() {
 		if err := p.manager.SendEvent(context.Background(), event); err != nil {
 			p.finishProcessing(conversationID)
 			slog.Error("dm_pipeline: send dm session event failed",
@@ -1307,7 +1308,7 @@ func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID,
 			return
 		}
 		p.markInboundEventProcessed(conversationID, event.SessionID, inboundEventID)
-	}()
+	})
 }
 
 func (p *DMPipeline) resolveConversationSession(ctx context.Context, conversationID, conversationName, senderID string, desiredAgentID sessionrt.ActorID, recipientID string) (sessionrt.SessionID, error) {
@@ -1538,7 +1539,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 	p.subscribed[sessionID] = struct{}{}
 	p.subscribedMu.Unlock()
 
-	go func() {
+	p.runBackground("session_subscription", conversationID, sessionID, func() {
 		for event := range stream {
 			if !p.isCurrentConversationSession(conversationID, sessionID) {
 				continue
@@ -1636,7 +1637,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				p.recordHeartbeatDelivery(conversationID, content)
 			}
 		}
-	}()
+	})
 	return nil
 }
 
@@ -2076,7 +2077,7 @@ func (p *DMPipeline) startTypingKeepalive(conversationID string) {
 		interval = dmTypingKeepaliveDefault
 	}
 
-	go func() {
+	p.runBackground("typing_keepalive", conversationID, "", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -2090,7 +2091,7 @@ func (p *DMPipeline) startTypingKeepalive(conversationID string) {
 				p.sendTyping(conversationID, true)
 			}
 		}
-	}()
+	})
 }
 
 func (p *DMPipeline) stopTypingKeepalive(conversationID string) {
@@ -2109,6 +2110,32 @@ func (p *DMPipeline) stopTypingKeepalive(conversationID string) {
 	if exists {
 		cancel()
 	}
+}
+
+func (p *DMPipeline) runBackground(name string, conversationID string, sessionID sessionrt.SessionID, fn func()) {
+	if fn == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			slog.Error(
+				"dm_pipeline: background panic",
+				"task", strings.TrimSpace(name),
+				"conversation_id", strings.TrimSpace(conversationID),
+				"session_id", strings.TrimSpace(string(sessionID)),
+				"panic", fmt.Sprint(recovered),
+				"stack", string(debug.Stack()),
+			)
+			if strings.TrimSpace(conversationID) != "" {
+				p.finishProcessing(conversationID)
+			}
+		}()
+		fn()
+	}()
 }
 
 func (p *DMPipeline) sendTyping(conversationID string, typing bool) {

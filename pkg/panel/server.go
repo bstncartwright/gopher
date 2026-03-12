@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -14,9 +15,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bstncartwright/gopher/pkg/scheduler"
@@ -427,7 +430,7 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 	}
 }
 
-func (s *Server) newMux() *http.ServeMux {
+func (s *Server) newMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+adminRoot, s.handleAdminEntry)
 	mux.HandleFunc("GET "+adminRoot+"/work", s.handleWorkPage)
@@ -478,7 +481,56 @@ func (s *Server) newMux() *http.ServeMux {
 	mux.HandleFunc("GET "+legacyPanelRoot+"/fragments/agents", s.handleAgents)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/stream/session/{sessionID}", s.handleSessionStream)
 	mux.HandleFunc("GET "+legacyPanelRoot+"/assets/panel.css", s.handleCSS)
-	return mux
+	return s.withPanicRecovery(mux)
+}
+
+type panicTrackingResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *panicTrackingResponseWriter) WriteHeader(statusCode int) {
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *panicTrackingResponseWriter) Write(p []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *panicTrackingResponseWriter) Flush() {
+	flusher, ok := w.ResponseWriter.(http.Flusher)
+	if ok {
+		flusher.Flush()
+	}
+}
+
+func (s *Server) withPanicRecovery(next http.Handler) http.Handler {
+	if next == nil {
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracked := &panicTrackingResponseWriter{ResponseWriter: w}
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			slog.Error(
+				"panel_server: handler panic",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"query", r.URL.RawQuery,
+				"panic", fmt.Sprint(recovered),
+				"stack", string(debug.Stack()),
+			)
+			if !tracked.wroteHeader {
+				http.Error(tracked, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(tracked, r)
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -959,11 +1011,24 @@ func (s *Server) handleCSS(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("content-type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
+	var buf bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&buf, name, data); err != nil {
 		slog.Error("panel_server: template render failed", "template", name, "error", err)
 		http.Error(w, fmt.Sprintf("template error: %v", err), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("content-type", "text/html; charset=utf-8")
+	if _, err := io.Copy(w, &buf); err != nil {
+		if isClientDisconnectError(err) {
+			slog.Debug("panel_server: template client disconnected", "template", name, "error", err)
+			return
+		}
+		slog.Error("panel_server: template write failed", "template", name, "error", err)
+	}
+}
+
+func isClientDisconnectError(err error) bool {
+	return errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }
 
 func (s *Server) lookupSessionMetadata(sessionID sessionrt.SessionID) SessionMetadata {

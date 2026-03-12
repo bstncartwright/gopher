@@ -67,7 +67,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-3.5-turbo": {
       "id": "gpt-3.5-turbo",
@@ -86,7 +89,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 16385,
-      "maxTokens": 4096
+      "maxTokens": 4096,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4": {
       "id": "gpt-4",
@@ -105,7 +111,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8192,
-      "maxTokens": 8192
+      "maxTokens": 8192,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4-turbo": {
       "id": "gpt-4-turbo",
@@ -125,7 +134,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 4096
+      "maxTokens": 4096,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4.1": {
       "id": "gpt-4.1",
@@ -145,7 +157,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 1047576,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4.1-mini": {
       "id": "gpt-4.1-mini",
@@ -165,7 +180,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 1047576,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4.1-nano": {
       "id": "gpt-4.1-nano",
@@ -185,7 +203,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 1047576,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o": {
       "id": "gpt-4o",
@@ -205,7 +226,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-2024-05-13": {
       "id": "gpt-4o-2024-05-13",
@@ -225,7 +249,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 4096
+      "maxTokens": 4096,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-2024-08-06": {
       "id": "gpt-4o-2024-08-06",
@@ -245,7 +272,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-2024-11-20": {
       "id": "gpt-4o-2024-11-20",
@@ -265,7 +295,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-mini": {
       "id": "gpt-4o-mini",
@@ -285,7 +318,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5": {
       "id": "gpt-5",
@@ -305,7 +341,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-chat-latest": {
       "id": "gpt-5-chat-latest",
@@ -325,7 +364,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-codex": {
       "id": "gpt-5-codex",
@@ -345,7 +387,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-mini": {
       "id": "gpt-5-mini",
@@ -365,7 +410,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-nano": {
       "id": "gpt-5-nano",
@@ -385,7 +433,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-pro": {
       "id": "gpt-5-pro",
@@ -405,7 +456,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 272000
+      "maxTokens": 272000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1": {
       "id": "gpt-5.1",
@@ -425,7 +479,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-chat-latest": {
       "id": "gpt-5.1-chat-latest",
@@ -445,7 +502,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-codex": {
       "id": "gpt-5.1-codex",
@@ -465,7 +525,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-codex-max": {
       "id": "gpt-5.1-codex-max",
@@ -485,7 +548,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-codex-mini": {
       "id": "gpt-5.1-codex-mini",
@@ -505,7 +571,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2": {
       "id": "gpt-5.2",
@@ -525,7 +594,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2-chat-latest": {
       "id": "gpt-5.2-chat-latest",
@@ -545,7 +617,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2-codex": {
       "id": "gpt-5.2-codex",
@@ -566,7 +641,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2-pro": {
       "id": "gpt-5.2-pro",
@@ -586,7 +664,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.3-codex": {
       "id": "gpt-5.3-codex",
@@ -607,7 +688,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.3-codex-spark": {
       "id": "gpt-5.3-codex-spark",
@@ -628,7 +712,57 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 100000,
-      "maxTokens": 32000
+      "maxTokens": 32000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
+    },
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "name": "GPT-5.4",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "cost": {
+        "input": 2.5,
+        "output": 15,
+        "cacheRead": 0.25,
+        "cacheWrite": 0
+      },
+      "contextWindow": 922000,
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
+    },
+    "gpt-5.4-pro": {
+      "id": "gpt-5.4-pro",
+      "name": "GPT-5.4 Pro",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 30,
+        "output": 180,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 922000,
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1": {
       "id": "o1",
@@ -648,7 +782,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1-mini": {
       "id": "o1-mini",
@@ -667,7 +804,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 65536
+      "maxTokens": 65536,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1-preview": {
       "id": "o1-preview",
@@ -686,7 +826,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1-pro": {
       "id": "o1-pro",
@@ -706,7 +849,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3": {
       "id": "o3",
@@ -726,7 +872,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3-deep-research": {
       "id": "o3-deep-research",
@@ -746,7 +895,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3-mini": {
       "id": "o3-mini",
@@ -765,7 +917,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3-pro": {
       "id": "o3-pro",
@@ -785,7 +940,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o4-mini": {
       "id": "o4-mini",
@@ -805,7 +963,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o4-mini-deep-research": {
       "id": "o4-mini-deep-research",
@@ -825,7 +986,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "text-embedding-3-large": {
       "id": "text-embedding-3-large",
@@ -844,7 +1008,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8191,
-      "maxTokens": 3072
+      "maxTokens": 3072,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "text-embedding-3-small": {
       "id": "text-embedding-3-small",
@@ -863,7 +1030,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8191,
-      "maxTokens": 1536
+      "maxTokens": 1536,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "text-embedding-ada-002": {
       "id": "text-embedding-ada-002",
@@ -882,7 +1052,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8192,
-      "maxTokens": 1536
+      "maxTokens": 1536,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     }
   },
   "openai-codex": {
@@ -903,7 +1076,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-3.5-turbo": {
       "id": "gpt-3.5-turbo",
@@ -922,7 +1098,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 16385,
-      "maxTokens": 4096
+      "maxTokens": 4096,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4": {
       "id": "gpt-4",
@@ -941,7 +1120,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8192,
-      "maxTokens": 8192
+      "maxTokens": 8192,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4-turbo": {
       "id": "gpt-4-turbo",
@@ -961,7 +1143,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 4096
+      "maxTokens": 4096,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4.1": {
       "id": "gpt-4.1",
@@ -981,7 +1166,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 1047576,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4.1-mini": {
       "id": "gpt-4.1-mini",
@@ -1001,7 +1189,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 1047576,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4.1-nano": {
       "id": "gpt-4.1-nano",
@@ -1021,7 +1212,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 1047576,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o": {
       "id": "gpt-4o",
@@ -1041,7 +1235,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-2024-05-13": {
       "id": "gpt-4o-2024-05-13",
@@ -1061,7 +1258,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 4096
+      "maxTokens": 4096,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-2024-08-06": {
       "id": "gpt-4o-2024-08-06",
@@ -1081,7 +1281,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-2024-11-20": {
       "id": "gpt-4o-2024-11-20",
@@ -1101,7 +1304,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-4o-mini": {
       "id": "gpt-4o-mini",
@@ -1121,7 +1327,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5": {
       "id": "gpt-5",
@@ -1141,7 +1350,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-chat-latest": {
       "id": "gpt-5-chat-latest",
@@ -1161,7 +1373,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-codex": {
       "id": "gpt-5-codex",
@@ -1181,7 +1396,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-mini": {
       "id": "gpt-5-mini",
@@ -1201,7 +1419,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-nano": {
       "id": "gpt-5-nano",
@@ -1221,7 +1442,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5-pro": {
       "id": "gpt-5-pro",
@@ -1241,7 +1465,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 272000
+      "maxTokens": 272000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1": {
       "id": "gpt-5.1",
@@ -1261,7 +1488,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-chat-latest": {
       "id": "gpt-5.1-chat-latest",
@@ -1281,7 +1511,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-codex": {
       "id": "gpt-5.1-codex",
@@ -1301,7 +1534,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-codex-max": {
       "id": "gpt-5.1-codex-max",
@@ -1321,7 +1557,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.1-codex-mini": {
       "id": "gpt-5.1-codex-mini",
@@ -1341,7 +1580,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2": {
       "id": "gpt-5.2",
@@ -1361,7 +1603,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2-chat-latest": {
       "id": "gpt-5.2-chat-latest",
@@ -1381,7 +1626,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 16384
+      "maxTokens": 16384,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2-codex": {
       "id": "gpt-5.2-codex",
@@ -1402,7 +1650,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.2-pro": {
       "id": "gpt-5.2-pro",
@@ -1422,7 +1673,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.3-codex": {
       "id": "gpt-5.3-codex",
@@ -1443,7 +1697,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 272000,
-      "maxTokens": 128000
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "gpt-5.3-codex-spark": {
       "id": "gpt-5.3-codex-spark",
@@ -1464,7 +1721,57 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 100000,
-      "maxTokens": 32000
+      "maxTokens": 32000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
+    },
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "name": "GPT-5.4",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "cost": {
+        "input": 2.5,
+        "output": 15,
+        "cacheRead": 0.25,
+        "cacheWrite": 0
+      },
+      "contextWindow": 922000,
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
+    },
+    "gpt-5.4-pro": {
+      "id": "gpt-5.4-pro",
+      "name": "GPT-5.4 Pro",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://chatgpt.com/backend-api",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 30,
+        "output": 180,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 922000,
+      "maxTokens": 128000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1": {
       "id": "o1",
@@ -1484,7 +1791,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1-mini": {
       "id": "o1-mini",
@@ -1503,7 +1813,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 65536
+      "maxTokens": 65536,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1-preview": {
       "id": "o1-preview",
@@ -1522,7 +1835,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 128000,
-      "maxTokens": 32768
+      "maxTokens": 32768,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o1-pro": {
       "id": "o1-pro",
@@ -1542,7 +1858,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3": {
       "id": "o3",
@@ -1562,7 +1881,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3-deep-research": {
       "id": "o3-deep-research",
@@ -1582,7 +1904,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3-mini": {
       "id": "o3-mini",
@@ -1601,7 +1926,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o3-pro": {
       "id": "o3-pro",
@@ -1621,7 +1949,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o4-mini": {
       "id": "o4-mini",
@@ -1641,7 +1972,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "o4-mini-deep-research": {
       "id": "o4-mini-deep-research",
@@ -1661,7 +1995,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 200000,
-      "maxTokens": 100000
+      "maxTokens": 100000,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "text-embedding-3-large": {
       "id": "text-embedding-3-large",
@@ -1680,7 +2017,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8191,
-      "maxTokens": 3072
+      "maxTokens": 3072,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "text-embedding-3-small": {
       "id": "text-embedding-3-small",
@@ -1699,7 +2039,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8191,
-      "maxTokens": 1536
+      "maxTokens": 1536,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     },
     "text-embedding-ada-002": {
       "id": "text-embedding-ada-002",
@@ -1718,7 +2061,10 @@ var generatedModelsJSON = `
         "cacheWrite": 0
       },
       "contextWindow": 8192,
-      "maxTokens": 1536
+      "maxTokens": 1536,
+      "responsesCompat": {
+        "supportsHostedWebSearch": true
+      }
     }
   },
   "zai": {

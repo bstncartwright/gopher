@@ -305,13 +305,14 @@ type dmDelayedRecoverStreamingExecutor struct {
 }
 
 type dmStreamingExecutor struct {
-	toolCalls []string
-	deltas    []string
-	final     string
+	toolCalls      []string
+	thinkingDeltas []string
+	deltas         []string
+	final          string
 }
 
 func (e *dmStreamingExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
-	events := make([]sessionrt.Event, 0, len(e.toolCalls)+len(e.deltas)+1)
+	events := make([]sessionrt.Event, 0, len(e.toolCalls)+len(e.thinkingDeltas)+len(e.deltas)+1)
 	for _, name := range e.toolCalls {
 		events = append(events, sessionrt.Event{
 			From: input.ActorID,
@@ -319,6 +320,15 @@ func (e *dmStreamingExecutor) Step(_ context.Context, input sessionrt.AgentInput
 			Payload: map[string]any{
 				"name": name,
 				"args": map[string]any{},
+			},
+		})
+	}
+	for _, delta := range e.thinkingDeltas {
+		events = append(events, sessionrt.Event{
+			From: input.ActorID,
+			Type: sessionrt.EventAgentThinkingDelta,
+			Payload: map[string]any{
+				"delta": delta,
 			},
 		})
 	}
@@ -3843,6 +3853,9 @@ func TestParseDMCommandRecognizesTelegramSlashCommands(t *testing.T) {
 		{input: "/model", kind: "model.status", ok: true},
 		{input: "/model status", kind: "model.status", ok: true},
 		{input: "/model openai-codex:gpt-5.3-codex", kind: "model.set", ok: true},
+		{input: "/thinking", kind: "thinking.status", ok: true},
+		{input: "/thinking on", kind: "thinking.on", ok: true},
+		{input: "/thinking off", kind: "thinking.off", ok: true},
 		{input: "/context clear", kind: "context.clear", ok: true},
 		{input: "/trace status", kind: "trace.status", ok: true},
 		{input: "status", ok: false},
@@ -4209,6 +4222,121 @@ func TestDMPipelineStreamsDraftDeltasToSupportingTransport(t *testing.T) {
 	}
 	if got := fake.lastSent().Text; got != "final reply" {
 		t.Fatalf("final outbound text = %q, want final reply", got)
+	}
+}
+
+func TestDMPipelineThinkingCommandPersistsConversationSetting(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmStaticExecutor{text: "done"},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	bindings := NewInMemoryConversationBindingStore()
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		Bindings:  bindings,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		EventID:        "$evt-thinking-on",
+		Text:           "/thinking on",
+	}); err != nil {
+		t.Fatalf("HandleInbound(/thinking on) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+	if got := fake.lastSent().Text; got != "Thinking stream is on for this conversation." {
+		t.Fatalf("thinking on reply = %q", got)
+	}
+	binding, ok := bindings.GetByConversation("telegram:777")
+	if !ok {
+		t.Fatalf("expected conversation binding")
+	}
+	if binding.ThinkingMode != ThinkingModeOn {
+		t.Fatalf("thinking mode = %q, want %q", binding.ThinkingMode, ThinkingModeOn)
+	}
+}
+
+func TestDMPipelineThinkingDraftPrefersThinkingDeltasWhenEnabled(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmStreamingExecutor{
+			thinkingDeltas: []string{"Considering the best path " + strings.Repeat("x", 80)},
+			deltas:         []string{"Visible answer draft " + strings.Repeat("y", 80)},
+			final:          "final reply",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	bindings := NewInMemoryConversationBindingStore()
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		Bindings:  bindings,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		EventID:        "$evt-thinking-on",
+		Text:           "/thinking on",
+	}); err != nil {
+		t.Fatalf("HandleInbound(/thinking on) error: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() >= 1
+	})
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID: "telegram:777",
+		SenderID:       "@user:hs",
+		Text:           "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fake.draftSignals()) > 0
+	})
+
+	drafts := fake.draftSignals()
+	foundThinking := false
+	for _, draft := range drafts {
+		if strings.Contains(draft.Text, "Considering the best path") {
+			foundThinking = true
+		}
+		if strings.Contains(draft.Text, "Visible answer draft") {
+			t.Fatalf("expected thinking draft to suppress visible answer deltas once thinking is present, got %#v", drafts)
+		}
+	}
+	if !foundThinking {
+		t.Fatalf("expected thinking text in drafts, got %#v", drafts)
 	}
 }
 

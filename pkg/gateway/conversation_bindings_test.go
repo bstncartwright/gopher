@@ -25,6 +25,7 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 		TraceConversationName: "trace-sess-1",
 		TraceMode:             TraceModeReadOnly,
 		TraceRender:           TraceRenderCards,
+		ThinkingMode:          ThinkingModeOn,
 		LastInboundEvent:      "$evt-99",
 		LastHeartbeatText:     "disk is full",
 		LastHeartbeatSentAt:   lastHeartbeatSentAt,
@@ -62,6 +63,9 @@ func TestFileConversationBindingStorePersistsBindings(t *testing.T) {
 	}
 	if got.TraceRender != TraceRenderCards {
 		t.Fatalf("trace render = %q, want %q", got.TraceRender, TraceRenderCards)
+	}
+	if got.ThinkingMode != ThinkingModeOn {
+		t.Fatalf("thinking mode = %q, want %q", got.ThinkingMode, ThinkingModeOn)
 	}
 	if got.LastHeartbeatText != "disk is full" {
 		t.Fatalf("last heartbeat text = %q, want disk is full", got.LastHeartbeatText)
@@ -180,6 +184,32 @@ func TestInMemoryConversationBindingStorePersistsTraceModeOff(t *testing.T) {
 	}
 	if got.TraceMode != TraceModeOff {
 		t.Fatalf("trace mode = %q, want %q", got.TraceMode, TraceModeOff)
+	}
+}
+
+func TestInMemoryConversationBindingStoreKeepsThinkingModeForSameSession(t *testing.T) {
+	store := NewInMemoryConversationBindingStore()
+	if err := store.Set(ConversationBinding{
+		ConversationID: "!room:a",
+		SessionID:      "sess-1",
+		ThinkingMode:   ThinkingModeOn,
+		Mode:           ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("first Set() error: %v", err)
+	}
+	if err := store.Set(ConversationBinding{
+		ConversationID: "!room:a",
+		SessionID:      "sess-1",
+		Mode:           ConversationModeDM,
+	}); err != nil {
+		t.Fatalf("second Set() error: %v", err)
+	}
+	got, ok := store.GetByConversation("!room:a")
+	if !ok {
+		t.Fatalf("expected conversation binding")
+	}
+	if got.ThinkingMode != ThinkingModeOn {
+		t.Fatalf("thinking mode = %q, want %q", got.ThinkingMode, ThinkingModeOn)
 	}
 }
 

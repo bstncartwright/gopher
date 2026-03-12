@@ -474,6 +474,63 @@ func TestRunTurnToolLoopEmitsExpectedOrder(t *testing.T) {
 	}
 }
 
+func TestRunTurnEmitsCommentaryMessageBeforeToolCalls(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"fs"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "a.txt"), "A")
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	roundOneAssistant := ai.NewAssistantMessage(agent.model)
+	roundOneAssistant.Phase = ai.AssistantPhaseCommentary
+	roundOneAssistant.StopReason = ai.StopReasonToolUse
+	roundOneAssistant.Content = []ai.ContentBlock{
+		{Type: ai.ContentTypeText, Text: "Looking that up now."},
+		{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "read", Arguments: map[string]any{"path": "a.txt"}},
+	}
+
+	roundTwoAssistant := ai.NewAssistantMessage(agent.model)
+	roundTwoAssistant.StopReason = ai.StopReasonStop
+	roundTwoAssistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+
+	agent.Provider = &mockProvider{rounds: []mockRound{
+		{assistant: roundOneAssistant},
+		{assistant: roundTwoAssistant},
+	}}
+
+	result, err := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{UserMessage: "read a.txt"})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+	if result.FinalText != "done" {
+		t.Fatalf("final text = %q, want done", result.FinalText)
+	}
+
+	gotTypes := make([]EventType, 0, len(result.Events))
+	for _, event := range result.Events {
+		gotTypes = append(gotTypes, event.Type)
+	}
+
+	expectedPrefix := []EventType{EventTypeAgentMsg, EventTypeToolCall, EventTypeToolResult, EventTypeAgentMsg}
+	if len(gotTypes) < len(expectedPrefix) {
+		t.Fatalf("event count = %d, want at least %d (%v)", len(gotTypes), len(expectedPrefix), gotTypes)
+	}
+	for i, want := range expectedPrefix {
+		if gotTypes[i] != want {
+			t.Fatalf("event[%d] = %q, want %q (all=%v)", i, gotTypes[i], want, gotTypes)
+		}
+	}
+
+	firstPayload := eventPayloadForType(result.Events, EventTypeAgentMsg)
+	if got := strings.TrimSpace(fmt.Sprint(firstPayload["text"])); got != "Looking that up now." {
+		t.Fatalf("first agent.message text = %q, want commentary text", got)
+	}
+}
+
 func TestRunTurnExecutesMultipleToolCallsInParallel(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	agent, err := LoadAgent(workspace)

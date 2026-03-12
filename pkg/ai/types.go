@@ -61,6 +61,13 @@ const (
 	RoleToolResult MessageRole = "toolResult"
 )
 
+type AssistantPhase string
+
+const (
+	AssistantPhaseCommentary  AssistantPhase = "commentary"
+	AssistantPhaseFinalAnswer AssistantPhase = "final_answer"
+)
+
 type ContentType string
 
 const (
@@ -232,19 +239,20 @@ func (b ContentBlock) Clone() ContentBlock {
 }
 
 type Message struct {
-	Role         MessageRole `json:"role"`
-	Content      any         `json:"content,omitempty"`
-	ToolCallID   string      `json:"toolCallId,omitempty"`
-	ToolName     string      `json:"toolName,omitempty"`
-	Details      any         `json:"details,omitempty"`
-	IsError      bool        `json:"isError,omitempty"`
-	API          API         `json:"api,omitempty"`
-	Provider     Provider    `json:"provider,omitempty"`
-	Model        string      `json:"model,omitempty"`
-	Usage        Usage       `json:"usage,omitempty"`
-	StopReason   StopReason  `json:"stopReason,omitempty"`
-	ErrorMessage string      `json:"errorMessage,omitempty"`
-	Timestamp    int64       `json:"timestamp"`
+	Role         MessageRole    `json:"role"`
+	Phase        AssistantPhase `json:"phase,omitempty"`
+	Content      any            `json:"content,omitempty"`
+	ToolCallID   string         `json:"toolCallId,omitempty"`
+	ToolName     string         `json:"toolName,omitempty"`
+	Details      any            `json:"details,omitempty"`
+	IsError      bool           `json:"isError,omitempty"`
+	API          API            `json:"api,omitempty"`
+	Provider     Provider       `json:"provider,omitempty"`
+	Model        string         `json:"model,omitempty"`
+	Usage        Usage          `json:"usage,omitempty"`
+	StopReason   StopReason     `json:"stopReason,omitempty"`
+	ErrorMessage string         `json:"errorMessage,omitempty"`
+	Timestamp    int64          `json:"timestamp"`
 }
 
 func NewUserTextMessage(text string) Message {
@@ -394,6 +402,7 @@ type Usage struct {
 
 type AssistantMessage struct {
 	Role         MessageRole    `json:"role"`
+	Phase        AssistantPhase `json:"phase,omitempty"`
 	Content      []ContentBlock `json:"content"`
 	API          API            `json:"api"`
 	Provider     Provider       `json:"provider"`
@@ -419,6 +428,7 @@ func NewAssistantMessage(model Model) AssistantMessage {
 func (m AssistantMessage) ToMessage() Message {
 	return Message{
 		Role:         RoleAssistant,
+		Phase:        m.Phase,
 		Content:      m.Content,
 		API:          m.API,
 		Provider:     m.Provider,

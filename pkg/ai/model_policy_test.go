@@ -29,6 +29,12 @@ func TestResolveModelPolicyValidCuratedOpenAICodexOverride(t *testing.T) {
 	if model.ID != "gpt-5.4" {
 		t.Fatalf("model ID = %q, want gpt-5.4", model.ID)
 	}
+	if model.ContextWindow != openAICodexGPT54ContextWindow {
+		t.Fatalf("context window = %d, want %d", model.ContextWindow, openAICodexGPT54ContextWindow)
+	}
+	if model.MaxTokens != 128000 {
+		t.Fatalf("max tokens = %d, want 128000", model.MaxTokens)
+	}
 }
 
 func TestResolveModelPolicyRejectsInvalidFormat(t *testing.T) {

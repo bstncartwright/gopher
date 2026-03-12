@@ -14,6 +14,8 @@ var (
 	modelRegistry   = map[Provider]map[string]Model{}
 )
 
+const openAICodexGPT54ContextWindow = 1_050_000
+
 func init() {
 	loadGeneratedModels()
 }
@@ -76,30 +78,36 @@ func loadGeneratedModels() {
 		},
 	}
 
-	// Temporary override until models.dev publishes this id.
+	// Patch GPT-5.4 Codex metadata until the generated catalog carries the
+	// current Codex context window instead of the older fallback limit.
 	if _, ok := out[ProviderOpenAICodex]; !ok {
 		out[ProviderOpenAICodex] = map[string]Model{}
 	}
-	out[ProviderOpenAICodex]["gpt-5.4"] = Model{
-		ID:        "gpt-5.4",
-		Name:      "GPT-5.4",
-		API:       APIOpenAICodexResponse,
-		Provider:  ProviderOpenAICodex,
-		BaseURL:   "https://chatgpt.com/backend-api",
-		Reasoning: true,
-		Input:     []string{"text", "image", "pdf"},
-		Cost: ModelCost{
-			Input:      1.75,
-			Output:     14,
-			CacheRead:  0.175,
-			CacheWrite: 0,
-		},
-		ContextWindow: 272000,
-		MaxTokens:     128000,
-		ResponsesCompat: &OpenAIResponsesCompat{
-			SupportsHostedWebSearch: boolPtr(true),
-		},
+	gpt54 := out[ProviderOpenAICodex]["gpt-5.4"]
+	if gpt54.ID == "" {
+		gpt54 = Model{
+			ID:        "gpt-5.4",
+			Name:      "GPT-5.4",
+			API:       APIOpenAICodexResponse,
+			Provider:  ProviderOpenAICodex,
+			BaseURL:   "https://chatgpt.com/backend-api",
+			Reasoning: true,
+			Input:     []string{"text", "image"},
+			Cost: ModelCost{
+				Input:      2.5,
+				Output:     15,
+				CacheRead:  0.25,
+				CacheWrite: 0,
+			},
+			MaxTokens: 128000,
+		}
 	}
+	gpt54.ContextWindow = openAICodexGPT54ContextWindow
+	if gpt54.MaxTokens <= 0 {
+		gpt54.MaxTokens = 128000
+	}
+	gpt54 = applyDefaultResponsesCompat(gpt54)
+	out[ProviderOpenAICodex]["gpt-5.4"] = gpt54
 
 	modelRegistry = out
 }

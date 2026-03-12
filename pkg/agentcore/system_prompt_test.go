@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/bstncartwright/gopher/pkg/ai"
 )
 
 func TestBuildCollaborationSectionSingleAgentMentionsAutoCreate(t *testing.T) {
@@ -173,6 +175,33 @@ func TestBuildAgentSystemPromptIncludesPeerStyleGuardrails(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("expected style guidance %q, got: %s", needle, prompt)
+		}
+	}
+}
+
+func TestBuildAgentSystemPromptIncludesPhaseGuidanceForOpenAIResponsesModels(t *testing.T) {
+	prompt, err := buildAgentSystemPrompt(systemPromptInput{
+		Workspace:  "/tmp/workspace",
+		PromptMode: PromptModeMinimal,
+		Model: ai.Model{
+			ID:       "gpt-5.4",
+			API:      ai.APIOpenAIResponses,
+			Provider: ai.ProviderOpenAI,
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildAgentSystemPrompt() error: %v", err)
+	}
+
+	required := []string{
+		"## Response Phases",
+		"treat preambles and progress updates as `commentary`",
+		"Reserve `final_answer` for the completed result",
+		"do not narrate routine tool calls",
+	}
+	for _, needle := range required {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected phase guidance %q, got: %s", needle, prompt)
 		}
 	}
 }

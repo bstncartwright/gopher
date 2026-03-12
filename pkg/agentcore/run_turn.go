@@ -424,6 +424,16 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 
 		conversation.Messages = append(conversation.Messages, assistant.ToMessage())
 
+		if assistant.Phase == ai.AssistantPhaseCommentary {
+			commentaryText := strings.TrimSpace(extractText(assistant.Content))
+			if commentaryText != "" {
+				if err := emitter.Emit(EventTypeAgentMsg, map[string]any{"text": commentaryText}); err != nil {
+					turnErr = err
+					return TurnResult{Events: emitter.Events()}, err
+				}
+			}
+		}
+
 		if len(toolCalls) == 0 {
 			finalText = extractText(assistant.Content)
 			slog.Info("run_turn: turn complete without tool calls",

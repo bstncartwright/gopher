@@ -135,6 +135,111 @@ func TestBuildOpenAIResponsesParamsIncludesHostedWebSearch(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesMessagesPreservesAssistantPhaseOnReplay(t *testing.T) {
+	model := Model{ID: "gpt-5.4", API: APIOpenAIResponses, Provider: ProviderOpenAI}
+	conversation := Context{
+		Messages: []Message{{
+			Role:     RoleAssistant,
+			Phase:    AssistantPhaseCommentary,
+			Content:  []ContentBlock{{Type: ContentTypeText, Text: "Working on it.", TextSignature: "msg_1"}},
+			API:      APIOpenAIResponses,
+			Provider: ProviderOpenAI,
+			Model:    "gpt-5.4",
+		}},
+	}
+
+	payload := convertResponsesMessages(model, conversation, openAIResponsesToolCallProviders, false)
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	item, ok := payload[0].(map[string]any)
+	if !ok {
+		t.Fatalf("payload item type = %T, want map[string]any", payload[0])
+	}
+	if got := item["phase"]; got != string(AssistantPhaseCommentary) {
+		t.Fatalf("phase = %#v, want %q", got, AssistantPhaseCommentary)
+	}
+}
+
+func TestProcessResponsesStreamEventPreservesAssistantPhaseFromMessageItem(t *testing.T) {
+	output := NewAssistantMessage(Model{ID: "gpt-5.4", API: APIOpenAIResponses, Provider: ProviderOpenAI})
+	stream := CreateAssistantMessageEventStream()
+	state := &responsesStreamState{}
+
+	added := map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "message", "id": "msg_1", "phase": "commentary"},
+	}
+	done := map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{
+			"type":    "message",
+			"id":      "msg_1",
+			"phase":   "commentary",
+			"content": []any{map[string]any{"type": "output_text", "text": "Working on it."}},
+		},
+	}
+
+	if err := processResponsesStreamEvent(added, &output, stream, outputToModel(output), state, nil); err != nil {
+		t.Fatalf("added event error: %v", err)
+	}
+	if err := processResponsesStreamEvent(done, &output, stream, outputToModel(output), state, nil); err != nil {
+		t.Fatalf("done event error: %v", err)
+	}
+
+	if output.Phase != AssistantPhaseCommentary {
+		t.Fatalf("phase = %q, want %q", output.Phase, AssistantPhaseCommentary)
+	}
+}
+
+func TestProcessResponsesStreamEventRecoversPhaseAndToolUseFromResponseCompleted(t *testing.T) {
+	output := NewAssistantMessage(Model{ID: "gpt-5.4", API: APIOpenAIResponses, Provider: ProviderOpenAI})
+	stream := CreateAssistantMessageEventStream()
+	state := &responsesStreamState{}
+
+	completed := map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"status": "completed",
+			"output": []any{
+				map[string]any{
+					"type":    "message",
+					"id":      "msg_phase",
+					"phase":   "commentary",
+					"content": []any{map[string]any{"type": "output_text", "text": "Working..."}},
+				},
+				map[string]any{
+					"type":      "function_call",
+					"id":        "fc_1",
+					"call_id":   "call_1",
+					"name":      "exec",
+					"arguments": `{"cmd":"ls"}`,
+				},
+			},
+		},
+	}
+
+	if err := processResponsesStreamEvent(completed, &output, stream, outputToModel(output), state, nil); err != nil {
+		t.Fatalf("completed event error: %v", err)
+	}
+
+	if output.Phase != AssistantPhaseCommentary {
+		t.Fatalf("phase = %q, want %q", output.Phase, AssistantPhaseCommentary)
+	}
+	if output.StopReason != StopReasonToolUse {
+		t.Fatalf("stop reason = %q, want %q", output.StopReason, StopReasonToolUse)
+	}
+	if len(output.Content) != 2 {
+		t.Fatalf("content len = %d, want 2", len(output.Content))
+	}
+	if output.Content[0].Text != "Working..." {
+		t.Fatalf("text = %q, want Working...", output.Content[0].Text)
+	}
+	if output.Content[1].ID != "call_1|fc_1" {
+		t.Fatalf("tool call id = %q, want call_1|fc_1", output.Content[1].ID)
+	}
+}
+
 func hasFunctionCallOutput(payload []any, callID string) bool {
 	for _, item := range payload {
 		msg, ok := item.(map[string]any)

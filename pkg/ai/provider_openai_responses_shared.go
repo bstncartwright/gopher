@@ -12,6 +12,24 @@ type openAIResponsesStreamOptions struct {
 	ApplyServiceTierPricing func(usage *Usage, serviceTier string)
 }
 
+func normalizeAssistantPhase(value string) AssistantPhase {
+	switch AssistantPhase(strings.TrimSpace(value)) {
+	case AssistantPhaseCommentary:
+		return AssistantPhaseCommentary
+	case AssistantPhaseFinalAnswer:
+		return AssistantPhaseFinalAnswer
+	default:
+		return ""
+	}
+}
+
+func assistantPhaseField(phase AssistantPhase) map[string]any {
+	if phase == "" {
+		return nil
+	}
+	return map[string]any{"phase": string(phase)}
+}
+
 func convertResponsesMessages(model Model, conversation Context, allowedToolCallProviders map[Provider]struct{}, includeSystemPrompt bool) []any {
 	messages := make([]any, 0, len(conversation.Messages)+2)
 	emittedFunctionCalls := map[string]struct{}{}
@@ -92,13 +110,17 @@ func convertResponsesMessages(model Model, conversation Context, allowedToolCall
 					if len(msgID) > 64 {
 						msgID = "msg_" + shortHash(msgID)
 					}
-					messages = append(messages, map[string]any{
+					item := map[string]any{
 						"type":    "message",
 						"role":    "assistant",
 						"content": []map[string]any{{"type": "output_text", "text": SanitizeSurrogates(block.Text), "annotations": []any{}}},
 						"status":  "completed",
 						"id":      msgID,
-					})
+					}
+					for k, v := range assistantPhaseField(msg.Phase) {
+						item[k] = v
+					}
+					messages = append(messages, item)
 				case ContentTypeToolCall:
 					parts := strings.SplitN(block.ID, "|", 2)
 					callID := parts[0]
@@ -212,6 +234,9 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 			state.currentItemType = "reasoning"
 			stream.Push(AssistantMessageEvent{Type: EventThinkingStart, ContentIndex: len(output.Content) - 1, Partial: output})
 		case "message":
+			if phase := normalizeAssistantPhase(stringFrom(item, "phase")); phase != "" {
+				output.Phase = phase
+			}
 			output.Content = append(output.Content, ContentBlock{Type: ContentTypeText})
 			state.currentBlock = &output.Content[len(output.Content)-1]
 			state.currentItemType = "message"
@@ -276,6 +301,9 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 			state.currentBlock.ThinkingSignature = string(blob)
 			stream.Push(AssistantMessageEvent{Type: EventThinkingEnd, ContentIndex: idx, Content: state.currentBlock.Thinking, Partial: output})
 		case "message":
+			if phase := normalizeAssistantPhase(stringFrom(item, "phase")); phase != "" {
+				output.Phase = phase
+			}
 			if content := mapSliceFrom(item, "content"); len(content) > 0 {
 				parts := make([]string, 0, len(content))
 				for _, part := range content {
@@ -312,6 +340,7 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 		state.currentWebSearch = nil
 	case "response.completed":
 		response := mapFrom(event, "response")
+		mergeCompletedResponseOutput(output, response)
 		status := stringFrom(response, "status")
 		output.StopReason = mapOpenAIResponsesStopReason(status)
 		usage := mapFrom(response, "usage")
@@ -356,6 +385,80 @@ func processResponsesStreamEvent(event map[string]any, output *AssistantMessage,
 		return fmt.Errorf("%s", msg)
 	}
 	return nil
+}
+
+func mergeCompletedResponseOutput(output *AssistantMessage, response map[string]any) {
+	items := mapSliceFrom(response, "output")
+	if len(items) == 0 {
+		return
+	}
+	existingToolCalls := map[string]struct{}{}
+	hasTextBlock := false
+	for _, block := range output.Content {
+		switch block.Type {
+		case ContentTypeText:
+			hasTextBlock = true
+		case ContentTypeToolCall:
+			existingToolCalls[block.ID] = struct{}{}
+		}
+	}
+
+	for _, item := range items {
+		switch stringFrom(item, "type") {
+		case "message":
+			if phase := normalizeAssistantPhase(stringFrom(item, "phase")); phase != "" && output.Phase == "" {
+				output.Phase = phase
+			}
+			if hasTextBlock {
+				continue
+			}
+			text, id := completedResponseMessageText(item)
+			if text == "" {
+				continue
+			}
+			output.Content = append(output.Content, ContentBlock{
+				Type:          ContentTypeText,
+				Text:          text,
+				TextSignature: id,
+			})
+			hasTextBlock = true
+		case "function_call":
+			callID := stringFrom(item, "call_id")
+			itemID := stringFrom(item, "id")
+			if callID == "" {
+				continue
+			}
+			blockID := callID + "|" + itemID
+			if _, ok := existingToolCalls[blockID]; ok {
+				continue
+			}
+			output.Content = append(output.Content, ContentBlock{
+				Type:      ContentTypeToolCall,
+				ID:        blockID,
+				Name:      stringFrom(item, "name"),
+				Arguments: ParseStreamingJSON(stringFrom(item, "arguments")),
+			})
+			existingToolCalls[blockID] = struct{}{}
+		}
+	}
+}
+
+func completedResponseMessageText(item map[string]any) (string, string) {
+	content := mapSliceFrom(item, "content")
+	if len(content) == 0 {
+		return "", stringFrom(item, "id")
+	}
+	parts := make([]string, 0, len(content))
+	for _, part := range content {
+		if text := stringFrom(part, "text"); text != "" {
+			parts = append(parts, text)
+			continue
+		}
+		if refusal := stringFrom(part, "refusal"); refusal != "" {
+			parts = append(parts, refusal)
+		}
+	}
+	return strings.Join(parts, ""), stringFrom(item, "id")
 }
 
 type responsesStreamState struct {

@@ -68,11 +68,21 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 		"",
 		"## Long-Running Tasks",
 		"When a task may take more than a few seconds, send a brief acknowledgement before starting work.",
-		"While work is still in progress, send concise status updates about every 20-30 seconds.",
+		"While work is still in progress, send concise updates when starting a new major phase, when the plan changes, or after roughly 20-30 seconds of continued work.",
 		"Each update should include the current step and next step. If blocked, state the blocker and what input is needed.",
+		"Keep progress updates brief and do not narrate routine tool calls.",
 		"Do not stay silent during active work.",
 		"",
 	)
+	if supportsResponsePhases(input.Model) {
+		sections = append(sections,
+			"## Response Phases",
+			"For long-running or tool-heavy work, treat preambles and progress updates as `commentary`.",
+			"Reserve `final_answer` for the completed result once the task or current step is actually done.",
+			"Preserve the distinction between working commentary and the finished answer across multi-step tool use.",
+			"",
+		)
+	}
 	if toolRegistryHas(input.Tools, "message") {
 		sections = append(sections,
 			"When available, prefer using `message` for the kickoff acknowledgement before substantial work (for example, delegation or multi-step tool runs).",
@@ -312,6 +322,10 @@ func buildReasoningLine(model ai.Model) string {
 		return "Reasoning is available for this model."
 	}
 	return "Reasoning is disabled for this model."
+}
+
+func supportsResponsePhases(model ai.Model) bool {
+	return model.API == ai.APIOpenAIResponses || model.API == ai.APIOpenAICodexResponse
 }
 
 func resolvePromptTimezone(configured string) string {

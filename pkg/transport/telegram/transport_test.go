@@ -1209,6 +1209,29 @@ func TestHandleWebhookUpdateDispatchesEvent(t *testing.T) {
 	}
 }
 
+func TestDispatchEventRecoversInboundHandlerPanics(t *testing.T) {
+	tr, err := New(Options{BotToken: "test-token"})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	tr.SetInboundHandler(func(_ context.Context, inbound transport.InboundMessage) error {
+		panic("boom")
+	})
+
+	event := telegramEvent{
+		UpdateID: 99,
+		Message: &telegramMessage{
+			MessageID: 44,
+			From:      &telegramUser{ID: 12345},
+			Chat:      &telegramChat{ID: 12345, Username: "demo"},
+			Text:      "hello",
+		},
+	}
+	if err := tr.dispatchEvent(context.Background(), event); err != nil {
+		t.Fatalf("dispatchEvent() error: %v, want nil after panic recovery", err)
+	}
+}
+
 func TestHandleWebhookUpdateRejectsInvalidJSON(t *testing.T) {
 	tr, err := New(Options{BotToken: "token"})
 	if err != nil {

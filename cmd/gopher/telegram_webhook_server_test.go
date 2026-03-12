@@ -101,3 +101,25 @@ func TestTelegramWebhookServerRejectsMalformedJSON(t *testing.T) {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
+
+func TestTelegramWebhookServerRecoversPanics(t *testing.T) {
+	server, err := newTelegramWebhookServer(telegramWebhookServerOptions{
+		ListenAddr: "127.0.0.1:29330",
+		Path:       "/_gopher/telegram/webhook",
+		Secret:     "secret",
+		HandleUpdate: func(_ context.Context, payload []byte) error {
+			panic("boom")
+		},
+	})
+	if err != nil {
+		t.Fatalf("newTelegramWebhookServer() error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/_gopher/telegram/webhook", strings.NewReader(`{"update_id":1}`))
+	req.Header.Set(telegramWebhookSecretHeader, "secret")
+	rec := httptest.NewRecorder()
+	server.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}

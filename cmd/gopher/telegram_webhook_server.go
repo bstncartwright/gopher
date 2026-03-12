@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -139,10 +140,10 @@ func (s *telegramWebhookServer) Stop() error {
 	return server.Shutdown(shutdownCtx)
 }
 
-func (s *telegramWebhookServer) newMux() *http.ServeMux {
+func (s *telegramWebhookServer) newMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.path, s.handleWebhook)
-	return mux
+	return withHTTPPanicRecovery("telegram_webhook", mux)
 }
 
 func (s *telegramWebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -211,4 +212,46 @@ func waitForTelegramWebhookRetry(ctx context.Context, delay time.Duration) bool 
 	case <-timer.C:
 		return true
 	}
+}
+
+type panicAwareResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *panicAwareResponseWriter) WriteHeader(statusCode int) {
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *panicAwareResponseWriter) Write(p []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(p)
+}
+
+func withHTTPPanicRecovery(component string, next http.Handler) http.Handler {
+	if next == nil {
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracked := &panicAwareResponseWriter{ResponseWriter: w}
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			slog.Error(
+				component+": handler panic",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"query", r.URL.RawQuery,
+				"panic", fmt.Sprint(recovered),
+				"stack", string(debug.Stack()),
+			)
+			if !tracked.wroteHeader {
+				http.Error(tracked, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(tracked, r)
+	})
 }

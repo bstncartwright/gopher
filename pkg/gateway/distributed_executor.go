@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -63,12 +64,15 @@ var defaultSharedAuthEnvKeys = []string{
 
 func NewDistributedExecutor(opts DistributedExecutorOptions) (*DistributedExecutor, error) {
 	if opts.LocalExecutor == nil {
+		slog.Error("distributed_executor: local executor is required")
 		return nil, fmt.Errorf("local executor is required")
 	}
 	if opts.Scheduler == nil {
+		slog.Error("distributed_executor: scheduler is required")
 		return nil, fmt.Errorf("scheduler is required")
 	}
 	if opts.Fabric == nil {
+		slog.Error("distributed_executor: fabric is required")
 		return nil, fmt.Errorf("fabric is required")
 	}
 	resolver := opts.CapabilityResolver
@@ -83,6 +87,12 @@ func NewDistributedExecutor(opts DistributedExecutorOptions) (*DistributedExecut
 	if authEnvKeys == nil {
 		authEnvKeys = defaultAuthEnvKeys(envLookup)
 	}
+	slog.Info(
+		"distributed_executor: initialized",
+		"gateway_node_id", strings.TrimSpace(opts.GatewayNodeID),
+		"shared_auth_env_keys", len(authEnvKeys),
+		"remote_actor_locator", opts.RemoteActorLocator != nil,
+	)
 	return &DistributedExecutor{
 		gatewayNodeID: strings.TrimSpace(opts.GatewayNodeID),
 		local:         opts.LocalExecutor,
@@ -98,9 +108,12 @@ func NewDistributedExecutor(opts DistributedExecutorOptions) (*DistributedExecut
 func (e *DistributedExecutor) Step(ctx context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
 	selection, err := e.selectTarget(input)
 	if err != nil {
+		slog.Error("distributed_executor: failed to select target", "session_id", input.SessionID, "actor_id", input.ActorID, "error", err)
 		return sessionrt.AgentOutput{}, err
 	}
+	slog.Debug("distributed_executor: selected target", "session_id", input.SessionID, "actor_id", input.ActorID, "location", selection.Location, "node_id", selection.NodeID)
 	if selection.Location == scheduler.ExecGateway || selection.NodeID == "" || selection.NodeID == e.gatewayNodeID {
+		slog.Debug("distributed_executor: executing locally", "session_id", input.SessionID, "actor_id", input.ActorID)
 		return e.local.Step(ctx, input)
 	}
 	return e.stepRemote(ctx, input, selection.NodeID)
@@ -109,10 +122,13 @@ func (e *DistributedExecutor) Step(ctx context.Context, input sessionrt.AgentInp
 func (e *DistributedExecutor) StepStream(ctx context.Context, input sessionrt.AgentInput, emit sessionrt.AgentEventEmitter) error {
 	selection, err := e.selectTarget(input)
 	if err != nil {
+		slog.Error("distributed_executor: failed to select target for stream", "session_id", input.SessionID, "actor_id", input.ActorID, "error", err)
 		return err
 	}
+	slog.Debug("distributed_executor: selected target for stream", "session_id", input.SessionID, "actor_id", input.ActorID, "location", selection.Location, "node_id", selection.NodeID)
 	if selection.Location == scheduler.ExecGateway || selection.NodeID == "" || selection.NodeID == e.gatewayNodeID {
 		if streaming, ok := e.local.(sessionrt.StreamingAgentExecutor); ok {
+			slog.Debug("distributed_executor: streaming locally", "session_id", input.SessionID, "actor_id", input.ActorID)
 			return streaming.StepStream(ctx, input, emit)
 		}
 		out, stepErr := e.local.Step(ctx, input)
@@ -136,14 +152,17 @@ func (e *DistributedExecutor) selectTarget(input sessionrt.AgentInput) (schedule
 			if nodeInfo.NodeID == "" || nodeInfo.NodeID == e.gatewayNodeID {
 				location = scheduler.ExecGateway
 			}
+			slog.Debug("distributed_executor: actor located explicitly", "actor_id", input.ActorID, "node_id", nodeInfo.NodeID, "location", location)
 			return scheduler.Selection{Location: location, NodeID: nodeInfo.NodeID}, nil
 		}
 	}
 	required := e.resolve(input)
+	slog.Debug("distributed_executor: selecting scheduler target", "actor_id", input.ActorID, "required_capabilities", required)
 	return e.scheduler.Select(scheduler.SelectionRequest{RequiredCapabilities: required})
 }
 
 func (e *DistributedExecutor) stepRemote(ctx context.Context, input sessionrt.AgentInput, nodeID string) (sessionrt.AgentOutput, error) {
+	slog.Info("distributed_executor: executing remotely", "session_id", input.SessionID, "actor_id", input.ActorID, "node_id", nodeID, "history_count", len(input.History))
 	request := node.ExecutionRequest{
 		SessionID: input.SessionID,
 		ActorID:   input.ActorID,
@@ -152,20 +171,25 @@ func (e *DistributedExecutor) stepRemote(ctx context.Context, input sessionrt.Ag
 	}
 	blob, err := json.Marshal(request)
 	if err != nil {
+		slog.Error("distributed_executor: failed to marshal execution request", "session_id", input.SessionID, "actor_id", input.ActorID, "node_id", nodeID, "error", err)
 		return sessionrt.AgentOutput{}, fmt.Errorf("marshal execution request: %w", err)
 	}
 
 	responseBlob, err := e.fabric.Request(ctx, fabricts.NodeControlSubject(nodeID), blob)
 	if err != nil {
+		slog.Error("distributed_executor: remote request failed", "session_id", input.SessionID, "actor_id", input.ActorID, "node_id", nodeID, "error", err)
 		return sessionrt.AgentOutput{}, fmt.Errorf("remote node %s request failed: %w", nodeID, err)
 	}
 	var response node.ExecutionResponse
 	if err := json.Unmarshal(responseBlob, &response); err != nil {
+		slog.Error("distributed_executor: failed to decode remote response", "session_id", input.SessionID, "actor_id", input.ActorID, "node_id", nodeID, "error", err)
 		return sessionrt.AgentOutput{}, fmt.Errorf("decode remote node %s response: %w", nodeID, err)
 	}
 	if strings.TrimSpace(response.Error) != "" {
+		slog.Error("distributed_executor: remote node returned error", "session_id", input.SessionID, "actor_id", input.ActorID, "node_id", nodeID, "error", strings.TrimSpace(response.Error))
 		return sessionrt.AgentOutput{}, fmt.Errorf("remote node %s: %s", nodeID, response.Error)
 	}
+	slog.Info("distributed_executor: remote execution completed", "session_id", input.SessionID, "actor_id", input.ActorID, "node_id", nodeID, "events", len(response.Events))
 	return sessionrt.AgentOutput{Events: response.Events}, nil
 }
 
@@ -196,6 +220,7 @@ func (e *DistributedExecutor) sharedAuthEnv() map[string]string {
 	if len(shared) == 0 {
 		return nil
 	}
+	slog.Debug("distributed_executor: sharing auth env keys", "count", len(shared))
 	return shared
 }
 

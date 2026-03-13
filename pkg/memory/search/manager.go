@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -106,6 +107,7 @@ var _ memory.MemorySearchManager = (*Manager)(nil)
 func NewManager(opts ManagerOptions) (*Manager, error) {
 	workspace := strings.TrimSpace(opts.Workspace)
 	if workspace == "" {
+		slog.Error("memory_search_manager: workspace is required")
 		return nil, fmt.Errorf("workspace is required")
 	}
 	workspace = filepath.Clean(workspace)
@@ -150,29 +152,36 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		m.syncInterval = defaultSyncInterval
 	}
 	if !m.enabled {
+		slog.Info("memory_search_manager: initialized in disabled mode", "workspace", workspace, "db_path", dbPath)
 		return m, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(m.dbPath), 0o755); err != nil {
+		slog.Error("memory_search_manager: failed to create db directory", "db_path", m.dbPath, "error", err)
 		return nil, fmt.Errorf("create memory db directory: %w", err)
 	}
 	db, err := sql.Open("sqlite", m.dbPath)
 	if err != nil {
+		slog.Error("memory_search_manager: failed to open sqlite db", "db_path", m.dbPath, "error", err)
 		return nil, fmt.Errorf("open memory sqlite db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	if err := configureSQLiteConnection(context.Background(), db); err != nil {
+		slog.Error("memory_search_manager: failed to configure sqlite connection", "db_path", m.dbPath, "error", err)
 		_ = db.Close()
 		return nil, err
 	}
 	m.db = db
 	if err := m.initSchema(context.Background()); err != nil {
+		slog.Error("memory_search_manager: failed to initialize schema", "db_path", m.dbPath, "error", err)
 		_ = db.Close()
 		return nil, err
 	}
 	if err := m.probeEmbedding(context.Background()); err != nil {
 		m.providerError = strings.TrimSpace(err.Error())
+		slog.Warn("memory_search_manager: embedding provider unavailable during init", "workspace", workspace, "error", err)
 	}
+	slog.Info("memory_search_manager: initialized", "workspace", workspace, "db_path", m.dbPath, "sources", len(m.sources), "hybrid_enabled", m.hybridEnabled)
 	return m, nil
 }
 
@@ -180,6 +189,7 @@ func (m *Manager) Close() error {
 	if m == nil || m.db == nil {
 		return nil
 	}
+	slog.Debug("memory_search_manager: closing database", "db_path", m.dbPath)
 	return m.db.Close()
 }
 
@@ -188,9 +198,11 @@ func (m *Manager) Search(ctx context.Context, req memory.MemorySearchRequest) (m
 		ctx = context.Background()
 	}
 	if !m.enabled {
+		slog.Debug("memory_search_manager: search skipped because manager disabled", "workspace", m.workspace)
 		return memory.MemorySearchResponse{Disabled: true, Mode: "disabled"}, nil
 	}
 	if err := m.Sync(ctx, false); err != nil {
+		slog.Warn("memory_search_manager: sync failed before search", "workspace", m.workspace, "error", err)
 		m.setFallbackReason("sync_failed: " + err.Error())
 	}
 
@@ -207,11 +219,14 @@ func (m *Manager) Search(ctx context.Context, req memory.MemorySearchRequest) (m
 	}
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
+		slog.Debug("memory_search_manager: empty query", "workspace", m.workspace)
 		return memory.MemorySearchResponse{Mode: "fts-only", Results: nil}, nil
 	}
+	slog.Debug("memory_search_manager: executing search", "workspace", m.workspace, "query_len", len(query), "max_results", maxResults, "min_score", minScore)
 
 	status, err := m.Status(ctx)
 	if err != nil {
+		slog.Error("memory_search_manager: failed to load status before search", "workspace", m.workspace, "error", err)
 		return memory.MemorySearchResponse{}, err
 	}
 
@@ -224,10 +239,12 @@ func (m *Manager) Search(ctx context.Context, req memory.MemorySearchRequest) (m
 		if err != nil || len(vectors) == 0 || len(vectors[0]) == 0 {
 			vectorEnabled = false
 			if err != nil {
+				slog.Warn("memory_search_manager: query embedding unavailable", "workspace", m.workspace, "error", err)
 				m.setFallbackReason("embedding_unavailable: " + err.Error())
 			}
 		} else {
 			queryVector = vectors[0]
+			slog.Debug("memory_search_manager: query embedding generated", "workspace", m.workspace, "embedding_dims", len(queryVector))
 		}
 	}
 	if vectorEnabled {
@@ -235,6 +252,7 @@ func (m *Manager) Search(ctx context.Context, req memory.MemorySearchRequest) (m
 		if err != nil {
 			vectorCandidates = nil
 			vectorEnabled = false
+			slog.Warn("memory_search_manager: vector search failed", "workspace", m.workspace, "error", err)
 			m.setFallbackReason("vector_search_failed: " + err.Error())
 		}
 	}
@@ -246,12 +264,14 @@ func (m *Manager) Search(ctx context.Context, req memory.MemorySearchRequest) (m
 		if err != nil {
 			textCandidates = nil
 			textEnabled = false
+			slog.Warn("memory_search_manager: fts search failed", "workspace", m.workspace, "error", err)
 			m.setFallbackReason("fts_search_failed: " + err.Error())
 		}
 	}
 
 	if !vectorEnabled && !textEnabled {
 		reason := "memory search unavailable: embeddings and fts are both unavailable"
+		slog.Warn("memory_search_manager: search unavailable", "workspace", m.workspace, "reason", reason)
 		m.setUnavailableReason(reason)
 		status, _ = m.Status(ctx)
 		return memory.MemorySearchResponse{

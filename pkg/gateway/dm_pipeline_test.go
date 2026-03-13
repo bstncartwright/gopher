@@ -210,6 +210,12 @@ func (e *dmStaticExecutor) Step(_ context.Context, input sessionrt.AgentInput) (
 	}, nil
 }
 
+type dmNoopExecutor struct{}
+
+func (e *dmNoopExecutor) Step(_ context.Context, _ sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{}, nil
+}
+
 type dmTargetedReplyExecutor struct {
 	text string
 }
@@ -4352,6 +4358,59 @@ func TestDMPipelineRunBackgroundRecoversAndFinishesProcessing(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		return !pipeline.IsConversationProcessing("telegram:777")
 	})
+}
+
+func TestDMPipelineFinishesProcessingWhenDispatchProducesNoFollowupEvents(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store:    store,
+		Executor: &dmNoopExecutor{},
+		AgentSelector: func(_ *sessionrt.Session, _ sessionrt.Event) ([]sessionrt.ActorID, bool) {
+			return nil, false
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	if err := pipeline.HandleInbound(context.Background(), transport.InboundMessage{
+		ConversationID:   "telegram:777",
+		ConversationName: "test chat",
+		SenderID:         "telegram-user:1",
+		RecipientID:      "telegram-bot",
+		Text:             "hello",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return !pipeline.IsConversationProcessing("telegram:777")
+	})
+
+	if got := fake.sentCount(); got != 0 {
+		t.Fatalf("sent messages = %d, want 0", got)
+	}
+
+	signals := fake.typingSignals()
+	if len(signals) < 2 {
+		t.Fatalf("typing signal count = %d, want at least 2", len(signals))
+	}
+	if !signals[0].Typing {
+		t.Fatalf("first typing signal = %#v, want typing=true", signals[0])
+	}
+	if signals[len(signals)-1].Typing {
+		t.Fatalf("last typing signal = %#v, want typing=false", signals[len(signals)-1])
+	}
 }
 
 func TestDMPipelineStreamsToolCallEmojisBeforeFinalReply(t *testing.T) {

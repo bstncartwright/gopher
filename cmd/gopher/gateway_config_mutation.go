@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -24,14 +25,27 @@ type gatewayTelegramMutation struct {
 func setGatewayTelegramConfig(path string, mutation gatewayTelegramMutation) (bool, error) {
 	target := strings.TrimSpace(path)
 	if target == "" {
+		slog.Error("gateway_config_mutation: gateway config path is required")
 		return false, fmt.Errorf("gateway config path is required")
 	}
+	slog.Debug(
+		"gateway_config_mutation: applying telegram config mutation",
+		"path", target,
+		"set_enabled", mutation.Enabled != nil,
+		"set_mode", mutation.Mode != nil,
+		"set_webhook_listen_addr", mutation.WebhookListenAddr != nil,
+		"set_webhook_path", mutation.WebhookPath != nil,
+		"set_webhook_url", mutation.WebhookURL != nil,
+		"set_webhook_secret", mutation.WebhookSecret != nil,
+	)
 	blob, err := os.ReadFile(target)
 	if err != nil {
+		slog.Error("gateway_config_mutation: failed to read gateway config", "path", target, "error", err)
 		return false, fmt.Errorf("read gateway config %s: %w", target, err)
 	}
 	var doc map[string]any
 	if err := toml.Unmarshal(blob, &doc); err != nil {
+		slog.Error("gateway_config_mutation: failed to parse gateway config", "path", target, "error", err)
 		return false, fmt.Errorf("parse gateway config %s: %w", target, err)
 	}
 	if doc == nil {
@@ -94,27 +108,33 @@ func setGatewayTelegramConfig(path string, mutation gatewayTelegramMutation) (bo
 		}
 	}
 	if !changed {
+		slog.Debug("gateway_config_mutation: config already up to date", "path", target)
 		return false, nil
 	}
 	updated, err := toml.Marshal(doc)
 	if err != nil {
+		slog.Error("gateway_config_mutation: failed to serialize gateway config", "path", target, "error", err)
 		return false, fmt.Errorf("serialize gateway config %s: %w", target, err)
 	}
 	if err := writeConfigFileWithBackup(target, updated); err != nil {
+		slog.Error("gateway_config_mutation: failed to persist gateway config", "path", target, "error", err)
 		return false, err
 	}
+	slog.Info("gateway_config_mutation: updated gateway telegram config", "path", target)
 	return true, nil
 }
 
 func ensureNestedMap(parent map[string]any, key string) (map[string]any, error) {
 	value, ok := parent[key]
 	if !ok || value == nil {
+		slog.Debug("gateway_config_mutation: creating nested table", "key", key)
 		child := map[string]any{}
 		parent[key] = child
 		return child, nil
 	}
 	child, ok := value.(map[string]any)
 	if !ok {
+		slog.Error("gateway_config_mutation: invalid nested config table", "key", key)
 		return nil, fmt.Errorf("invalid gateway config: %s must be a table", key)
 	}
 	return child, nil

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -113,6 +114,16 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 		options.ServiceTier = resolveOpenAIServiceTierOption(options.ProviderOptions)
 	}
 	ctx := resolveRequestContext(&options.StreamOptions)
+	slog.Debug(
+		"openai_codex: starting stream",
+		"model_id", model.ID,
+		"provider", model.Provider,
+		"session_id", options.SessionID,
+		"transport", resolveOpenAICodexResponsesTransport(model, options),
+		"tools_count", len(conversation.Tools),
+		"messages_count", len(conversation.Messages),
+		"service_tier", options.ServiceTier,
+	)
 
 	go func() {
 		output := NewAssistantMessage(model)
@@ -124,6 +135,7 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 			apiKey = GetEnvAPIKey(string(model.Provider))
 		}
 		if apiKey == "" {
+			slog.Error("openai_codex: no API key", "provider", model.Provider, "model_id", model.ID)
 			output.StopReason = StopReasonError
 			output.ErrorMessage = fmt.Sprintf("no API key for provider %s", model.Provider)
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -132,6 +144,7 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 
 		accountID, err := extractCodexAccountID(apiKey)
 		if err != nil {
+			slog.Error("openai_codex: failed to extract account id", "model_id", model.ID, "error", err)
 			output.StopReason = StopReasonError
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -144,6 +157,7 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 		}
 		jsonBody, err := json.Marshal(body)
 		if err != nil {
+			slog.Error("openai_codex: failed to marshal payload", "model_id", model.ID, "error", err)
 			output.StopReason = StopReasonError
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -152,10 +166,14 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 
 		headers := buildCodexHeaders(model.Headers, options.Headers, accountID, apiKey, options.SessionID)
 		transport := resolveOpenAICodexResponsesTransport(model, options)
+		slog.Debug("openai_codex: prepared request", "model_id", model.ID, "endpoint", resolveCodexURL(model.BaseURL), "transport", transport, "session_id", options.SessionID)
 
 		if transport != TransportSSE {
 			wsStarted := false
-			if err := processCodexWebSocket(ctx, resolveCodexWebSocketURL(model.BaseURL), body, headers, &output, stream, model, options, &wsStarted); err == nil {
+			wsURL := resolveCodexWebSocketURL(model.BaseURL)
+			slog.Debug("openai_codex: attempting websocket transport", "model_id", model.ID, "ws_url", wsURL, "session_id", options.SessionID)
+			if err := processCodexWebSocket(ctx, wsURL, body, headers, &output, stream, model, options, &wsStarted); err == nil {
+				slog.Info("openai_codex: websocket stream complete", "model_id", model.ID, "session_id", options.SessionID, "stop_reason", output.StopReason)
 				if output.StopReason == StopReasonStop || output.StopReason == StopReasonLength || output.StopReason == StopReasonToolUse {
 					stream.Push(AssistantMessageEvent{Type: EventDone, Reason: output.StopReason, Message: &output})
 					return
@@ -163,21 +181,28 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 				return
 			} else if transport == TransportWebSocket || (wsStarted && !isNormalWebSocketClosureError(err)) {
+				slog.Error("openai_codex: websocket transport failed", "model_id", model.ID, "session_id", options.SessionID, "started", wsStarted, "error", err)
 				output.StopReason = stopReasonForError(ctx, err)
 				output.ErrorMessage = err.Error()
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 				return
+			} else {
+				slog.Warn("openai_codex: falling back from websocket to sse", "model_id", model.ID, "session_id", options.SessionID, "started", wsStarted, "error", err)
 			}
 		}
 
-		response, err := doCodexSSERequestWithRetry(ctx, resolveCodexURL(model.BaseURL), headers, jsonBody, options)
+		endpoint := resolveCodexURL(model.BaseURL)
+		slog.Debug("openai_codex: sending sse request", "model_id", model.ID, "endpoint", endpoint, "session_id", options.SessionID)
+		response, err := doCodexSSERequestWithRetry(ctx, endpoint, headers, jsonBody, options)
 		if err != nil {
+			slog.Error("openai_codex: sse request failed", "model_id", model.ID, "session_id", options.SessionID, "error", err)
 			output.StopReason = stopReasonForError(ctx, err)
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 			return
 		}
 		defer response.Body.Close()
+		slog.Debug("openai_codex: sse stream started", "model_id", model.ID, "session_id", options.SessionID, "status_code", response.StatusCode)
 
 		stream.Push(AssistantMessageEvent{Type: EventStart, Partial: &output})
 		events := make(chan sseEvent, 32)
@@ -195,6 +220,7 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 				ServiceTier:             options.ServiceTier,
 				ApplyServiceTierPricing: applyServiceTierPricing,
 			}); err != nil {
+				slog.Error("openai_codex: failed to process stream event", "model_id", model.ID, "session_id", options.SessionID, "error", err)
 				output.StopReason = StopReasonError
 				output.ErrorMessage = err.Error()
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonError, Error: &output})
@@ -202,12 +228,14 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 			}
 		}
 		if err := <-errCh; err != nil && ctx.Err() == nil {
+			slog.Error("openai_codex: sse read error", "model_id", model.ID, "session_id", options.SessionID, "error", err)
 			output.StopReason = stopReasonForError(ctx, err)
 			output.ErrorMessage = err.Error()
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 			return
 		}
 		if ctx.Err() != nil {
+			slog.Debug("openai_codex: context cancelled", "model_id", model.ID, "session_id", options.SessionID)
 			output.StopReason = StopReasonAborted
 			output.ErrorMessage = "request was aborted"
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: StopReasonAborted, Error: &output})
@@ -217,6 +245,7 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 			stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 			return
 		}
+		slog.Info("openai_codex: stream complete", "model_id", model.ID, "session_id", options.SessionID, "stop_reason", output.StopReason, "content_parts", len(output.Content))
 		stream.Push(AssistantMessageEvent{Type: EventDone, Reason: output.StopReason, Message: &output})
 	}()
 
@@ -413,8 +442,10 @@ func doCodexSSERequestWithRetry(ctx context.Context, endpoint string, headers ht
 	}
 	var lastErr error
 	for attempt := 0; attempt <= codexMaxRetries; attempt++ {
+		slog.Debug("openai_codex: sse attempt", "endpoint", endpoint, "attempt", attempt+1, "max_attempts", codexMaxRetries+1)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
+			slog.Error("openai_codex: failed to create sse request", "endpoint", endpoint, "error", err)
 			return nil, err
 		}
 		for k, values := range headers {
@@ -431,15 +462,18 @@ func doCodexSSERequestWithRetry(ctx context.Context, endpoint string, headers ht
 				if delay > maxDelay && maxDelay > 0 {
 					delay = maxDelay
 				}
+				slog.Warn("openai_codex: sse request failed; retrying", "endpoint", endpoint, "attempt", attempt+1, "delay", delay.String(), "error", err)
 				if err := sleepWithContext(ctx, delay); err != nil {
 					return nil, err
 				}
 				continue
 			}
+			slog.Error("openai_codex: sse request failed without retries remaining", "endpoint", endpoint, "attempt", attempt+1, "error", err)
 			return nil, err
 		}
 
 		if resp.StatusCode < 400 {
+			slog.Debug("openai_codex: sse request succeeded", "endpoint", endpoint, "attempt", attempt+1, "status_code", resp.StatusCode)
 			return resp, nil
 		}
 
@@ -452,8 +486,10 @@ func doCodexSSERequestWithRetry(ctx context.Context, endpoint string, headers ht
 				delay = retry
 			}
 			if maxDelay > 0 && delay > maxDelay {
+				slog.Error("openai_codex: retry-after exceeded cap", "endpoint", endpoint, "attempt", attempt+1, "delay", delay.String(), "max_delay", maxDelay.String(), "status_code", resp.StatusCode)
 				return nil, fmt.Errorf("server requested retry delay %s exceeds maxRetryDelayMs cap", delay)
 			}
+			slog.Warn("openai_codex: received retryable status", "endpoint", endpoint, "attempt", attempt+1, "status_code", resp.StatusCode, "delay", delay.String())
 			if err := sleepWithContext(ctx, delay); err != nil {
 				return nil, err
 			}
@@ -462,6 +498,7 @@ func doCodexSSERequestWithRetry(ctx context.Context, endpoint string, headers ht
 		if message == "" {
 			message = "no body"
 		}
+		slog.Error("openai_codex: received non-retryable status", "endpoint", endpoint, "attempt", attempt+1, "status_code", resp.StatusCode, "message", message)
 		return nil, fmt.Errorf("%d status code (%s)", resp.StatusCode, message)
 	}
 	if lastErr != nil {
@@ -510,8 +547,10 @@ var (
 const codexWebSocketReadLimitBytes int64 = 10 << 20 // 10 MiB
 
 func processCodexWebSocket(ctx context.Context, wsURL string, body codexRequestBody, headers http.Header, output *AssistantMessage, stream *AssistantMessageEventStream, model Model, options *OpenAICodexResponsesOptions, started *bool) error {
+	slog.Debug("openai_codex: acquiring websocket", "model_id", model.ID, "session_id", options.SessionID, "ws_url", wsURL)
 	conn, release, err := acquireCodexWebSocket(ctx, wsURL, headers, options.SessionID)
 	if err != nil {
+		slog.Error("openai_codex: failed to acquire websocket", "model_id", model.ID, "session_id", options.SessionID, "error", err)
 		return err
 	}
 	keep := true
@@ -521,10 +560,12 @@ func processCodexWebSocket(ctx context.Context, wsURL string, body codexRequestB
 	blob, _ := json.Marshal(body)
 	_ = json.Unmarshal(blob, &payload)
 	if err := writeCodexWebSocketJSON(ctx, conn, payload); err != nil {
+		slog.Error("openai_codex: failed to write websocket payload", "model_id", model.ID, "session_id", options.SessionID, "error", err)
 		keep = false
 		return err
 	}
 	*started = true
+	slog.Debug("openai_codex: websocket stream started", "model_id", model.ID, "session_id", options.SessionID)
 	stream.Push(AssistantMessageEvent{Type: EventStart, Partial: output})
 
 	state := &responsesStreamState{}
@@ -534,8 +575,10 @@ func processCodexWebSocket(ctx context.Context, wsURL string, body codexRequestB
 		if err != nil {
 			keep = false
 			if sawCompletion {
+				slog.Debug("openai_codex: websocket closed after completion", "model_id", model.ID, "session_id", options.SessionID)
 				return nil
 			}
+			slog.Error("openai_codex: websocket read failed", "model_id", model.ID, "session_id", options.SessionID, "error", err)
 			return err
 		}
 		var event map[string]any
@@ -551,10 +594,12 @@ func processCodexWebSocket(ctx context.Context, wsURL string, body codexRequestB
 			ServiceTier:             options.ServiceTier,
 			ApplyServiceTierPricing: applyServiceTierPricing,
 		}); err != nil {
+			slog.Error("openai_codex: websocket event processing failed", "model_id", model.ID, "session_id", options.SessionID, "error", err)
 			keep = false
 			return err
 		}
 		if sawCompletion {
+			slog.Info("openai_codex: websocket stream complete", "model_id", model.ID, "session_id", options.SessionID, "stop_reason", output.StopReason)
 			return nil
 		}
 	}
@@ -570,6 +615,7 @@ func writeCodexWebSocketJSON(ctx context.Context, conn *websocket.Conn, payload 
 
 func acquireCodexWebSocket(ctx context.Context, wsURL string, headers http.Header, sessionID string) (*websocket.Conn, func(*bool), error) {
 	if sessionID == "" {
+		slog.Debug("openai_codex: dialing uncached websocket", "ws_url", wsURL)
 		conn, err := dialCodexWebSocket(ctx, wsURL, headers)
 		if err != nil {
 			return nil, nil, err
@@ -590,11 +636,13 @@ func acquireCodexWebSocket(ctx context.Context, wsURL string, headers http.Heade
 			cached.busy = true
 			conn := cached.conn
 			codexWSMu.Unlock()
+			slog.Debug("openai_codex: reusing cached websocket", "session_id", sessionID)
 			return conn, makeCodexWSRelease(sessionID, cached), nil
 		}
 	}
 	codexWSMu.Unlock()
 
+	slog.Debug("openai_codex: dialing cached websocket", "session_id", sessionID, "ws_url", wsURL)
 	conn, err := dialCodexWebSocket(ctx, wsURL, headers)
 	if err != nil {
 		return nil, nil, err
@@ -604,6 +652,7 @@ func acquireCodexWebSocket(ctx context.Context, wsURL string, headers http.Heade
 	entry := &cachedWebSocketConnection{conn: conn, busy: true}
 	codexWSSessions[sessionID] = entry
 	codexWSMu.Unlock()
+	slog.Debug("openai_codex: cached websocket established", "session_id", sessionID)
 
 	return conn, makeCodexWSRelease(sessionID, entry), nil
 }
@@ -614,6 +663,7 @@ func makeCodexWSRelease(sessionID string, entry *cachedWebSocketConnection) func
 		codexWSMu.Lock()
 		defer codexWSMu.Unlock()
 		if !keepConn {
+			slog.Debug("openai_codex: closing websocket cache entry", "session_id", sessionID)
 			_ = entry.conn.Close(websocket.StatusNormalClosure, "done")
 			if entry.idleTimer != nil {
 				entry.idleTimer.Stop()
@@ -631,6 +681,7 @@ func makeCodexWSRelease(sessionID string, entry *cachedWebSocketConnection) func
 			if entry.busy {
 				return
 			}
+			slog.Debug("openai_codex: expiring idle websocket", "session_id", sessionID)
 			_ = entry.conn.Close(websocket.StatusNormalClosure, "idle_timeout")
 			if current, ok := codexWSSessions[sessionID]; ok && current == entry {
 				delete(codexWSSessions, sessionID)
@@ -641,8 +692,10 @@ func makeCodexWSRelease(sessionID string, entry *cachedWebSocketConnection) func
 
 func dialCodexWebSocket(ctx context.Context, wsURL string, headers http.Header) (*websocket.Conn, error) {
 	headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+	slog.Debug("openai_codex: dialing websocket", "ws_url", wsURL)
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: headers})
 	if err != nil {
+		slog.Error("openai_codex: websocket dial failed", "ws_url", wsURL, "error", err)
 		return nil, err
 	}
 	conn.SetReadLimit(codexWebSocketReadLimitBytes)

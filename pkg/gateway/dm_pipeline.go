@@ -218,6 +218,7 @@ const (
 )
 
 var dmTypingKeepaliveInterval = dmTypingKeepaliveDefault
+var dmDispatchCompletionCheckDelay = 250 * time.Millisecond
 
 const dmSummarizeCommandPrompt = "Summarize this conversation so far in 8 bullets max. Include: objective, key decisions, important constraints, open questions, and next steps."
 
@@ -1308,6 +1309,37 @@ func (p *DMPipeline) dispatchInboundEvent(event sessionrt.Event, conversationID,
 			return
 		}
 		p.markInboundEventProcessed(conversationID, event.SessionID, inboundEventID)
+		p.scheduleDispatchCompletionCheck(conversationID, event.SessionID)
+	})
+}
+
+func (p *DMPipeline) scheduleDispatchCompletionCheck(conversationID string, sessionID sessionrt.SessionID) {
+	conversationID = strings.TrimSpace(conversationID)
+	sessionID = sessionrt.SessionID(strings.TrimSpace(string(sessionID)))
+	if conversationID == "" || sessionID == "" {
+		return
+	}
+
+	p.runBackground("dispatch_completion_check", conversationID, sessionID, func() {
+		timer := time.NewTimer(dmDispatchCompletionCheckDelay)
+		defer timer.Stop()
+		<-timer.C
+
+		if !p.isCurrentConversationSession(conversationID, sessionID) {
+			return
+		}
+		if !p.IsConversationProcessing(conversationID) {
+			return
+		}
+		if p.isConversationSessionInFlight(conversationID, sessionID) {
+			return
+		}
+
+		slog.Debug("dm_pipeline: finishing processing after quiet dispatch",
+			"conversation_id", conversationID,
+			"session_id", sessionID,
+		)
+		p.finishProcessing(conversationID)
 	})
 }
 

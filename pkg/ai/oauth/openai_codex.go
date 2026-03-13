@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -43,19 +44,26 @@ func (p OpenAICodexProvider) Login(callbacks LoginCallbacks) (Credentials, error
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	slog.Info("openai_codex_oauth: starting login")
 	verifier, challenge, err := GeneratePKCE()
 	if err != nil {
+		slog.Error("openai_codex_oauth: failed to generate pkce", "error", err)
 		return Credentials{}, err
 	}
 	state, err := generateState()
 	if err != nil {
+		slog.Error("openai_codex_oauth: failed to generate state", "error", err)
 		return Credentials{}, err
 	}
 	authURL := buildOpenAICodexAuthorizationURL(challenge, state)
+	slog.Debug("openai_codex_oauth: authorization url built", "redirect_uri", openAICodexRedirect)
 
 	server := &oauthCodeServer{state: state}
 	if err := server.Start(); err != nil && callbacks.OnProgress != nil {
+		slog.Warn("openai_codex_oauth: callback server unavailable; falling back to manual input", "error", err)
 		callbacks.OnProgress("Callback server unavailable, falling back to manual code input")
+	} else if err == nil {
+		slog.Debug("openai_codex_oauth: callback server started", "addr", "127.0.0.1:1455")
 	}
 	defer server.Close()
 
@@ -65,13 +73,16 @@ func (p OpenAICodexProvider) Login(callbacks LoginCallbacks) (Credentials, error
 
 	code, err := waitForOpenAICodexCode(ctx, server, callbacks, state)
 	if err != nil {
+		slog.Error("openai_codex_oauth: failed to obtain authorization code", "error", err)
 		return Credentials{}, err
 	}
+	slog.Info("openai_codex_oauth: authorization code received")
 	return exchangeOpenAICodexCode(ctx, code, verifier)
 }
 
 func (OpenAICodexProvider) RefreshToken(credentials Credentials) (Credentials, error) {
 	ctx := context.Background()
+	slog.Info("openai_codex_oauth: refreshing token", "has_refresh", strings.TrimSpace(credentials.Refresh) != "")
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", credentials.Refresh)
@@ -79,16 +90,19 @@ func (OpenAICodexProvider) RefreshToken(credentials Credentials) (Credentials, e
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICodexToken, strings.NewReader(form.Encode()))
 	if err != nil {
+		slog.Error("openai_codex_oauth: failed to build refresh request", "error", err)
 		return Credentials{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		slog.Error("openai_codex_oauth: refresh request failed", "error", err)
 		return Credentials{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
+		slog.Error("openai_codex_oauth: refresh returned error status", "status_code", resp.StatusCode)
 		return Credentials{}, fmt.Errorf("refresh failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var tokenResponse struct {
@@ -97,11 +111,14 @@ func (OpenAICodexProvider) RefreshToken(credentials Credentials) (Credentials, e
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+		slog.Error("openai_codex_oauth: failed to decode refresh response", "error", err)
 		return Credentials{}, err
 	}
 	if tokenResponse.AccessToken == "" || tokenResponse.RefreshToken == "" {
+		slog.Error("openai_codex_oauth: refresh response missing tokens")
 		return Credentials{}, errors.New("refresh response missing access_token/refresh_token")
 	}
+	slog.Info("openai_codex_oauth: token refresh complete", "expires_in_seconds", tokenResponse.ExpiresIn)
 	return Credentials{
 		Access:  tokenResponse.AccessToken,
 		Refresh: tokenResponse.RefreshToken,
@@ -158,17 +175,23 @@ func waitForOpenAICodexCode(ctx context.Context, server *oauthCodeServer, callba
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Warn("openai_codex_oauth: login context cancelled")
 			return "", ctx.Err()
 		case err := <-errCh:
+			slog.Error("openai_codex_oauth: manual code input failed", "error", err)
 			return "", err
 		case code := <-serverCh:
+			slog.Debug("openai_codex_oauth: received callback code")
 			return code, nil
 		case input := <-manualCh:
+			slog.Debug("openai_codex_oauth: received manual code input")
 			parsedCode, parsedState := parseAuthorizationInput(input)
 			if parsedState != "" && parsedState != state {
+				slog.Error("openai_codex_oauth: manual code state mismatch")
 				return "", errors.New("state mismatch")
 			}
 			if parsedCode == "" {
+				slog.Error("openai_codex_oauth: manual code missing authorization code")
 				return "", errors.New("missing authorization code")
 			}
 			return parsedCode, nil
@@ -176,13 +199,17 @@ func waitForOpenAICodexCode(ctx context.Context, server *oauthCodeServer, callba
 			if callbacks.OnPrompt != nil {
 				code, err := callbacks.OnPrompt(Prompt{Message: "Paste authorization code or callback URL", Placeholder: openAICodexRedirect})
 				if err == nil && strings.TrimSpace(code) != "" {
+					slog.Debug("openai_codex_oauth: received prompted code input")
 					parsedCode, parsedState := parseAuthorizationInput(code)
 					if parsedState != "" && parsedState != state {
+						slog.Error("openai_codex_oauth: prompted code state mismatch")
 						return "", errors.New("state mismatch")
 					}
 					if parsedCode != "" {
 						return parsedCode, nil
 					}
+				} else if err != nil {
+					slog.Warn("openai_codex_oauth: prompt callback returned error", "error", err)
 				}
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -191,6 +218,7 @@ func waitForOpenAICodexCode(ctx context.Context, server *oauthCodeServer, callba
 }
 
 func exchangeOpenAICodexCode(ctx context.Context, code, verifier string) (Credentials, error) {
+	slog.Info("openai_codex_oauth: exchanging authorization code")
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("client_id", openAICodexClientID())
@@ -200,16 +228,19 @@ func exchangeOpenAICodexCode(ctx context.Context, code, verifier string) (Creden
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICodexToken, strings.NewReader(form.Encode()))
 	if err != nil {
+		slog.Error("openai_codex_oauth: failed to build exchange request", "error", err)
 		return Credentials{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		slog.Error("openai_codex_oauth: exchange request failed", "error", err)
 		return Credentials{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(resp.Body)
+		slog.Error("openai_codex_oauth: exchange returned error status", "status_code", resp.StatusCode)
 		return Credentials{}, fmt.Errorf("exchange failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var tokenResponse struct {
@@ -218,11 +249,14 @@ func exchangeOpenAICodexCode(ctx context.Context, code, verifier string) (Creden
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+		slog.Error("openai_codex_oauth: failed to decode exchange response", "error", err)
 		return Credentials{}, err
 	}
 	if tokenResponse.AccessToken == "" || tokenResponse.RefreshToken == "" {
+		slog.Error("openai_codex_oauth: exchange response missing tokens")
 		return Credentials{}, errors.New("exchange response missing access_token/refresh_token")
 	}
+	slog.Info("openai_codex_oauth: code exchange complete", "expires_in_seconds", tokenResponse.ExpiresIn)
 	return Credentials{
 		Access:  tokenResponse.AccessToken,
 		Refresh: tokenResponse.RefreshToken,
@@ -295,6 +329,7 @@ func (o *oauthCodeServer) Start() error {
 	go func() {
 		_ = o.srv.ListenAndServe()
 	}()
+	slog.Debug("openai_codex_oauth: callback server listen started", "addr", o.srv.Addr)
 	return nil
 }
 
@@ -306,8 +341,10 @@ func (o *oauthCodeServer) WaitForCode(ctx context.Context) string {
 	case <-ctx.Done():
 		return ""
 	case code := <-o.codeCh:
+		slog.Debug("openai_codex_oauth: callback code delivered")
 		return code
 	case <-time.After(60 * time.Second):
+		slog.Debug("openai_codex_oauth: callback server wait timed out")
 		return ""
 	}
 }
@@ -318,5 +355,6 @@ func (o *oauthCodeServer) Close() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	slog.Debug("openai_codex_oauth: shutting down callback server", "addr", o.srv.Addr)
 	_ = o.srv.Shutdown(ctx)
 }

@@ -543,6 +543,41 @@ func (e *dmMessageToolThenReplyExecutor) Step(_ context.Context, input sessionrt
 	}, nil
 }
 
+type dmCronToolThenEmptyReplyExecutor struct {
+	nextRun string
+}
+
+func (e *dmCronToolThenEmptyReplyExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
+	return sessionrt.AgentOutput{
+		Events: []sessionrt.Event{
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventToolResult,
+				Payload: map[string]any{
+					"name":   "cron",
+					"status": "ok",
+					"result": map[string]any{
+						"action": "create",
+						"job": map[string]any{
+							"id":          "cron-1",
+							"next_run_at": e.nextRun,
+							"timezone":    "America/Denver",
+						},
+					},
+				},
+			},
+			{
+				From: input.ActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:    sessionrt.RoleAgent,
+					Content: "",
+				},
+			},
+		},
+	}, nil
+}
+
 type dmMessageDedupResetExecutor struct {
 	mu    sync.Mutex
 	calls int
@@ -3553,6 +3588,45 @@ func TestDMPipelineDoesNotSuppressDifferentFinalReplyAfterMessageToolSend(t *tes
 	})
 	if got := strings.TrimSpace(fake.lastSent().Text); got != "second" {
 		t.Fatalf("final reply text = %q, want second", got)
+	}
+}
+
+func TestDMPipelineSendsCronFallbackWhenFinalReplyIsEmpty(t *testing.T) {
+	store := sessionrt.NewInMemoryEventStore(sessionrt.InMemoryEventStoreOptions{})
+	manager, err := sessionrt.NewManager(sessionrt.ManagerOptions{
+		Store: store,
+		Executor: &dmCronToolThenEmptyReplyExecutor{
+			nextRun: "2026-03-14T15:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	fake := &fakeTransport{}
+	pipeline, err := NewDMPipeline(DMPipelineOptions{
+		Manager:   manager,
+		Transport: fake,
+		AgentID:   "agent:a",
+	})
+	if err != nil {
+		t.Fatalf("NewDMPipeline() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := pipeline.HandleInbound(ctx, transport.InboundMessage{
+		ConversationID: "!dm:cron-fallback",
+		SenderID:       "@user:hs",
+		Text:           "remind me tomorrow morning",
+	}); err != nil {
+		t.Fatalf("HandleInbound() error: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return fake.sentCount() == 1
+	})
+	if got := strings.TrimSpace(fake.lastSent().Text); got != "Scheduled it for March 14, 2026 at 9:00 AM MDT." {
+		t.Fatalf("final reply text = %q", got)
 	}
 }
 

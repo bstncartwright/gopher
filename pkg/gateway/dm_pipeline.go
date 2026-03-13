@@ -117,6 +117,7 @@ type DMPipeline struct {
 	pendingFiles        map[string][]transport.OutboundAttachment
 	messageDedupeMu     sync.Mutex
 	pendingMessageText  map[string][]string
+	pendingToolReplies  map[string][]string
 	routeMu             sync.RWMutex
 	routes              map[string]conversationRoute
 	traceRouteMu        sync.RWMutex
@@ -303,6 +304,7 @@ func NewDMPipeline(opts DMPipelineOptions) (*DMPipeline, error) {
 		typingCancel:        map[string]context.CancelFunc{},
 		pendingFiles:        map[string][]transport.OutboundAttachment{},
 		pendingMessageText:  map[string][]string{},
+		pendingToolReplies:  map[string][]string{},
 		routes:              map[string]conversationRoute{},
 		traceByDM:           map[string]string{},
 		dmByTrace:           map[string]string{},
@@ -1565,6 +1567,7 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 			if event.Type == sessionrt.EventToolResult {
 				p.captureAttachmentsFromEvent(conversationID, event)
 				p.captureMessageEchoFromEvent(conversationID, event)
+				p.captureToolReplyFromEvent(conversationID, event)
 			}
 			if event.Type == sessionrt.EventToolCall {
 				p.sendToolCallDraft(conversationID, event)
@@ -1611,8 +1614,21 @@ func (p *DMPipeline) ensureSubscription(conversationID string, sessionID session
 				continue
 			}
 			if content == "" && len(attachments) == 0 {
+				if reply, ok := p.takePendingToolReply(conversationID); ok {
+					if err := p.sendMessage(context.Background(), transport.OutboundMessage{
+						ConversationID: conversationID,
+						SenderID:       p.senderForConversationEvent(conversationID, event.From),
+						Text:           reply,
+					}); err != nil {
+						slog.Error("dm_pipeline: send tool reply fallback failed",
+							"conversation_id", conversationID,
+							"error", err,
+						)
+					}
+				}
 				continue
 			}
+			p.clearPendingToolReplies(conversationID)
 			if heartbeatResult.IsHeartbeat && len(attachments) == 0 && p.shouldSuppressDuplicateHeartbeat(conversationID, content) {
 				continue
 			}
@@ -1966,6 +1982,21 @@ func (p *DMPipeline) captureMessageEchoFromEvent(conversationID string, event se
 	p.enqueuePendingMessageText(conversationID, text)
 }
 
+func (p *DMPipeline) captureToolReplyFromEvent(conversationID string, event sessionrt.Event) {
+	if p == nil {
+		return
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	text, ok := toolResultReplyText(event.Payload)
+	if !ok {
+		return
+	}
+	p.enqueuePendingToolReply(conversationID, text)
+}
+
 func messageToolResultText(payload any) (string, bool) {
 	eventPayload, ok := payload.(map[string]any)
 	if !ok {
@@ -1987,6 +2018,89 @@ func messageToolResultText(payload any) (string, bool) {
 		return "", false
 	}
 	return text, true
+}
+
+func toolResultReplyText(payload any) (string, bool) {
+	eventPayload, ok := payload.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if strings.TrimSpace(stringFromAny(eventPayload["name"])) != "cron" {
+		return "", false
+	}
+	status := strings.TrimSpace(stringFromAny(eventPayload["status"]))
+	if status != "" && status != "ok" {
+		return "", false
+	}
+	result, ok := eventPayload["result"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	return cronToolResultReplyText(result)
+}
+
+func cronToolResultReplyText(result map[string]any) (string, bool) {
+	action := strings.TrimSpace(stringFromAny(result["action"]))
+	switch action {
+	case "create":
+		job, ok := result["job"].(map[string]any)
+		if !ok {
+			return "Scheduled it.", true
+		}
+		if next := formatCronJobNextRun(job); next != "" {
+			return "Scheduled it for " + next + ".", true
+		}
+		return "Scheduled it.", true
+	case "delete":
+		return "Deleted the scheduled job.", true
+	case "pause":
+		return "Paused the scheduled job.", true
+	case "resume":
+		job, ok := result["job"].(map[string]any)
+		if !ok {
+			return "Resumed the scheduled job.", true
+		}
+		if next := formatCronJobNextRun(job); next != "" {
+			return "Resumed the scheduled job. Next run: " + next + ".", true
+		}
+		return "Resumed the scheduled job.", true
+	case "list":
+		switch jobs := result["jobs"].(type) {
+		case []any:
+			if len(jobs) == 0 {
+				return "No scheduled jobs.", true
+			}
+			return fmt.Sprintf("%d scheduled job(s).", len(jobs)), true
+		case []map[string]any:
+			if len(jobs) == 0 {
+				return "No scheduled jobs.", true
+			}
+			return fmt.Sprintf("%d scheduled job(s).", len(jobs)), true
+		default:
+			return "", false
+		}
+	default:
+		return "", false
+	}
+}
+
+func formatCronJobNextRun(job map[string]any) string {
+	raw := strings.TrimSpace(stringFromAny(job["next_run_at"]))
+	if raw == "" {
+		return ""
+	}
+	nextRun, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return raw
+	}
+	locationName := strings.TrimSpace(stringFromAny(job["timezone"]))
+	if locationName != "" {
+		if location, locErr := time.LoadLocation(locationName); locErr == nil {
+			nextRun = nextRun.In(location)
+			return nextRun.Format("January 2, 2006 at 3:04 PM MST")
+		}
+	}
+	return nextRun.UTC().Format("January 2, 2006 at 3:04 PM UTC")
 }
 
 func (p *DMPipeline) consumeSuppressedReply(conversationID, text string, attachmentCount int) bool {
@@ -2013,6 +2127,17 @@ func (p *DMPipeline) enqueuePendingMessageText(conversationID, text string) {
 	}
 	p.messageDedupeMu.Lock()
 	p.pendingMessageText[conversationID] = append(p.pendingMessageText[conversationID], text)
+	p.messageDedupeMu.Unlock()
+}
+
+func (p *DMPipeline) enqueuePendingToolReply(conversationID, text string) {
+	conversationID = strings.TrimSpace(conversationID)
+	text = strings.TrimSpace(text)
+	if conversationID == "" || text == "" {
+		return
+	}
+	p.messageDedupeMu.Lock()
+	p.pendingToolReplies[conversationID] = append(p.pendingToolReplies[conversationID], text)
 	p.messageDedupeMu.Unlock()
 }
 
@@ -2054,6 +2179,47 @@ func (p *DMPipeline) clearPendingMessageDedupe(conversationID string) {
 	}
 	p.messageDedupeMu.Lock()
 	delete(p.pendingMessageText, conversationID)
+	p.messageDedupeMu.Unlock()
+}
+
+func (p *DMPipeline) takePendingToolReply(conversationID string) (string, bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return "", false
+	}
+	p.messageDedupeMu.Lock()
+	defer p.messageDedupeMu.Unlock()
+	pending := p.pendingToolReplies[conversationID]
+	if len(pending) == 0 {
+		return "", false
+	}
+	delete(p.pendingToolReplies, conversationID)
+	parts := make([]string, 0, len(pending))
+	seen := map[string]struct{}{}
+	for _, candidate := range pending {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		parts = append(parts, candidate)
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+func (p *DMPipeline) clearPendingToolReplies(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	p.messageDedupeMu.Lock()
+	delete(p.pendingToolReplies, conversationID)
 	p.messageDedupeMu.Unlock()
 }
 

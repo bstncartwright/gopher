@@ -431,7 +431,7 @@ summary {
 
 .status-value,
 .summary-card strong {
-  font-size: 1.2rem;
+  font-size: 1.05rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -451,9 +451,9 @@ summary {
 .tab-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   margin-top: 14px;
-  padding: 12px;
+  padding: 8px;
   border-radius: var(--radius-lg);
   position: relative;
   overflow: hidden;
@@ -477,13 +477,14 @@ summary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
-  padding: 10px 16px;
+  min-height: 38px;
+  padding: 8px 14px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   font-family: "Chakra Petch", sans-serif;
+  font-size: 0.88rem;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
   transition:
@@ -781,32 +782,35 @@ summary {
 }
 
 .section-work .topbar {
-  padding: 14px 18px;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 18px;
+  padding: 16px 20px;
   border-radius: 18px;
 }
 
 .section-work .brand-mark {
   gap: 6px;
-  padding-right: 18px;
+  padding-right: 16px;
 }
 
 .section-work .brand-name {
-  font-size: 1.08rem;
+  font-size: 1rem;
 }
 
 .section-work .page-intro h1 {
-  font-size: clamp(1.9rem, 3vw, 2.5rem);
-  line-height: 0.9;
+  font-size: clamp(1.45rem, 2.4vw, 2rem);
+  line-height: 0.92;
+  letter-spacing: 0.05em;
 }
 
 .section-work .page-subtitle {
   margin-top: 5px;
-  font-size: 0.98rem;
-  max-width: 70ch;
+  font-size: 0.9rem;
+  max-width: 58ch;
 }
 
 .section-work .topbar-side {
-  gap: 8px;
+  gap: 6px;
 }
 
 .section-work .live-pill,
@@ -816,16 +820,15 @@ summary {
 }
 
 .section-work .section-code {
-  font-size: 0.82rem;
-  letter-spacing: 0.18em;
+  font-size: 0.74rem;
+  letter-spacing: 0.16em;
 }
 
 .section-work .status-strip {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 8px;
-  overflow-x: auto;
-  padding: 10px 12px;
-  scrollbar-width: none;
+  padding: 8px;
 }
 
 .section-work .status-strip::-webkit-scrollbar {
@@ -833,12 +836,12 @@ summary {
 }
 
 .section-work .status-chip {
-  min-width: 154px;
-  flex: 0 0 auto;
+  min-width: 0;
+  padding: 10px 12px;
 }
 
 .section-work .content-panel {
-  padding: 14px;
+  padding: 12px;
   border-radius: 22px;
 }
 
@@ -987,9 +990,10 @@ summary {
 
 .work-shell {
   display: grid;
-  grid-template-columns: minmax(248px, 280px) minmax(0, 1fr);
-  gap: 14px;
-  min-height: calc(100dvh - 260px);
+  grid-template-columns: minmax(286px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  min-height: calc(100dvh - 240px);
+  align-items: start;
 }
 
 .queue-panel,
@@ -1004,8 +1008,31 @@ summary {
   position: relative;
   position: sticky;
   top: 14px;
-  max-height: calc(100dvh - 110px);
-  border-radius: 24px;
+  max-height: calc(100dvh - 92px);
+  padding: 16px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 14%),
+    linear-gradient(180deg, rgba(7, 16, 27, 0.96), rgba(6, 14, 23, 0.94));
+}
+
+.queue-panel-header {
+  align-items: flex-start;
+}
+
+.queue-panel .surface-header h2 {
+  font-family: "Chakra Petch", sans-serif;
+  font-size: 1.15rem;
+  line-height: 1.1;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.queue-panel .surface-copy {
+  max-width: 28ch;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .queue-list {
@@ -1024,7 +1051,7 @@ summary {
 
 .queue-insight {
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 16px;
   padding: 10px 12px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
   min-width: 0;
@@ -1152,12 +1179,15 @@ summary {
 .workspace-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   min-width: 0;
-  min-height: calc(100dvh - 120px);
+  min-height: calc(100dvh - 92px);
   position: relative;
-  padding: 16px;
-  border-radius: 28px;
+  padding: 18px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 14%),
+    linear-gradient(180deg, rgba(7, 16, 27, 0.98), rgba(5, 13, 21, 0.96));
 }
 
 .section-work .workspace-panel {
@@ -1196,16 +1226,19 @@ summary {
 
 .workspace-header {
   margin-bottom: 0;
-  padding: 10px 2px 6px;
+  padding: 0 0 12px;
   border: 0;
+  border-bottom: 1px solid rgba(126, 182, 218, 0.12);
   border-radius: 0;
   background: transparent;
 }
 
 .workspace-header h2 {
-  font-size: clamp(1.8rem, 3vw, 2.6rem);
-  line-height: 0.94;
-  letter-spacing: 0.03em;
+  font-family: "Chakra Petch", sans-serif;
+  font-size: clamp(1.35rem, 2vw, 1.85rem);
+  line-height: 1.06;
+  letter-spacing: 0.02em;
+  text-transform: none;
 }
 
 .workspace-toolbar {
@@ -1224,9 +1257,9 @@ summary {
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid rgba(89, 210, 221, 0.16);
-  border-radius: 18px;
+  padding: 10px 12px;
+  border: 1px solid rgba(89, 210, 221, 0.14);
+  border-radius: 16px;
   background:
     linear-gradient(90deg, rgba(89, 210, 221, 0.06), transparent 26%, transparent 78%, rgba(242, 182, 93, 0.04)),
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
@@ -1238,18 +1271,18 @@ summary {
 
 .workspace-stage {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 360px);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1.7fr) minmax(300px, 360px);
+  gap: 14px;
   align-items: stretch;
-  min-height: min(72dvh, calc(100dvh - 290px));
+  min-height: min(70dvh, calc(100dvh - 270px));
   flex: 1 1 auto;
   min-height: 0;
 }
 
 .workspace-summary {
   border: 1px solid var(--line);
-  border-radius: 18px;
-  padding: 12px 14px;
+  border-radius: 16px;
+  padding: 14px 16px;
   background:
     linear-gradient(90deg, rgba(89, 210, 221, 0.06), transparent 32%, rgba(242, 182, 93, 0.04)),
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
@@ -1370,10 +1403,10 @@ summary {
 .timeline-panel,
 .inspector-panel {
   border: 1px solid var(--line);
-  border-radius: 24px;
+  border-radius: 18px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
-    rgba(255, 255, 255, 0.02);
+    rgba(6, 14, 23, 0.86);
   min-width: 0;
   position: relative;
   overflow: hidden;
@@ -1894,6 +1927,7 @@ summary {
     z-index: 140;
     margin: 12px;
     max-height: 76vh;
+    padding: 16px;
     transform: translateY(104%);
     transition: transform 160ms ease;
     overscroll-behavior: contain;

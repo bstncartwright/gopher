@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 )
 
@@ -48,10 +49,20 @@ func (s *AssistantMessageEventStream) Push(event AssistantMessageEvent) {
 		s.result = *event.Message
 		s.hasRes = true
 		s.done = true
+		slog.Debug("ai_event_stream: received terminal done event",
+			"reason", event.Reason,
+			"content_blocks", len(event.Message.Content),
+			"error_message_length", len(event.Message.ErrorMessage),
+		)
 	} else if event.Type == EventError && event.Error != nil {
 		s.result = *event.Error
 		s.hasRes = true
 		s.done = true
+		slog.Debug("ai_event_stream: received terminal error event",
+			"reason", event.Reason,
+			"content_blocks", len(event.Error.Content),
+			"error_message_length", len(event.Error.ErrorMessage),
+		)
 	}
 
 	select {
@@ -61,6 +72,10 @@ func (s *AssistantMessageEventStream) Push(event AssistantMessageEvent) {
 	}
 
 	if s.done {
+		slog.Debug("ai_event_stream: closing event stream",
+			"has_result", s.hasRes,
+			"dropped_events", s.dropped,
+		)
 		select {
 		case <-s.wait:
 		default:
@@ -82,6 +97,12 @@ func (s *AssistantMessageEventStream) End(result *AssistantMessage) {
 		s.result = *result
 		s.hasRes = true
 	}
+	slog.Debug("ai_event_stream: end called",
+		"has_result", s.hasRes,
+		"content_blocks", len(s.result.Content),
+		"stop_reason", s.result.StopReason,
+		"error_message_length", len(s.result.ErrorMessage),
+	)
 
 	select {
 	case <-s.wait:
@@ -101,9 +122,11 @@ func (s *AssistantMessageEventStream) Result(ctx context.Context) (AssistantMess
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	slog.Debug("ai_event_stream: awaiting result")
 
 	select {
 	case <-ctx.Done():
+		slog.Warn("ai_event_stream: result wait cancelled", "error", ctx.Err())
 		return AssistantMessage{}, ctx.Err()
 	case <-s.wait:
 	}
@@ -111,7 +134,14 @@ func (s *AssistantMessageEventStream) Result(ctx context.Context) (AssistantMess
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.hasRes {
+		slog.Error("ai_event_stream: result wait finished without terminal result", "dropped_events", s.dropped)
 		return AssistantMessage{}, ErrStreamClosed
 	}
+	slog.Debug("ai_event_stream: returning result",
+		"stop_reason", s.result.StopReason,
+		"content_blocks", len(s.result.Content),
+		"error_message_length", len(s.result.ErrorMessage),
+		"dropped_events", s.dropped,
+	)
 	return s.result, nil
 }

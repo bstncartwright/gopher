@@ -175,9 +175,23 @@ func streamOpenAICodexResponses(model Model, conversation Context, options *Open
 			if err := processCodexWebSocket(ctx, wsURL, body, headers, &output, stream, model, options, &wsStarted); err == nil {
 				slog.Info("openai_codex: websocket stream complete", "model_id", model.ID, "session_id", options.SessionID, "stop_reason", output.StopReason)
 				if output.StopReason == StopReasonStop || output.StopReason == StopReasonLength || output.StopReason == StopReasonToolUse {
+					slog.Debug("openai_codex: pushing websocket done event",
+						"model_id", model.ID,
+						"session_id", options.SessionID,
+						"stop_reason", output.StopReason,
+						"content_blocks", len(output.Content),
+						"error_message_length", len(output.ErrorMessage),
+					)
 					stream.Push(AssistantMessageEvent{Type: EventDone, Reason: output.StopReason, Message: &output})
 					return
 				}
+				slog.Debug("openai_codex: pushing websocket terminal error event",
+					"model_id", model.ID,
+					"session_id", options.SessionID,
+					"stop_reason", output.StopReason,
+					"content_blocks", len(output.Content),
+					"error_message_length", len(output.ErrorMessage),
+				)
 				stream.Push(AssistantMessageEvent{Type: EventError, Reason: output.StopReason, Error: &output})
 				return
 			} else if transport == TransportWebSocket || (wsStarted && !isNormalWebSocketClosureError(err)) {

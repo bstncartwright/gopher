@@ -263,6 +263,14 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			"text_deltas", textDeltaCount,
 			"tool_calls", len(toolCalls),
 		)
+		slog.Debug("run_turn: awaiting stream result",
+			"agent_id", a.ID,
+			"session_id", s.ID,
+			"round", round,
+			"text_deltas", textDeltaCount,
+			"tool_calls", len(toolCalls),
+			"stream_errors", len(streamErrors),
+		)
 
 		assistant, err := stream.Result(ctx)
 		if err != nil {
@@ -297,6 +305,14 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 			turnErr = err
 			return TurnResult{Events: emitter.Events()}, err
 		}
+		slog.Debug("run_turn: stream result returned",
+			"agent_id", a.ID,
+			"session_id", s.ID,
+			"round", round,
+			"stop_reason", assistant.StopReason,
+			"content_blocks", len(assistant.Content),
+			"error_message_length", len(strings.TrimSpace(assistant.ErrorMessage)),
+		)
 
 		if ai.IsContextOverflow(assistant, a.model.ContextWindow) && a.shouldRetryContextOverflow(assistant.ErrorMessage, overflowRetryUsed) {
 			recovered, recoverErr := a.recoverFromContextOverflow(ctx, s, in, assistant.ErrorMessage, overflowRetryUsed+1, &overflowFlushAttempted)
@@ -427,6 +443,12 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 		if assistant.Phase == ai.AssistantPhaseCommentary {
 			commentaryText := strings.TrimSpace(extractText(assistant.Content))
 			if commentaryText != "" {
+				slog.Debug("run_turn: emitting commentary agent message",
+					"agent_id", a.ID,
+					"session_id", s.ID,
+					"round", round,
+					"text_length", len(commentaryText),
+				)
 				if err := emitter.Emit(EventTypeAgentMsg, map[string]any{"text": commentaryText}); err != nil {
 					turnErr = err
 					return TurnResult{Events: emitter.Events()}, err
@@ -443,10 +465,22 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 				"final_text_length", len(finalText),
 				"round_duration_ms", time.Since(roundStart).Milliseconds(),
 			)
+			slog.Debug("run_turn: emitting final agent message",
+				"agent_id", a.ID,
+				"session_id", s.ID,
+				"round", round,
+				"final_text_length", len(finalText),
+			)
 			if err := emitter.Emit(EventTypeAgentMsg, map[string]any{"text": finalText}); err != nil {
 				turnErr = err
 				return TurnResult{Events: emitter.Events()}, err
 			}
+			slog.Debug("run_turn: final agent message emitted",
+				"agent_id", a.ID,
+				"session_id", s.ID,
+				"round", round,
+				"final_text_length", len(finalText),
+			)
 			s.Messages = boundMessages(conversation.Messages, a.Config.MaxContextMessages)
 			turnErr = nil
 			finalText = strings.TrimSpace(finalText)

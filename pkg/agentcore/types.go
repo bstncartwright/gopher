@@ -659,9 +659,10 @@ type Attachment struct {
 }
 
 type TurnInput struct {
-	UserMessage string
-	Attachments []Attachment
-	PromptMode  PromptMode
+	UserMessage        string
+	Attachments        []Attachment
+	PromptMode         PromptMode
+	SuppressCommentary bool
 }
 
 type TurnResult struct {

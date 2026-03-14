@@ -282,6 +282,9 @@ func TestBuildAgentSystemPromptDoesNotInstructRawReplyTagEmission(t *testing.T) 
 	if !strings.Contains(prompt, "latest user-visible non-HEARTBEAT_OK alert") {
 		t.Fatalf("expected heartbeat feedback interpretation guidance, got: %s", prompt)
 	}
+	if !strings.Contains(prompt, "Do not send kickoff acknowledgements, progress updates, or quiet-status summaries for heartbeat polls.") {
+		t.Fatalf("expected heartbeat silence guidance, got: %s", prompt)
+	}
 }
 
 func TestBuildAgentSystemPromptIncludesTemplateMaintenanceWhenUpdatesArePending(t *testing.T) {

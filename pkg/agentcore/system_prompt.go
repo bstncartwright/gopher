@@ -206,6 +206,7 @@ func buildAgentSystemPrompt(input systemPromptInput) (string, error) {
 			"",
 			"## Heartbeats",
 			"HEARTBEAT_OK is internal status only and should not produce user-visible content by itself.",
+			"Do not send kickoff acknowledgements, progress updates, or quiet-status summaries for heartbeat polls.",
 			"If a heartbeat poll arrives and no user-facing action is needed, reply exactly: HEARTBEAT_OK",
 			"If user-facing action is needed, reply with one concise alert and do not include HEARTBEAT_OK.",
 			"When a user critiques \"that message\" after heartbeats, interpret it as feedback on the latest user-visible non-HEARTBEAT_OK alert.",

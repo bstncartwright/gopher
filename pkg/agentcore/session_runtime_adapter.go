@@ -49,6 +49,7 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 	if !ok {
 		return sessionrt.AgentOutput{}, nil
 	}
+	suppressCommentary := shouldSuppressCommentaryForPrompt(input.History, promptIdx, input.ActorID)
 
 	sessionData := a.getOrInitSession(input.SessionID, input.ActorID, input.History, promptIdx)
 
@@ -74,9 +75,10 @@ func (a *SessionRuntimeAdapter) Step(ctx context.Context, input sessionrt.AgentI
 	}
 
 	result, err := a.agent.RunTurn(turnCtx, sessionData, TurnInput{
-		UserMessage: userMsg.Content,
-		Attachments: mapSessionAttachments(userMsg.Attachments),
-		PromptMode:  PromptModeFull,
+		UserMessage:        userMsg.Content,
+		Attachments:        mapSessionAttachments(userMsg.Attachments),
+		PromptMode:         PromptModeFull,
+		SuppressCommentary: suppressCommentary,
 	})
 	if err != nil {
 		return sessionrt.AgentOutput{}, err
@@ -105,6 +107,7 @@ func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.
 	if !ok {
 		return nil
 	}
+	suppressCommentary := shouldSuppressCommentaryForPrompt(input.History, promptIdx, input.ActorID)
 
 	sessionData := a.getOrInitSession(input.SessionID, input.ActorID, input.History, promptIdx)
 
@@ -139,9 +142,10 @@ func (a *SessionRuntimeAdapter) StepStream(ctx context.Context, input sessionrt.
 	}
 
 	_, err := a.agent.RunTurnWithEventHandler(turnCtx, sessionData, TurnInput{
-		UserMessage: userMsg.Content,
-		Attachments: mapSessionAttachments(userMsg.Attachments),
-		PromptMode:  PromptModeFull,
+		UserMessage:        userMsg.Content,
+		Attachments:        mapSessionAttachments(userMsg.Attachments),
+		PromptMode:         PromptModeFull,
+		SuppressCommentary: suppressCommentary,
 	}, func(event Event) error {
 		mapped, ok := a.mapEvent(event)
 		if !ok {
@@ -283,6 +287,29 @@ func promptMessageFromPayload(payload any) (sessionrt.Message, bool) {
 	default:
 		return sessionrt.Message{}, false
 	}
+}
+
+func shouldSuppressCommentaryForPrompt(events []sessionrt.Event, promptIdx int, actorID sessionrt.ActorID) bool {
+	if promptIdx < 0 || promptIdx >= len(events) {
+		return false
+	}
+	targetActor := strings.TrimSpace(string(actorID))
+	if targetActor == "" {
+		return false
+	}
+	event := events[promptIdx]
+	msg, ok := promptMessageFromPayload(event.Payload)
+	if !ok {
+		return false
+	}
+	target := strings.TrimSpace(string(msg.TargetActorID))
+	if target == "" || target != targetActor {
+		return false
+	}
+	if strings.TrimSpace(string(event.From)) == strings.TrimSpace(string(sessionrt.SystemActorID)) {
+		return true
+	}
+	return msg.Role == sessionrt.RoleAgent
 }
 
 func stringPayloadField(payload any, key string) (string, bool) {

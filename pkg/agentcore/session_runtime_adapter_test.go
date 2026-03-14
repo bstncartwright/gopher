@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -382,6 +383,81 @@ func TestSessionRuntimeAdapterStepEmitsStatePatch(t *testing.T) {
 	}
 	if !foundPatch {
 		t.Fatalf("expected state patch event from adapter")
+	}
+}
+
+func TestSessionRuntimeAdapterSuppressesCommentaryForTargetedSystemPrompt(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"fs"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "a.txt"), "A")
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	roundOneAssistant := ai.NewAssistantMessage(agent.model)
+	roundOneAssistant.Phase = ai.AssistantPhaseCommentary
+	roundOneAssistant.StopReason = ai.StopReasonToolUse
+	roundOneAssistant.Content = []ai.ContentBlock{
+		{Type: ai.ContentTypeText, Text: "Checking the heartbeat now."},
+		{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "read", Arguments: map[string]any{"path": "a.txt"}},
+	}
+
+	roundTwoAssistant := ai.NewAssistantMessage(agent.model)
+	roundTwoAssistant.StopReason = ai.StopReasonStop
+	roundTwoAssistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "HEARTBEAT_OK"}}
+
+	agent.Provider = &mockProvider{rounds: []mockRound{
+		{assistant: roundOneAssistant},
+		{assistant: roundTwoAssistant},
+	}}
+
+	adapter := NewSessionRuntimeAdapter(agent)
+	out, err := adapter.Step(context.Background(), sessionrt.AgentInput{
+		SessionID: "sess-heartbeat",
+		ActorID:   sessionrt.ActorID(agent.ID),
+		History: []sessionrt.Event{
+			{
+				From: sessionrt.SystemActorID,
+				Type: sessionrt.EventMessage,
+				Payload: sessionrt.Message{
+					Role:          sessionrt.RoleUser,
+					Content:       "__heartbeat__",
+					TargetActorID: sessionrt.ActorID(agent.ID),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Step() error: %v", err)
+	}
+	if len(out.Events) < 3 {
+		t.Fatalf("expected tool events, final message, and state patch; got %d events", len(out.Events))
+	}
+	if out.Events[0].Type != sessionrt.EventToolCall {
+		t.Fatalf("first event = %q, want %q", out.Events[0].Type, sessionrt.EventToolCall)
+	}
+	agentMessageCount := 0
+	for _, event := range out.Events {
+		if event.Type != sessionrt.EventMessage {
+			continue
+		}
+		msg, ok := event.Payload.(sessionrt.Message)
+		if !ok {
+			t.Fatalf("event payload type = %T, want session.Message", event.Payload)
+		}
+		if msg.Role != sessionrt.RoleAgent {
+			continue
+		}
+		agentMessageCount++
+		if msg.Content != "HEARTBEAT_OK" {
+			t.Fatalf("agent message = %q, want HEARTBEAT_OK", msg.Content)
+		}
+	}
+	if agentMessageCount != 1 {
+		t.Fatalf("agent message count = %d, want 1", agentMessageCount)
 	}
 }
 

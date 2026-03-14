@@ -440,7 +440,7 @@ func (a *Agent) runTurn(ctx context.Context, s *Session, in TurnInput, onEvent f
 
 		conversation.Messages = append(conversation.Messages, assistant.ToMessage())
 
-		if assistant.Phase == ai.AssistantPhaseCommentary {
+		if assistant.Phase == ai.AssistantPhaseCommentary && !in.SuppressCommentary {
 			commentaryText := strings.TrimSpace(extractText(assistant.Content))
 			if commentaryText != "" {
 				slog.Debug("run_turn: emitting commentary agent message",

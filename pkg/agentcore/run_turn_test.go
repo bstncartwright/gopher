@@ -531,6 +531,65 @@ func TestRunTurnEmitsCommentaryMessageBeforeToolCalls(t *testing.T) {
 	}
 }
 
+func TestRunTurnSuppressesCommentaryWhenRequested(t *testing.T) {
+	config := defaultConfig()
+	config.EnabledTools = []string{"fs"}
+	workspace := createTestWorkspace(t, config, defaultPolicies())
+	mustWriteFile(t, filepath.Join(workspace, "a.txt"), "A")
+
+	agent, err := LoadAgent(workspace)
+	if err != nil {
+		t.Fatalf("LoadAgent() error: %v", err)
+	}
+
+	roundOneAssistant := ai.NewAssistantMessage(agent.model)
+	roundOneAssistant.Phase = ai.AssistantPhaseCommentary
+	roundOneAssistant.StopReason = ai.StopReasonToolUse
+	roundOneAssistant.Content = []ai.ContentBlock{
+		{Type: ai.ContentTypeText, Text: "Looking that up now."},
+		{Type: ai.ContentTypeToolCall, ID: "call_1", Name: "read", Arguments: map[string]any{"path": "a.txt"}},
+	}
+
+	roundTwoAssistant := ai.NewAssistantMessage(agent.model)
+	roundTwoAssistant.StopReason = ai.StopReasonStop
+	roundTwoAssistant.Content = []ai.ContentBlock{{Type: ai.ContentTypeText, Text: "done"}}
+
+	agent.Provider = &mockProvider{rounds: []mockRound{
+		{assistant: roundOneAssistant},
+		{assistant: roundTwoAssistant},
+	}}
+
+	result, err := agent.RunTurn(context.Background(), agent.NewSession(), TurnInput{
+		UserMessage:        "read a.txt",
+		SuppressCommentary: true,
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error: %v", err)
+	}
+
+	if len(result.Events) < 3 {
+		t.Fatalf("expected tool events plus final message, got %d events", len(result.Events))
+	}
+	if result.Events[0].Type != EventTypeToolCall {
+		t.Fatalf("first event = %q, want %q", result.Events[0].Type, EventTypeToolCall)
+	}
+	for _, event := range result.Events {
+		if event.Type != EventTypeAgentMsg {
+			continue
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("agent message payload type = %T, want map[string]any", event.Payload)
+		}
+		if got := strings.TrimSpace(fmt.Sprint(payload["text"])); got == "Looking that up now." {
+			t.Fatalf("did not expect commentary agent.message when suppressed")
+		}
+	}
+	if result.FinalText != "done" {
+		t.Fatalf("final text = %q, want done", result.FinalText)
+	}
+}
+
 func TestRunTurnExecutesMultipleToolCallsInParallel(t *testing.T) {
 	workspace := createTestWorkspace(t, defaultConfig(), defaultPolicies())
 	agent, err := LoadAgent(workspace)

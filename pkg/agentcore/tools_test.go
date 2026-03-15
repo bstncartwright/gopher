@@ -56,6 +56,9 @@ func TestBuildRegistryGroupCollaborationEnablesHeartbeat(t *testing.T) {
 
 func TestBuildRegistryGroupRuntimeEnablesGopherMeta(t *testing.T) {
 	registry := buildRegistry([]string{"group:runtime"}, defaultPolicies())
+	if _, ok := registry.Get("code_exec"); !ok {
+		t.Fatalf("expected code_exec tool to be enabled")
+	}
 	if _, ok := registry.Get("gopher_meta"); !ok {
 		t.Fatalf("expected gopher_meta tool to be enabled")
 	}

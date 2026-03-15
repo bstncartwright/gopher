@@ -283,7 +283,7 @@ the default enabled tool groups cover:
 
 - memory search and memory fetch
 - file read/write/edit
-- shell exec and background process management
+- shell exec, local code execution, and background process management
 - gopher metadata and self-update helpers
 - delegation, delegate target discovery, heartbeat, messaging, and reactions
 - web search and web fetch

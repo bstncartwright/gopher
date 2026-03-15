@@ -383,6 +383,9 @@ func buildToolUsageHints(registry ToolRegistry) string {
 	if toolRegistryHas(registry, "exec") {
 		lines = append(lines, "- `exec` runs shell commands. For long-running or interactive commands, set `background: true` to start a managed session and get a `session_id`.")
 	}
+	if toolRegistryHas(registry, "code_exec") {
+		lines = append(lines, "- `code_exec` runs a short local program (`bash`, `sh`, `python`, or `node`) in the workspace. Prefer it when a small script is simpler than many `read`/`exec` rounds; it runs with the same machine access as gopher.")
+	}
 	if toolRegistryHas(registry, "process") {
 		lines = append(lines, "- `process` manages background sessions. Use `action` in {`list`,`poll`,`log`,`write`,`kill`} with the `session_id` from `exec`.")
 	}

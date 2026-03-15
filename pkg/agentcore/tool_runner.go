@@ -189,6 +189,8 @@ func canonicalToolName(name string) string {
 		return "web_search"
 	case "web_fetch", "fetch_mcp", "fetch", "fetch_content":
 		return "web_fetch"
+	case "code_exec", "workspace_runner":
+		return "code_exec"
 	default:
 		return strings.TrimSpace(name)
 	}
@@ -294,6 +296,53 @@ func (r *ToolRunner) enforcePolicy(name string, args map[string]any) (map[string
 			return nil, err
 		}
 		out["workdir"] = resolvedWorkdir
+		return out, nil
+
+	case "code_exec":
+		if !r.agent.Policies.CanShell {
+			slog.Warn("tool_runner: code_exec denied by policy", "can_shell", false)
+			return nil, &PolicyError{Message: "code_exec denied: policies.can_shell=false"}
+		}
+		runtimeName, err := requiredStringArg(out, "runtime")
+		if err != nil {
+			return nil, err
+		}
+		spec, err := resolveCodeExecRuntime(runtimeName)
+		if err != nil {
+			return nil, err
+		}
+		if len(r.agent.Policies.ShellAllowlist) > 0 && !isInAllowlist(spec.Command, r.agent.Policies.ShellAllowlist) {
+			slog.Warn("tool_runner: code_exec denied - runtime not in allowlist",
+				"runtime", runtimeName,
+				"command", spec.Command,
+				"allowlist", r.agent.Policies.ShellAllowlist,
+			)
+			return nil, &PolicyError{Message: fmt.Sprintf("code_exec denied: runtime %q resolves to %q which is not in shell_allowlist", runtimeName, spec.Command)}
+		}
+		workdir := r.agent.Workspace
+		if rawWorkdir, ok := optionalStringArg(out, "workdir"); ok && rawWorkdir != "" {
+			workdir = rawWorkdir
+		}
+		resolvedWorkdir, err := r.resolvePathInAllowedRoots(workdir)
+		if err != nil {
+			return nil, err
+		}
+		out["workdir"] = resolvedWorkdir
+		capturePaths, err := codeExecStringListArg(out, "capture_paths")
+		if err != nil {
+			return nil, err
+		}
+		if len(capturePaths) > 0 {
+			resolvedCapturePaths := make([]any, 0, len(capturePaths))
+			for _, capturePath := range capturePaths {
+				resolvedPath, err := r.resolvePathInAllowedRoots(capturePath)
+				if err != nil {
+					return nil, err
+				}
+				resolvedCapturePaths = append(resolvedCapturePaths, resolvedPath)
+			}
+			out["capture_paths"] = resolvedCapturePaths
+		}
 		return out, nil
 
 	case "process":

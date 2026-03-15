@@ -89,6 +89,7 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			}
 		case "group:runtime":
 			add(&execTool{})
+			add(&codeExecTool{})
 			add(&processTool{})
 			add(&gopherMetaTool{})
 			add(&gopherUpdateTool{})
@@ -103,6 +104,8 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(newWebFetchMCPTool())
 		case "shell", "shell.exec", "exec":
 			add(&execTool{})
+		case "code_exec", "workspace_runner":
+			add(&codeExecTool{})
 		case "process":
 			add(&processTool{})
 		case "gopher_meta":

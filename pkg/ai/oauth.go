@@ -16,6 +16,14 @@ func RefreshOpenAICodexToken(credentials OAuthCredentials) (OAuthCredentials, er
 	return oauth.RefreshOpenAICodexToken(credentials)
 }
 
+func LoginGitHubCopilot(callbacks OAuthLoginCallbacks) (OAuthCredentials, error) {
+	return oauth.LoginGitHubCopilot(callbacks)
+}
+
+func RefreshGitHubCopilotToken(credentials OAuthCredentials) (OAuthCredentials, error) {
+	return oauth.RefreshGitHubCopilotToken(credentials)
+}
+
 func RegisterOAuthProvider(provider OAuthProvider) {
 	oauth.RegisterProvider(provider)
 }

@@ -107,6 +107,7 @@ notes:
 - `config.toml` is the default agent config format; `config.json` is also accepted for agent workspaces
 - gateway runtime state lives under `<workspace>/.gopher`
 - the default scaffolded agent model policy is `openai-codex:gpt-5.4`
+- other valid examples include `github-copilot:gpt-5.4` and `github-copilot:gpt-4o`
 
 ## prerequisites
 
@@ -301,6 +302,7 @@ supported providers:
 
 - `openai`
 - `openai-codex`
+- `github-copilot`
 - `anthropic`
 - `kimi-coding`
 - `zai`
@@ -322,8 +324,15 @@ gopher auth set --provider zai --api-key "$ZAI_API_KEY"
 gopher auth set --provider anthropic --api-key "$ANTHROPIC_API_KEY"
 
 gopher auth login --provider openai-codex
+gopher auth login --provider github-copilot
 gopher auth unset --provider zai
 ```
+
+github copilot notes:
+
+- `gopher auth login --provider github-copilot` uses the GitHub device flow and stores refreshed Copilot credentials in the auth env file
+- manual token overrides are also supported via `gopher auth set --provider github-copilot --api-key ...`
+- model availability can depend on which Copilot models are enabled for your account in GitHub or VS Code
 
 important:
 

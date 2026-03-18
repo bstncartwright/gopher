@@ -156,11 +156,11 @@ func runOnboardingSubcommand(args []string, in io.Reader, stdout, stderr io.Writ
 		if !ok {
 			return fmt.Errorf("unknown auth provider %q", providerValue)
 		}
-		if spec.Provider == "openai-codex" {
+		if spec.Provider == "openai-codex" || spec.Provider == "github-copilot" {
 			if strings.TrimSpace(apiKeyValue) != "" {
-				fmt.Fprintln(stdout, "ignoring api key for openai-codex; using oauth login flow")
+				fmt.Fprintf(stdout, "ignoring api key for %s; using oauth login flow\n", spec.Provider)
 			}
-			if err := runAuthLogin([]string{"--provider", "openai-codex", "--env-file", envPath}, in, stdout); err != nil {
+			if err := runAuthLogin([]string{"--provider", spec.Provider, "--env-file", envPath}, in, stdout); err != nil {
 				return fmt.Errorf("configure auth provider %s: %w", spec.Provider, err)
 			}
 		} else {
@@ -287,8 +287,8 @@ func runInteractiveOnboardingWizard(in io.Reader, out io.Writer, defaults onboar
 	providerOptions := make([]huh.Option[string], 0, len(providerAuthSpecs))
 	for _, spec := range providerAuthSpecs {
 		label := spec.Provider
-		if spec.Provider == "openai-codex" {
-			label = "openai-codex (oauth)"
+		if spec.Mode == "oauth_or_api_key" {
+			label = spec.Provider + " (oauth)"
 		}
 		providerOptions = append(providerOptions, huh.NewOption(label, spec.Provider))
 	}
@@ -307,7 +307,7 @@ func runInteractiveOnboardingWizard(in io.Reader, out io.Writer, defaults onboar
 		return onboardingWizardValues{}, err
 	}
 
-	if values.Provider != "openai-codex" {
+	if values.Provider != "openai-codex" && values.Provider != "github-copilot" {
 		if err := runHuhForm(in, out, huh.NewGroup(
 			huh.NewInput().
 				Title(fmt.Sprintf("enter %s api key/token", values.Provider)).

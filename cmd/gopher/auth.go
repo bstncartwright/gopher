@@ -31,9 +31,11 @@ var providerAuthSpecs = []providerAuthSpec{
 	{Provider: "anthropic", EnvKeys: []string{"ANTHROPIC_API_KEY"}, Mode: "api_key"},
 	{Provider: "ollama", EnvKeys: []string{"OLLAMA_API_KEY"}, Mode: "optional_api_key"},
 	{Provider: "openai-codex", EnvKeys: []string{"OPENAI_CODEX_API_KEY", "OPENAI_CODEX_TOKEN", "OPENAI_CODEX_REFRESH_TOKEN", "OPENAI_CODEX_TOKEN_EXPIRES"}, Mode: "oauth_or_api_key"},
+	{Provider: "github-copilot", EnvKeys: []string{"GITHUB_COPILOT_API_KEY", "GITHUB_COPILOT_TOKEN", "GITHUB_COPILOT_REFRESH_TOKEN", "GITHUB_COPILOT_TOKEN_EXPIRES"}, Mode: "oauth_or_api_key"},
 }
 
 var loginOpenAICodexForAuth = ai.LoginOpenAICodex
+var loginGitHubCopilotForAuth = ai.LoginGitHubCopilot
 
 func runAuthSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 	finishLog := startCommandLog("auth", args)
@@ -68,6 +70,7 @@ func printAuthUsage(out io.Writer) {
 	fmt.Fprintln(out, "  gopher auth providers")
 	fmt.Fprintln(out, "  gopher auth list [--env-file <path>]")
 	fmt.Fprintln(out, "  gopher auth login --provider openai-codex [--env-file ...]")
+	fmt.Fprintln(out, "  gopher auth login --provider github-copilot [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth set --provider zai --api-key <value> [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth set --key <ENV_KEY> --value <value> [--env-file ...]")
 	fmt.Fprintln(out, "  gopher auth unset --provider zai [--env-file ...]")
@@ -189,16 +192,13 @@ func runAuthLogin(args []string, in io.Reader, out io.Writer) error {
 	if providerID == "" {
 		return fmt.Errorf("--provider is required")
 	}
-	if providerID != "openai-codex" {
-		return fmt.Errorf("interactive oauth login is not supported for provider %q", providerID)
-	}
 	slog.Info("auth: starting provider oauth login", "provider", providerID, "env_file", strings.TrimSpace(*envFile))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	reader := bufio.NewReader(in)
-	credentials, err := loginOpenAICodexForAuth(ai.OAuthLoginCallbacks{
+	callbacks := ai.OAuthLoginCallbacks{
 		Context: ctx,
 		OnAuth: func(info ai.OAuthAuthInfo) {
 			if text := strings.TrimSpace(info.Instructions); text != "" {
@@ -233,28 +233,30 @@ func runAuthLogin(args []string, in io.Reader, out io.Writer) error {
 				}
 			}
 		},
-	})
+	}
+	var credentials ai.OAuthCredentials
+	var err error
+	switch providerID {
+	case "openai-codex":
+		credentials, err = loginOpenAICodexForAuth(callbacks)
+	case "github-copilot":
+		credentials, err = loginGitHubCopilotForAuth(callbacks)
+	default:
+		return fmt.Errorf("interactive oauth login is not supported for provider %q", providerID)
+	}
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(credentials.Access) == "" {
-		return fmt.Errorf("oauth login succeeded but did not return an access token")
-	}
-	if strings.TrimSpace(credentials.Refresh) == "" {
-		return fmt.Errorf("oauth login succeeded but did not return a refresh token")
-	}
-
-	values := map[string]string{
-		"OPENAI_CODEX_TOKEN":         credentials.Access,
-		"OPENAI_CODEX_REFRESH_TOKEN": credentials.Refresh,
-		"OPENAI_CODEX_TOKEN_EXPIRES": strconv.FormatInt(credentials.Expires, 10),
+	values, explicitKey, err := oauthEnvValuesForProvider(providerID, credentials)
+	if err != nil {
+		return err
 	}
 	for key, value := range values {
 		if err := upsertEnvKey(strings.TrimSpace(*envFile), key, value); err != nil {
 			return err
 		}
 	}
-	if err := removeEnvKeys(strings.TrimSpace(*envFile), []string{"OPENAI_CODEX_API_KEY"}); err != nil {
+	if err := removeEnvKeys(strings.TrimSpace(*envFile), []string{explicitKey}); err != nil {
 		return err
 	}
 	slog.Info("auth: oauth login completed", "provider", providerID, "env_file", strings.TrimSpace(*envFile))
@@ -306,6 +308,31 @@ func findProviderSpec(provider string) (providerAuthSpec, bool) {
 		}
 	}
 	return providerAuthSpec{}, false
+}
+
+func oauthEnvValuesForProvider(providerID string, credentials ai.OAuthCredentials) (map[string]string, string, error) {
+	if strings.TrimSpace(credentials.Access) == "" {
+		return nil, "", fmt.Errorf("oauth login succeeded but did not return an access token")
+	}
+	if strings.TrimSpace(credentials.Refresh) == "" {
+		return nil, "", fmt.Errorf("oauth login succeeded but did not return a refresh token")
+	}
+	switch providerID {
+	case "openai-codex":
+		return map[string]string{
+			"OPENAI_CODEX_TOKEN":         credentials.Access,
+			"OPENAI_CODEX_REFRESH_TOKEN": credentials.Refresh,
+			"OPENAI_CODEX_TOKEN_EXPIRES": strconv.FormatInt(credentials.Expires, 10),
+		}, "OPENAI_CODEX_API_KEY", nil
+	case "github-copilot":
+		return map[string]string{
+			"GITHUB_COPILOT_TOKEN":         credentials.Access,
+			"GITHUB_COPILOT_REFRESH_TOKEN": credentials.Refresh,
+			"GITHUB_COPILOT_TOKEN_EXPIRES": strconv.FormatInt(credentials.Expires, 10),
+		}, "GITHUB_COPILOT_API_KEY", nil
+	default:
+		return nil, "", fmt.Errorf("interactive oauth login is not supported for provider %q", providerID)
+	}
 }
 
 func defaultAuthEnvFilePath() string {

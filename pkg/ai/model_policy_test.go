@@ -37,6 +37,19 @@ func TestResolveModelPolicyValidCuratedOpenAICodexOverride(t *testing.T) {
 	}
 }
 
+func TestResolveModelPolicyValidGitHubCopilotModel(t *testing.T) {
+	model, err := ResolveModelPolicy("github-copilot:gpt-5.4")
+	if err != nil {
+		t.Fatalf("ResolveModelPolicy() error: %v", err)
+	}
+	if model.Provider != ProviderGitHubCopilot {
+		t.Fatalf("provider = %q, want %q", model.Provider, ProviderGitHubCopilot)
+	}
+	if model.ID != "gpt-5.4" {
+		t.Fatalf("model ID = %q, want gpt-5.4", model.ID)
+	}
+}
+
 func TestResolveModelPolicyRejectsInvalidFormat(t *testing.T) {
 	_, err := ResolveModelPolicy("gpt-4o-mini")
 	if err == nil {

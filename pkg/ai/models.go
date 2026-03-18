@@ -109,6 +109,8 @@ func loadGeneratedModels() {
 	gpt54 = applyDefaultResponsesCompat(gpt54)
 	out[ProviderOpenAICodex]["gpt-5.4"] = gpt54
 
+	mergeGitHubCopilotModels(out)
+
 	modelRegistry = out
 }
 
@@ -140,6 +142,138 @@ func applyDefaultResponsesCompat(model Model) Model {
 		model.ResponsesCompat.SupportsHostedWebSearch = boolPtr(true)
 	}
 	return model
+}
+
+func mergeGitHubCopilotModels(out map[Provider]map[string]Model) {
+	if _, ok := out[ProviderGitHubCopilot]; !ok {
+		out[ProviderGitHubCopilot] = map[string]Model{}
+	}
+
+	headers := defaultGitHubCopilotHeaders()
+	addModel := func(model Model) {
+		model.Headers = cloneStringMap(headers)
+		if existing, ok := out[ProviderGitHubCopilot][model.ID]; ok && existing.ContextWindow > 0 {
+			model.ContextWindow = existing.ContextWindow
+		}
+		out[ProviderGitHubCopilot][model.ID] = model
+	}
+
+	addModel(Model{
+		ID:            "gpt-4o",
+		Name:          "GPT-4o",
+		API:           APIOpenAICompletions,
+		Provider:      ProviderGitHubCopilot,
+		BaseURL:       defaultGitHubCopilotBaseURL,
+		Reasoning:     false,
+		Input:         []string{"text", "image"},
+		Cost:          ModelCost{},
+		ContextWindow: 128000,
+		MaxTokens:     16384,
+		Compat:        githubCopilotCompat(false),
+	})
+	addModel(Model{
+		ID:            "gpt-4.1",
+		Name:          "GPT-4.1",
+		API:           APIOpenAICompletions,
+		Provider:      ProviderGitHubCopilot,
+		BaseURL:       defaultGitHubCopilotBaseURL,
+		Reasoning:     false,
+		Input:         []string{"text", "image"},
+		Cost:          ModelCost{},
+		ContextWindow: 1047576,
+		MaxTokens:     32768,
+		Compat:        githubCopilotCompat(false),
+	})
+	addModel(Model{
+		ID:            "gpt-5.3-codex",
+		Name:          "GPT-5.3 Codex",
+		API:           APIOpenAICompletions,
+		Provider:      ProviderGitHubCopilot,
+		BaseURL:       defaultGitHubCopilotBaseURL,
+		Reasoning:     true,
+		Input:         []string{"text", "image"},
+		Cost:          ModelCost{},
+		ContextWindow: 400000,
+		MaxTokens:     128000,
+		Compat:        githubCopilotCompat(true),
+	})
+	addModel(Model{
+		ID:            "gpt-5.4",
+		Name:          "GPT-5.4",
+		API:           APIOpenAICompletions,
+		Provider:      ProviderGitHubCopilot,
+		BaseURL:       defaultGitHubCopilotBaseURL,
+		Reasoning:     true,
+		Input:         []string{"text", "image"},
+		Cost:          ModelCost{},
+		ContextWindow: 400000,
+		MaxTokens:     128000,
+		Compat:        githubCopilotCompat(true),
+	})
+	addModel(Model{
+		ID:            "gpt-5.4-mini",
+		Name:          "GPT-5.4 mini",
+		API:           APIOpenAICompletions,
+		Provider:      ProviderGitHubCopilot,
+		BaseURL:       defaultGitHubCopilotBaseURL,
+		Reasoning:     true,
+		Input:         []string{"text", "image"},
+		Cost:          ModelCost{},
+		ContextWindow: 400000,
+		MaxTokens:     128000,
+		Compat:        githubCopilotCompat(true),
+	})
+	addModel(Model{
+		ID:            "gemini-2.5-pro",
+		Name:          "Gemini 2.5 Pro",
+		API:           APIOpenAICompletions,
+		Provider:      ProviderGitHubCopilot,
+		BaseURL:       defaultGitHubCopilotBaseURL,
+		Reasoning:     true,
+		Input:         []string{"text"},
+		Cost:          ModelCost{},
+		ContextWindow: 1000000,
+		MaxTokens:     32000,
+		Compat:        githubCopilotCompat(true),
+	})
+	addModel(Model{
+		ID:            "grok-code-fast-1",
+		Name:          "Grok Code Fast 1",
+		API:           APIOpenAICompletions,
+		Provider:      ProviderGitHubCopilot,
+		BaseURL:       defaultGitHubCopilotBaseURL,
+		Reasoning:     true,
+		Input:         []string{"text"},
+		Cost:          ModelCost{},
+		ContextWindow: 128000,
+		MaxTokens:     64000,
+		Compat: &OpenAICompletionsCompat{
+			SupportsStore:           boolPtr(false),
+			SupportsDeveloperRole:   boolPtr(false),
+			SupportsReasoningEffort: boolPtr(false),
+			ThinkingFormat:          "openai",
+		},
+	})
+}
+
+func githubCopilotCompat(reasoning bool) *OpenAICompletionsCompat {
+	compat := &OpenAICompletionsCompat{
+		SupportsStore:         boolPtr(false),
+		SupportsDeveloperRole: boolPtr(false),
+		ThinkingFormat:        "openai",
+	}
+	if reasoning {
+		compat.SupportsReasoningEffort = boolPtr(true)
+	}
+	return compat
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func GetModel(provider, modelID string) (Model, bool) {

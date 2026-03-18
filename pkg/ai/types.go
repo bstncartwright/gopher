@@ -19,12 +19,13 @@ const (
 type Provider string
 
 const (
-	ProviderOpenAI      Provider = "openai"
-	ProviderOpenAICodex Provider = "openai-codex"
-	ProviderKimiCoding  Provider = "kimi-coding"
-	ProviderZAI         Provider = "zai"
-	ProviderOllama      Provider = "ollama"
-	ProviderAnthropic   Provider = "anthropic"
+	ProviderOpenAI        Provider = "openai"
+	ProviderOpenAICodex   Provider = "openai-codex"
+	ProviderGitHubCopilot Provider = "github-copilot"
+	ProviderKimiCoding    Provider = "kimi-coding"
+	ProviderZAI           Provider = "zai"
+	ProviderOllama        Provider = "ollama"
+	ProviderAnthropic     Provider = "anthropic"
 )
 
 type ThinkingLevel string

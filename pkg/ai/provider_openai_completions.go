@@ -153,7 +153,8 @@ func streamOpenAICompletions(model Model, conversation Context, options *OpenAIC
 			return
 		}
 
-		endpoint := strings.TrimRight(model.BaseURL, "/") + "/chat/completions"
+		baseURL := resolveOpenAICompletionsBaseURL(model, apiKey)
+		endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
 		slog.Debug("openai: sending request", "endpoint", endpoint, "model_id", model.ID)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
@@ -165,6 +166,11 @@ func streamOpenAICompletions(model Model, conversation Context, options *OpenAIC
 		}
 
 		headers := withJSONContentType(mergeHeaders(model.Headers, options.Headers))
+		if model.Provider == ProviderGitHubCopilot {
+			for key, value := range buildGitHubCopilotDynamicHeaders(conversation.Messages) {
+				headers[key] = value
+			}
+		}
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
@@ -463,7 +469,7 @@ func convertOpenAICompletionsMessages(model Model, conversation Context, compat 
 				}
 			}
 			if len(textParts) > 0 {
-				if model.Provider == "github-copilot" {
+				if model.Provider == ProviderGitHubCopilot {
 					joined := ""
 					for _, p := range textParts {
 						joined += p["text"].(string)
@@ -636,13 +642,14 @@ func mapOpenAICompletionsStopReason(reason string) StopReason {
 func detectOpenAICompletionsCompat(model Model) resolvedOpenAICompletionsCompat {
 	provider := model.Provider
 	baseURL := model.BaseURL
+	isGitHubCopilot := provider == ProviderGitHubCopilot || strings.Contains(baseURL, "githubcopilot.com")
 	isZAI := provider == ProviderZAI || strings.Contains(baseURL, "api.z.ai")
 	isNonStandard :=
 		provider == "cerebras" || strings.Contains(baseURL, "cerebras.ai") ||
 			provider == "xai" || strings.Contains(baseURL, "api.x.ai") ||
 			provider == "mistral" || strings.Contains(baseURL, "mistral.ai") ||
 			strings.Contains(baseURL, "chutes.ai") || strings.Contains(baseURL, "deepseek.com") ||
-			isZAI || provider == "opencode" || strings.Contains(baseURL, "opencode.ai") ||
+			isZAI || isGitHubCopilot || provider == "opencode" || strings.Contains(baseURL, "opencode.ai") ||
 			provider == ProviderOllama || strings.Contains(baseURL, "localhost:11434")
 	useMaxTokens := provider == "mistral" || strings.Contains(baseURL, "mistral.ai") || strings.Contains(baseURL, "chutes.ai") || provider == ProviderOllama
 	isGrok := provider == "xai" || strings.Contains(baseURL, "api.x.ai")
@@ -668,6 +675,13 @@ func detectOpenAICompletionsCompat(model Model) resolvedOpenAICompletionsCompat 
 		VercelGatewayRouting:             VercelGatewayRouting{},
 		SupportsStrictMode:               true,
 	}
+}
+
+func resolveOpenAICompletionsBaseURL(model Model, apiKey string) string {
+	if model.Provider == ProviderGitHubCopilot {
+		return resolveGitHubCopilotBaseURL(apiKey)
+	}
+	return model.BaseURL
 }
 
 func getOpenAICompletionsCompat(model Model) resolvedOpenAICompletionsCompat {

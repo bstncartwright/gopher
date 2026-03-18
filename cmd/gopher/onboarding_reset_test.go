@@ -165,6 +165,52 @@ func TestRunOnboardingSubcommandOpenAICodexUsesOAuthFlow(t *testing.T) {
 	}
 }
 
+func TestRunOnboardingSubcommandGitHubCopilotUsesOAuthFlow(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "gopher.env")
+	gatewayPath := filepath.Join(dir, "gopher.toml")
+
+	originalLogin := loginGitHubCopilotForAuth
+	loginGitHubCopilotForAuth = func(callbacks ai.OAuthLoginCallbacks) (ai.OAuthCredentials, error) {
+		return ai.OAuthCredentials{
+			Access:  "copilot-access",
+			Refresh: "copilot-refresh",
+			Expires: 1730000000000,
+		}, nil
+	}
+	defer func() {
+		loginGitHubCopilotForAuth = originalLogin
+	}()
+
+	var out bytes.Buffer
+	err := runOnboardingSubcommand([]string{
+		"--non-interactive",
+		"--gateway-config-path", gatewayPath,
+		"--env-file", envPath,
+		"--auth-provider", "github-copilot",
+		"--auth-api-key", "should-be-ignored",
+		"--telegram-bot-token", "bot-token",
+	}, strings.NewReader(""), &out, &out)
+	if err != nil {
+		t.Fatalf("runOnboardingSubcommand() error: %v", err)
+	}
+
+	envBlob, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	envText := string(envBlob)
+	if !strings.Contains(envText, "GITHUB_COPILOT_TOKEN=copilot-access") {
+		t.Fatalf("expected GITHUB_COPILOT_TOKEN from oauth flow: %s", envText)
+	}
+	if !strings.Contains(envText, "GITHUB_COPILOT_REFRESH_TOKEN=copilot-refresh") {
+		t.Fatalf("expected GITHUB_COPILOT_REFRESH_TOKEN from oauth flow: %s", envText)
+	}
+	if strings.Contains(envText, "GITHUB_COPILOT_API_KEY=") {
+		t.Fatalf("did not expect GITHUB_COPILOT_API_KEY to be written: %s", envText)
+	}
+}
+
 func TestRunOnboardingSubcommandWritesNodeConfigWhenExplicitPathProvided(t *testing.T) {
 	t.Parallel()
 

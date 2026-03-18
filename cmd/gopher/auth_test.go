@@ -125,6 +125,54 @@ func TestAuthLoginOpenAICodex(t *testing.T) {
 	}
 }
 
+func TestAuthLoginGitHubCopilot(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "gopher.env")
+	restore := loginGitHubCopilotForAuth
+	t.Cleanup(func() {
+		loginGitHubCopilotForAuth = restore
+	})
+	loginGitHubCopilotForAuth = func(callbacks ai.OAuthLoginCallbacks) (ai.OAuthCredentials, error) {
+		if callbacks.OnAuth != nil {
+			callbacks.OnAuth(ai.OAuthAuthInfo{
+				URL:          "https://github.com/login/device",
+				Instructions: "Enter code: ABCD-EFGH",
+			})
+		}
+		return ai.OAuthCredentials{
+			Access:  "copilot-access",
+			Refresh: "copilot-refresh",
+			Expires: time.Now().Add(time.Hour).UnixMilli(),
+		}, nil
+	}
+
+	var out bytes.Buffer
+	if err := runAuthSubcommand([]string{
+		"login",
+		"--env-file", envPath,
+		"--provider", "github-copilot",
+	}, &out, &out); err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env file failed: %v", err)
+	}
+	envText := string(data)
+	if !strings.Contains(envText, "GITHUB_COPILOT_TOKEN=copilot-access") {
+		t.Fatalf("expected GITHUB_COPILOT_TOKEN in env file, got: %s", envText)
+	}
+	if !strings.Contains(envText, "GITHUB_COPILOT_REFRESH_TOKEN=copilot-refresh") {
+		t.Fatalf("expected GITHUB_COPILOT_REFRESH_TOKEN in env file, got: %s", envText)
+	}
+	if !strings.Contains(envText, "GITHUB_COPILOT_TOKEN_EXPIRES=") {
+		t.Fatalf("expected GITHUB_COPILOT_TOKEN_EXPIRES in env file, got: %s", envText)
+	}
+	if !strings.Contains(out.String(), "logged in github-copilot") {
+		t.Fatalf("expected success output, got: %s", out.String())
+	}
+}
+
 func TestAuthLoginUnsupportedProvider(t *testing.T) {
 	t.Parallel()
 

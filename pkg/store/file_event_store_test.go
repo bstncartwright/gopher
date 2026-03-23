@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +222,29 @@ func TestFileEventStoreExtractsDisplayNameFromCreatedEvent(t *testing.T) {
 	}
 	if records[0].DisplayName != "Planning Room" {
 		t.Fatalf("display_name = %q, want Planning Room", records[0].DisplayName)
+	}
+}
+
+func TestFileEventStoreLoadsLegacySessionRegistryWithoutResumeFields(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `[{"session_id":"sess-legacy","display_name":"Legacy","status":0,"created_at":"2026-02-17T10:00:00Z","updated_at":"2026-02-17T10:05:00Z","last_seq":3,"in_flight":true}]`
+	if err := os.WriteFile(filepath.Join(dir, sessionsRegistryFilename), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	store, err := NewFileEventStore(FileEventStoreOptions{Dir: dir})
+	if err != nil {
+		t.Fatalf("NewFileEventStore() error: %v", err)
+	}
+	record, err := store.GetSessionRecord(context.Background(), "sess-legacy")
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	if !record.InFlight {
+		t.Fatalf("expected legacy in_flight=true")
+	}
+	if record.PendingResume || record.ResumeTriggerSeq != 0 || len(record.ResumeActorIDs) != 0 || record.ResumeRecordedAt != nil || record.ResumeEnqueuedAt != nil {
+		t.Fatalf("expected legacy resume fields to default empty, got %#v", record)
 	}
 }
 

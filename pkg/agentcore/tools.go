@@ -132,6 +132,18 @@ func buildRegistry(enabled []string, policies AgentPolicies) ToolRegistry {
 			add(newWebSearchMCPTool())
 		case "web_fetch", "fetch_mcp", "fetch", "fetch_content":
 			add(newWebFetchMCPTool())
+		case "minimax_t2a":
+			add(newMinimaxT2ATool())
+		case "minimax_image":
+			add(newMinimaxImageTool())
+		case "minimax_video":
+			add(newMinimaxVideoTool())
+		case "minimax_video_status":
+			add(newMinimaxVideoStatusTool())
+		case "minimax_music":
+			add(newMinimaxMusicTool())
+		case "minimax_understand_image":
+			add(newMinimaxUnderstandImageTool())
 		case "git", "git.status", "git.diff":
 			// intentionally ignored in v0
 		}

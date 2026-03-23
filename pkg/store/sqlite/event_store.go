@@ -489,7 +489,9 @@ func (s *EventStore) ListSessions(ctx context.Context) ([]sessionrt.SessionRecor
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight
+		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight,
+			pending_resume, resume_trigger_seq, resume_actor_ids, resume_reason,
+			resume_recorded_at, resume_enqueued_at
 		FROM sessions
 		ORDER BY session_id ASC
 	`)
@@ -537,7 +539,13 @@ func (s *EventStore) initSchema(ctx context.Context) error {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			last_seq INTEGER NOT NULL,
-			in_flight INTEGER NOT NULL
+			in_flight INTEGER NOT NULL,
+			pending_resume INTEGER NOT NULL DEFAULT 0,
+			resume_trigger_seq INTEGER NOT NULL DEFAULT 0,
+			resume_actor_ids TEXT NOT NULL DEFAULT '[]',
+			resume_reason TEXT NOT NULL DEFAULT '',
+			resume_recorded_at INTEGER,
+			resume_enqueued_at INTEGER
 		)
 	`); err != nil {
 		slog.Error("sqlite_store: failed to create sessions table", "error", err)
@@ -548,6 +556,36 @@ func (s *EventStore) initSchema(ctx context.Context) error {
 	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
 		slog.Error("sqlite_store: failed to migrate sessions table", "error", err)
 		return fmt.Errorf("migrate sessions table display_name: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE sessions ADD COLUMN pending_resume INTEGER NOT NULL DEFAULT 0
+	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
+		return fmt.Errorf("migrate sessions table pending_resume: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE sessions ADD COLUMN resume_trigger_seq INTEGER NOT NULL DEFAULT 0
+	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
+		return fmt.Errorf("migrate sessions table resume_trigger_seq: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE sessions ADD COLUMN resume_actor_ids TEXT NOT NULL DEFAULT '[]'
+	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
+		return fmt.Errorf("migrate sessions table resume_actor_ids: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE sessions ADD COLUMN resume_reason TEXT NOT NULL DEFAULT ''
+	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
+		return fmt.Errorf("migrate sessions table resume_reason: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE sessions ADD COLUMN resume_recorded_at INTEGER
+	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
+		return fmt.Errorf("migrate sessions table resume_recorded_at: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		ALTER TABLE sessions ADD COLUMN resume_enqueued_at INTEGER
+	`); err != nil && !isSQLiteDuplicateColumnErr(err) {
+		return fmt.Errorf("migrate sessions table resume_enqueued_at: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq)
@@ -585,7 +623,9 @@ func (s *EventStore) notifySubscribers(event sessionrt.Event) {
 
 func loadSessionRecord(ctx context.Context, db *sql.DB, sessionID sessionrt.SessionID) (sessionrt.SessionRecord, error) {
 	row := db.QueryRowContext(ctx, `
-		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight
+		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight,
+			pending_resume, resume_trigger_seq, resume_actor_ids, resume_reason,
+			resume_recorded_at, resume_enqueued_at
 		FROM sessions
 		WHERE session_id = ?
 	`, string(sessionID))
@@ -594,7 +634,9 @@ func loadSessionRecord(ctx context.Context, db *sql.DB, sessionID sessionrt.Sess
 
 func loadSessionRecordTx(ctx context.Context, tx *sql.Tx, sessionID sessionrt.SessionID) (sessionrt.SessionRecord, error) {
 	row := tx.QueryRowContext(ctx, `
-		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight
+		SELECT session_id, display_name, status, created_at, updated_at, last_seq, in_flight,
+			pending_resume, resume_trigger_seq, resume_actor_ids, resume_reason,
+			resume_recorded_at, resume_enqueued_at
 		FROM sessions
 		WHERE session_id = ?
 	`, string(sessionID))
@@ -603,8 +645,12 @@ func loadSessionRecordTx(ctx context.Context, tx *sql.Tx, sessionID sessionrt.Se
 
 func upsertSessionTx(ctx context.Context, tx *sql.Tx, record sessionrt.SessionRecord) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (session_id, display_name, status, created_at, updated_at, last_seq, in_flight)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO sessions (
+			session_id, display_name, status, created_at, updated_at, last_seq, in_flight,
+			pending_resume, resume_trigger_seq, resume_actor_ids, resume_reason,
+			resume_recorded_at, resume_enqueued_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_id)
 		DO UPDATE SET
 			display_name = excluded.display_name,
@@ -612,7 +658,13 @@ func upsertSessionTx(ctx context.Context, tx *sql.Tx, record sessionrt.SessionRe
 			created_at = excluded.created_at,
 			updated_at = excluded.updated_at,
 			last_seq = excluded.last_seq,
-			in_flight = excluded.in_flight
+			in_flight = excluded.in_flight,
+			pending_resume = excluded.pending_resume,
+			resume_trigger_seq = excluded.resume_trigger_seq,
+			resume_actor_ids = excluded.resume_actor_ids,
+			resume_reason = excluded.resume_reason,
+			resume_recorded_at = excluded.resume_recorded_at,
+			resume_enqueued_at = excluded.resume_enqueued_at
 	`,
 		string(record.SessionID),
 		strings.TrimSpace(record.DisplayName),
@@ -621,6 +673,12 @@ func upsertSessionTx(ctx context.Context, tx *sql.Tx, record sessionrt.SessionRe
 		record.UpdatedAt.UTC().UnixMilli(),
 		int64(record.LastSeq),
 		boolToInt(record.InFlight),
+		boolToInt(record.PendingResume),
+		int64(record.ResumeTriggerSeq),
+		encodeResumeActorIDs(record.ResumeActorIDs),
+		strings.TrimSpace(record.ResumeReason),
+		timePtrToUnixMilli(record.ResumeRecordedAt),
+		timePtrToUnixMilli(record.ResumeEnqueuedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert session record: %w", err)
@@ -636,17 +694,43 @@ func scanSessionRecord(rows *sql.Rows) (sessionrt.SessionRecord, error) {
 	var updatedAtMillis int64
 	var lastSeq int64
 	var inFlight int
-	if err := rows.Scan(&sessionID, &displayName, &status, &createdAtMillis, &updatedAtMillis, &lastSeq, &inFlight); err != nil {
+	var pendingResume int
+	var resumeTriggerSeq int64
+	var resumeActorIDs string
+	var resumeReason string
+	var resumeRecordedAt sql.NullInt64
+	var resumeEnqueuedAt sql.NullInt64
+	if err := rows.Scan(
+		&sessionID,
+		&displayName,
+		&status,
+		&createdAtMillis,
+		&updatedAtMillis,
+		&lastSeq,
+		&inFlight,
+		&pendingResume,
+		&resumeTriggerSeq,
+		&resumeActorIDs,
+		&resumeReason,
+		&resumeRecordedAt,
+		&resumeEnqueuedAt,
+	); err != nil {
 		return sessionrt.SessionRecord{}, fmt.Errorf("scan session row: %w", err)
 	}
 	return sessionrt.SessionRecord{
-		SessionID:   sessionrt.SessionID(sessionID),
-		DisplayName: strings.TrimSpace(displayName),
-		Status:      sessionrt.SessionStatus(status),
-		CreatedAt:   fromMillis(createdAtMillis),
-		UpdatedAt:   fromMillis(updatedAtMillis),
-		LastSeq:     uint64(lastSeq),
-		InFlight:    inFlight != 0,
+		SessionID:        sessionrt.SessionID(sessionID),
+		DisplayName:      strings.TrimSpace(displayName),
+		Status:           sessionrt.SessionStatus(status),
+		CreatedAt:        fromMillis(createdAtMillis),
+		UpdatedAt:        fromMillis(updatedAtMillis),
+		LastSeq:          uint64(lastSeq),
+		InFlight:         inFlight != 0,
+		PendingResume:    pendingResume != 0,
+		ResumeTriggerSeq: uint64(resumeTriggerSeq),
+		ResumeActorIDs:   decodeResumeActorIDs(resumeActorIDs),
+		ResumeReason:     strings.TrimSpace(resumeReason),
+		ResumeRecordedAt: nullableMillisToTimePtr(resumeRecordedAt),
+		ResumeEnqueuedAt: nullableMillisToTimePtr(resumeEnqueuedAt),
 	}, nil
 }
 
@@ -658,21 +742,100 @@ func scanSessionRecordFromRow(row *sql.Row) (sessionrt.SessionRecord, error) {
 	var updatedAtMillis int64
 	var lastSeq int64
 	var inFlight int
-	if err := row.Scan(&sessionID, &displayName, &status, &createdAtMillis, &updatedAtMillis, &lastSeq, &inFlight); err != nil {
+	var pendingResume int
+	var resumeTriggerSeq int64
+	var resumeActorIDs string
+	var resumeReason string
+	var resumeRecordedAt sql.NullInt64
+	var resumeEnqueuedAt sql.NullInt64
+	if err := row.Scan(
+		&sessionID,
+		&displayName,
+		&status,
+		&createdAtMillis,
+		&updatedAtMillis,
+		&lastSeq,
+		&inFlight,
+		&pendingResume,
+		&resumeTriggerSeq,
+		&resumeActorIDs,
+		&resumeReason,
+		&resumeRecordedAt,
+		&resumeEnqueuedAt,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return sessionrt.SessionRecord{}, sessionrt.ErrSessionNotFound
 		}
 		return sessionrt.SessionRecord{}, fmt.Errorf("scan session row: %w", err)
 	}
 	return sessionrt.SessionRecord{
-		SessionID:   sessionrt.SessionID(sessionID),
-		DisplayName: strings.TrimSpace(displayName),
-		Status:      sessionrt.SessionStatus(status),
-		CreatedAt:   fromMillis(createdAtMillis),
-		UpdatedAt:   fromMillis(updatedAtMillis),
-		LastSeq:     uint64(lastSeq),
-		InFlight:    inFlight != 0,
+		SessionID:        sessionrt.SessionID(sessionID),
+		DisplayName:      strings.TrimSpace(displayName),
+		Status:           sessionrt.SessionStatus(status),
+		CreatedAt:        fromMillis(createdAtMillis),
+		UpdatedAt:        fromMillis(updatedAtMillis),
+		LastSeq:          uint64(lastSeq),
+		InFlight:         inFlight != 0,
+		PendingResume:    pendingResume != 0,
+		ResumeTriggerSeq: uint64(resumeTriggerSeq),
+		ResumeActorIDs:   decodeResumeActorIDs(resumeActorIDs),
+		ResumeReason:     strings.TrimSpace(resumeReason),
+		ResumeRecordedAt: nullableMillisToTimePtr(resumeRecordedAt),
+		ResumeEnqueuedAt: nullableMillisToTimePtr(resumeEnqueuedAt),
 	}, nil
+}
+
+func encodeResumeActorIDs(actorIDs []sessionrt.ActorID) string {
+	if len(actorIDs) == 0 {
+		return "[]"
+	}
+	values := make([]string, 0, len(actorIDs))
+	for _, actorID := range actorIDs {
+		values = append(values, strings.TrimSpace(string(actorID)))
+	}
+	blob, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(blob)
+}
+
+func decodeResumeActorIDs(raw string) []sessionrt.ActorID {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil
+	}
+	out := make([]sessionrt.ActorID, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, sessionrt.ActorID(value))
+	}
+	return out
+}
+
+func timePtrToUnixMilli(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return value.UTC().UnixMilli()
+}
+
+func nullableMillisToTimePtr(value sql.NullInt64) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	ts := fromMillis(value.Int64)
+	if ts.IsZero() {
+		return nil
+	}
+	return &ts
 }
 
 func scanEventRow(scanner interface{ Scan(dest ...any) error }, sessionID sessionrt.SessionID) (sessionrt.Event, error) {

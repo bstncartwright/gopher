@@ -67,6 +67,8 @@ func run(args []string, stdout, stderr io.Writer) (err error) {
 		return runMemorySubcommand(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctorSubcommand(args[1:], stdout, stderr)
+	case "panel":
+		return runPanelSubcommand(args[1:], stdout, stderr)
 	default:
 		printRootUsage(stderr)
 		return fmt.Errorf("unknown command %q", args[0])
@@ -97,6 +99,7 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  update                check and apply binary updates")
 	fmt.Fprintln(out, "  memory ...            memory index and status commands")
 	fmt.Fprintln(out, "  doctor memory         memory health diagnostics")
+	fmt.Fprintln(out, "  panel mock            run admin/chat UI locally with mock data")
 	fmt.Fprintln(out, "  version               print binary version")
 	fmt.Fprintln(out, "  service ...           install and manage linux systemd service")
 	fmt.Fprintln(out, "")
@@ -104,4 +107,5 @@ func printRootUsage(out io.Writer) {
 	fmt.Fprintln(out, "  gopher gateway run --help")
 	fmt.Fprintln(out, "  gopher node run --help")
 	fmt.Fprintln(out, "  gopher agent --help")
+	fmt.Fprintln(out, "  gopher panel mock --help")
 }

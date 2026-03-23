@@ -185,12 +185,47 @@ type workSessionsResponse struct {
 	Sessions    []workSessionSummary `json:"sessions"`
 }
 
+type automationsResponse struct {
+	GeneratedAt   string                    `json:"generated_at"`
+	HasCronStore  bool                      `json:"has_cron_store"`
+	Error         string                    `json:"error,omitempty"`
+	Summary       automationSummaryResponse `json:"summary"`
+	AttentionJobs []automationJobResponse   `json:"attention_jobs"`
+	ScheduledJobs []automationJobResponse   `json:"scheduled_jobs"`
+	PausedJobs    []automationJobResponse   `json:"paused_jobs"`
+}
+
+type automationSummaryResponse struct {
+	Total   int `json:"total"`
+	Enabled int `json:"enabled"`
+	Paused  int `json:"paused"`
+	Failed  int `json:"failed"`
+}
+
+type automationJobResponse struct {
+	ID          string `json:"id"`
+	SessionID   string `json:"session_id"`
+	Schedule    string `json:"schedule"`
+	RunStatus   string `json:"run_status"`
+	NextRunAt   string `json:"next_run_at"`
+	LastRunAt   string `json:"last_run_at"`
+	UpdatedAt   string `json:"updated_at"`
+	Timezone    string `json:"timezone"`
+	Message     string `json:"message"`
+	MessageFull string `json:"message_full"`
+	CreatedBy   string `json:"created_by"`
+	CronExpr    string `json:"cron_expr"`
+	Enabled     bool   `json:"enabled"`
+	Tone        string `json:"tone"`
+}
+
 type workSessionSummary struct {
 	SessionID      string           `json:"session_id"`
 	Title          string           `json:"title"`
 	ConversationID string           `json:"conversation_id,omitempty"`
 	Status         string           `json:"status"`
 	Working        bool             `json:"working"`
+	ResumePending  bool             `json:"resume_pending,omitempty"`
 	WaitingOnHuman bool             `json:"waiting_on_human"`
 	WaitingReason  string           `json:"waiting_reason,omitempty"`
 	HasAnomaly     bool             `json:"has_anomaly"`
@@ -383,6 +418,19 @@ func (s *Server) handleWorkSessionAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) handleAutomationsAPI(w http.ResponseWriter, _ *http.Request) {
+	data := s.buildAutomationsPageData()
+	writeJSON(w, automationsResponse{
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		HasCronStore:  data.HasCronStore,
+		Error:         data.Error,
+		Summary:       automationSummaryResponse(data.Summary),
+		AttentionJobs: automationJobResponses(data.AttentionJobs),
+		ScheduledJobs: automationJobResponses(data.ScheduledJobs),
+		PausedJobs:    automationJobResponses(data.PausedJobs),
+	})
 }
 
 func (s *Server) handleWorkSessionEventsAPI(w http.ResponseWriter, r *http.Request) {
@@ -635,6 +683,29 @@ func (s *Server) buildOverviewPageData(ctx context.Context) overviewPageData {
 	}
 }
 
+func automationJobResponses(cards []automationJobCard) []automationJobResponse {
+	jobs := make([]automationJobResponse, 0, len(cards))
+	for _, card := range cards {
+		jobs = append(jobs, automationJobResponse{
+			ID:          card.ID,
+			SessionID:   card.SessionID,
+			Schedule:    card.Schedule,
+			RunStatus:   card.RunStatus,
+			NextRunAt:   card.NextRunAt,
+			LastRunAt:   card.LastRunAt,
+			UpdatedAt:   card.UpdatedAt,
+			Timezone:    card.Timezone,
+			Message:     card.Message,
+			MessageFull: card.MessageFull,
+			CreatedBy:   card.CreatedBy,
+			CronExpr:    card.CronExpr,
+			Enabled:     card.Enabled,
+			Tone:        card.Tone,
+		})
+	}
+	return jobs
+}
+
 func (s *Server) buildOverviewActivity(sessions []workSessionSummary, actions []controlActionRecord) []overviewActivityItem {
 	items := make([]overviewActivityItem, 0, 12)
 	for _, session := range sessions {
@@ -883,6 +954,7 @@ func (s *Server) buildWorkSessionSummary(ctx context.Context, record sessionrt.S
 		ConversationID: conversationID,
 		Status:         status,
 		Working:        record.InFlight,
+		ResumePending:  record.PendingResume,
 		WaitingOnHuman: strings.TrimSpace(waitingReason) != "",
 		WaitingReason:  strings.TrimSpace(waitingReason),
 		HasAnomaly:     hasAnomaly,
@@ -1826,6 +1898,8 @@ func buildWorkSessionStory(summary workSessionSummary, timeline []workTimelineEv
 	default:
 		if strings.TrimSpace(summary.WaitingReason) != "" {
 			story.CurrentStateDetail = strings.TrimSpace(summary.WaitingReason)
+		} else if summary.ResumePending {
+			story.CurrentStateDetail = "Waiting to resume after a runtime interruption."
 		} else if summary.Working {
 			story.CurrentStateDetail = "The agent is actively working."
 		}

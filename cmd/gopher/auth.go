@@ -32,6 +32,7 @@ var providerAuthSpecs = []providerAuthSpec{
 	{Provider: "ollama", EnvKeys: []string{"OLLAMA_API_KEY"}, Mode: "optional_api_key"},
 	{Provider: "openai-codex", EnvKeys: []string{"OPENAI_CODEX_API_KEY", "OPENAI_CODEX_TOKEN", "OPENAI_CODEX_REFRESH_TOKEN", "OPENAI_CODEX_TOKEN_EXPIRES"}, Mode: "oauth_or_api_key"},
 	{Provider: "github-copilot", EnvKeys: []string{"GITHUB_COPILOT_API_KEY", "GITHUB_COPILOT_TOKEN", "GITHUB_COPILOT_REFRESH_TOKEN", "GITHUB_COPILOT_TOKEN_EXPIRES"}, Mode: "oauth_or_api_key"},
+	{Provider: "minimax", EnvKeys: []string{"MINIMAX_API_KEY"}, Mode: "api_key"},
 }
 
 var loginOpenAICodexForAuth = ai.LoginOpenAICodex

@@ -187,6 +187,10 @@ func cloneCronJob(in CronJob) CronJob {
 		timestamp := in.NextRunAt.UTC()
 		out.NextRunAt = &timestamp
 	}
+	if in.ActiveScheduledFor != nil {
+		timestamp := in.ActiveScheduledFor.UTC()
+		out.ActiveScheduledFor = &timestamp
+	}
 	out.CreatedAt = out.CreatedAt.UTC()
 	out.UpdatedAt = out.UpdatedAt.UTC()
 	return out

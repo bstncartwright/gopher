@@ -115,8 +115,10 @@ func (a *Agent) buildProviderContextDetailedWithAttachments(ctx context.Context,
 	if len(messages) > 0 {
 		userTimestamp = messages[len(messages)-1].Timestamp + 1
 	}
+
 	userContent := any(expandedUserMessage)
 	if len(attachments) > 0 {
+		attachments = preprocessImageAttachmentsWithTool(ctx, attachments, activeTools, a.model)
 		userContent = buildInboundAttachmentContent(expandedUserMessage, attachments, a.model)
 	}
 	messages = append(messages, ai.Message{
@@ -322,6 +324,59 @@ func modelSupportsInput(model ai.Model, inputType string) bool {
 		}
 	}
 	return false
+}
+
+func preprocessImageAttachmentsWithTool(ctx context.Context, attachments []Attachment, tools ToolRegistry, model ai.Model) []Attachment {
+	if len(attachments) == 0 || tools == nil {
+		return attachments
+	}
+	if modelSupportsInput(model, "image") {
+		return attachments
+	}
+	imgTool, ok := tools.Get("minimax_understand_image")
+	if !ok || imgTool == nil {
+		return attachments
+	}
+	tool, ok := imgTool.(*minimaxUnderstandImageTool)
+	if !ok {
+		return attachments
+	}
+
+	out := make([]Attachment, 0, len(attachments))
+	for _, att := range attachments {
+		mimeType := strings.ToLower(strings.TrimSpace(att.MIMEType))
+		if !strings.HasPrefix(mimeType, "image/") || len(att.Data) == 0 {
+			out = append(out, att)
+			continue
+		}
+		imgData := extractImageDataFromAttachment(att)
+		result := callUnderstandImageTool(ctx, tool, att.Name, imgData)
+		att.Text = result
+		out = append(out, att)
+	}
+	return out
+}
+
+func callUnderstandImageTool(ctx context.Context, tool *minimaxUnderstandImageTool, name, imageData string) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	input := ToolInput{Args: map[string]any{
+		"prompt":     fmt.Sprintf("Describe this image in detail. Name: %s", name),
+		"image_data": imageData,
+	}}
+	output, err := tool.Run(ctx, input)
+	if err != nil || output.Status != ToolStatusOK {
+		return fmt.Sprintf("[Image: %s - could not analyze]", name)
+	}
+	resultMap, ok := output.Result.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("[Image: %s - no analysis available]", name)
+	}
+	if result, ok := resultMap["analysis"].(string); ok {
+		return result
+	}
+	return fmt.Sprintf("[Image: %s - no analysis available]", name)
 }
 
 func (a *Agent) InspectContext(ctx context.Context, s *Session, in TurnInput) (ctxbundle.ContextDiagnostics, error) {

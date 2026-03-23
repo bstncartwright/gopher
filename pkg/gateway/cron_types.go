@@ -33,13 +33,14 @@ type CronJob struct {
 	Enabled       bool   `json:"enabled"`
 	CreatedBy     string `json:"created_by"`
 
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
-	NextRunAt      *time.Time `json:"next_run_at,omitempty"`
-	LastRunStatus  string     `json:"last_run_status,omitempty"`
-	LastRunSummary string     `json:"last_run_summary,omitempty"`
-	LastRunError   string     `json:"last_run_error,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	LastRunAt          *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt          *time.Time `json:"next_run_at,omitempty"`
+	ActiveScheduledFor *time.Time `json:"active_scheduled_for,omitempty"`
+	LastRunStatus      string     `json:"last_run_status,omitempty"`
+	LastRunSummary     string     `json:"last_run_summary,omitempty"`
+	LastRunError       string     `json:"last_run_error,omitempty"`
 }
 
 type CronCreateInput struct {

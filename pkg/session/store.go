@@ -19,13 +19,19 @@ type EventStore interface {
 }
 
 type SessionRecord struct {
-	SessionID   SessionID     `json:"session_id"`
-	DisplayName string        `json:"display_name,omitempty"`
-	Status      SessionStatus `json:"status"`
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
-	LastSeq     uint64        `json:"last_seq"`
-	InFlight    bool          `json:"in_flight"`
+	SessionID        SessionID     `json:"session_id"`
+	DisplayName      string        `json:"display_name,omitempty"`
+	Status           SessionStatus `json:"status"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	LastSeq          uint64        `json:"last_seq"`
+	InFlight         bool          `json:"in_flight"`
+	PendingResume    bool          `json:"pending_resume,omitempty"`
+	ResumeTriggerSeq uint64        `json:"resume_trigger_seq,omitempty"`
+	ResumeActorIDs   []ActorID     `json:"resume_actor_ids,omitempty"`
+	ResumeReason     string        `json:"resume_reason,omitempty"`
+	ResumeRecordedAt *time.Time    `json:"resume_recorded_at,omitempty"`
+	ResumeEnqueuedAt *time.Time    `json:"resume_enqueued_at,omitempty"`
 }
 
 type SessionRegistryStore interface {
@@ -169,7 +175,7 @@ func (s *InMemoryEventStore) UpsertSession(ctx context.Context, record SessionRe
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = record.CreatedAt
 	}
-	s.sessions[record.SessionID] = record
+	s.sessions[record.SessionID] = CloneSessionRecord(record)
 	return nil
 }
 
@@ -189,7 +195,7 @@ func (s *InMemoryEventStore) GetSessionRecord(ctx context.Context, sessionID Ses
 	if !ok {
 		return SessionRecord{}, ErrSessionNotFound
 	}
-	return record, nil
+	return CloneSessionRecord(record), nil
 }
 
 func (s *InMemoryEventStore) ListSessions(ctx context.Context) ([]SessionRecord, error) {
@@ -206,7 +212,7 @@ func (s *InMemoryEventStore) ListSessions(ctx context.Context) ([]SessionRecord,
 	defer s.mu.RUnlock()
 	records := make([]SessionRecord, 0, len(s.sessions))
 	for _, record := range s.sessions {
-		records = append(records, record)
+		records = append(records, CloneSessionRecord(record))
 	}
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].SessionID < records[j].SessionID

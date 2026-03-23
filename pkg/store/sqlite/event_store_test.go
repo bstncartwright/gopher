@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -196,6 +197,53 @@ func TestEventStoreStreamAndSessionUpsert(t *testing.T) {
 	_, err = store.GetSessionRecord(ctx, "missing")
 	if !errors.Is(err, sessionrt.ErrSessionNotFound) {
 		t.Fatalf("expected ErrSessionNotFound for missing session, got %v", err)
+	}
+}
+
+func TestEventStoreMigratesLegacySessionsWithoutResumeFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE sessions (
+			session_id TEXT PRIMARY KEY,
+			display_name TEXT NOT NULL DEFAULT '',
+			status INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			last_seq INTEGER NOT NULL,
+			in_flight INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create legacy sessions table error: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sessions (session_id, display_name, status, created_at, updated_at, last_seq, in_flight)
+		VALUES ('sess-legacy', 'Legacy', 0, 1771322400000, 1771322700000, 3, 1)
+	`); err != nil {
+		t.Fatalf("insert legacy row error: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close() error: %v", err)
+	}
+
+	store, err := NewEventStore(EventStoreOptions{Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewEventStore() error: %v", err)
+	}
+	defer store.Close()
+
+	record, err := store.GetSessionRecord(context.Background(), "sess-legacy")
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	if !record.InFlight {
+		t.Fatalf("expected legacy in_flight=true")
+	}
+	if record.PendingResume || record.ResumeTriggerSeq != 0 || len(record.ResumeActorIDs) != 0 || record.ResumeRecordedAt != nil || record.ResumeEnqueuedAt != nil {
+		t.Fatalf("expected legacy resume fields to default empty, got %#v", record)
 	}
 }
 

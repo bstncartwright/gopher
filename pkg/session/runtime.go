@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 )
 
 type runtimeRequestKind int
 
 const (
 	runtimeRequestSend runtimeRequestKind = iota
+	runtimeRequestReplay
 	runtimeRequestCancel
 )
 
@@ -27,6 +29,13 @@ type sessionRuntime struct {
 	sessionID SessionID
 	session   *Session
 	inFlight  bool
+
+	pendingResume    bool
+	resumeTriggerSeq uint64
+	resumeActorIDs   []ActorID
+	resumeReason     string
+	resumeRecordedAt *time.Time
+	resumeEnqueuedAt *time.Time
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -78,6 +87,8 @@ func (m *Manager) handleRuntimeRequest(rt *sessionRuntime, req runtimeRequest) (
 	switch req.kind {
 	case runtimeRequestSend:
 		return m.handleSendRequest(rt, req)
+	case runtimeRequestReplay:
+		return m.handleReplayRequest(rt, req)
 	case runtimeRequestCancel:
 		return m.handleCancelRequest(rt, req), true
 	default:
@@ -113,42 +124,50 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 		return m.failSession(rt, fmt.Errorf("append event: %w", err)), true
 	}
 
-	if !m.shouldTriggerAgent(e) || m.executor == nil {
+	return m.executeTriggerEvent(rt, req.ctx, e)
+}
+
+func (m *Manager) handleReplayRequest(rt *sessionRuntime, req runtimeRequest) (error, bool) {
+	return m.executeTriggerEvent(rt, req.ctx, req.event)
+}
+
+func (m *Manager) executeTriggerEvent(rt *sessionRuntime, ctx context.Context, trigger Event) (error, bool) {
+	if !m.shouldTriggerAgent(trigger) || m.executor == nil {
 		return nil, false
 	}
 
 	sessionSnapshot := cloneSession(rt.session)
-	selectedActorIDs, ok := m.selectFn(sessionSnapshot, e)
+	selectedActorIDs, ok := m.selectFn(sessionSnapshot, trigger)
 	if !ok {
 		slog.Debug("session_runtime: agent selector returned no actors",
 			"session_id", rt.sessionID,
-			"event_type", e.Type,
+			"event_type", trigger.Type,
 		)
 		return nil, false
 	}
 	actorIDs := resolveSelectedAgentActors(sessionSnapshot, selectedActorIDs)
 	if len(actorIDs) == 0 {
-		slog.Debug("session_runtime: no resolved agent actors",
-			"session_id", rt.sessionID,
-		)
+		slog.Debug("session_runtime: no resolved agent actors", "session_id", rt.sessionID)
 		return nil, false
 	}
 
 	slog.Info("session_runtime: triggering agent execution",
 		"session_id", rt.sessionID,
 		"actor_ids", actorIDs,
-		"event_type", e.Type,
+		"event_type", trigger.Type,
+		"trigger_seq", trigger.Seq,
 	)
 
-	if err := m.setInFlight(req.ctx, rt, true); err != nil {
-		slog.Error("session_runtime: failed to set in-flight",
+	if err := m.beginAgentTurn(ctx, rt, trigger, actorIDs); err != nil {
+		slog.Error("session_runtime: failed to persist agent turn metadata",
 			"session_id", rt.sessionID,
+			"trigger_seq", trigger.Seq,
 			"error", err,
 		)
-		return m.failSession(rt, fmt.Errorf("set in-flight: %w", err)), true
+		return m.failSession(rt, fmt.Errorf("begin agent turn: %w", err)), true
 	}
 	defer func() {
-		_ = m.setInFlight(context.Background(), rt, false)
+		_ = m.finishAgentTurn(context.Background(), rt)
 	}()
 
 	for _, actorID := range actorIDs {
@@ -156,7 +175,7 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 			"session_id", rt.sessionID,
 			"actor_id", actorID,
 		)
-		history, err := m.store.List(req.ctx, rt.sessionID)
+		history, err := m.store.List(ctx, rt.sessionID)
 		if err != nil {
 			slog.Error("session_runtime: failed to list history",
 				"session_id", rt.sessionID,
@@ -179,7 +198,7 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 		producedCount := 0
 		appendErr := error(nil)
 		appendProduced := func(produced Event) error {
-			if err := m.appendProducedEvent(req.ctx, rt, actorID, produced); err != nil {
+			if err := m.appendProducedEvent(ctx, rt, actorID, produced); err != nil {
 				appendErr = err
 				return errStepStreamEmit
 			}
@@ -188,7 +207,7 @@ func (m *Manager) handleSendRequest(rt *sessionRuntime, req runtimeRequest) (err
 		}
 
 		if streamingExecutor, ok := m.executor.(StreamingAgentExecutor); ok {
-			err = streamingExecutor.StepStream(rt.ctx, input, appendProduced)
+			err := streamingExecutor.StepStream(rt.ctx, input, appendProduced)
 			if appendErr != nil {
 				return m.failSession(rt, appendErr), true
 			}
@@ -272,6 +291,7 @@ func (m *Manager) handleCancelRequest(rt *sessionRuntime, req runtimeRequest) er
 	}
 
 	rt.inFlight = false
+	m.clearResumeState(rt)
 	_ = m.persistSessionRecord(context.Background(), rt, cancelEvent.Timestamp)
 	m.setSessionStatus(rt, SessionPaused)
 	rt.cancel()
@@ -312,6 +332,7 @@ func (m *Manager) failSession(rt *sessionRuntime, cause error) error {
 	}
 
 	rt.inFlight = false
+	m.clearResumeState(rt)
 	_ = m.persistSessionRecord(context.Background(), rt, m.now().UTC())
 	m.setSessionStatus(rt, SessionFailed)
 	rt.cancel()
@@ -397,6 +418,33 @@ func resolveSelectedAgentActors(session *Session, selected []ActorID) []ActorID 
 		out = append(out, actorID)
 	}
 	return out
+}
+
+func (m *Manager) beginAgentTurn(ctx context.Context, rt *sessionRuntime, trigger Event, actorIDs []ActorID) error {
+	now := m.now().UTC()
+	rt.inFlight = true
+	rt.pendingResume = false
+	rt.resumeTriggerSeq = trigger.Seq
+	rt.resumeActorIDs = cloneActorIDs(actorIDs)
+	rt.resumeReason = ""
+	rt.resumeRecordedAt = &now
+	rt.resumeEnqueuedAt = nil
+	return m.persistSessionRecord(ctx, rt, now)
+}
+
+func (m *Manager) finishAgentTurn(ctx context.Context, rt *sessionRuntime) error {
+	rt.inFlight = false
+	m.clearResumeState(rt)
+	return m.persistSessionRecord(ctx, rt, m.now().UTC())
+}
+
+func (m *Manager) clearResumeState(rt *sessionRuntime) {
+	rt.pendingResume = false
+	rt.resumeTriggerSeq = 0
+	rt.resumeActorIDs = nil
+	rt.resumeReason = ""
+	rt.resumeRecordedAt = nil
+	rt.resumeEnqueuedAt = nil
 }
 
 func (m *Manager) canonicalizeEvent(rt *sessionRuntime, event Event) (Event, error) {

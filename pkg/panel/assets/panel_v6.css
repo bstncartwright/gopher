@@ -1,0 +1,547 @@
+body.work-variant.variant-v6 {
+  --v6-paper: #f4efe6;
+  --v6-paper-2: #fffaf0;
+  --v6-ink: #1c1a17;
+  --v6-ink-soft: #4f4a43;
+  --v6-line: rgba(28, 26, 23, 0.12);
+  --v6-line-strong: rgba(28, 26, 23, 0.22);
+  --v6-accent: #c33838;
+  --v6-accent-2: #1d5fbf;
+  --v6-warm: #b67a2d;
+  --v6-muted: #7c7469;
+  --v6-panel: rgba(255, 252, 246, 0.96);
+  background:
+    radial-gradient(circle at top left, rgba(195, 56, 56, 0.07), transparent 20%),
+    radial-gradient(circle at 90% 10%, rgba(29, 95, 191, 0.07), transparent 18%),
+    linear-gradient(180deg, var(--v6-paper-2), var(--v6-paper));
+  color: var(--v6-ink);
+}
+
+body.work-variant.variant-v6 .noise-layer {
+  opacity: 0.12;
+  mix-blend-mode: multiply;
+}
+
+body.work-variant.variant-v6 .scanline-layer {
+  opacity: 0.1;
+  background-image:
+    linear-gradient(rgba(28, 26, 23, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(28, 26, 23, 0.03) 1px, transparent 1px);
+  background-size: 100% 4px, 22px 100%;
+}
+
+body.work-variant.variant-v6 .bg-orbit {
+  opacity: 0.08;
+  filter: blur(24px);
+}
+
+body.work-variant.variant-v6 .bg-orbit-a {
+  background: radial-gradient(circle, rgba(195, 56, 56, 0.12), transparent 60%);
+}
+
+body.work-variant.variant-v6 .bg-orbit-b {
+  background: radial-gradient(circle, rgba(29, 95, 191, 0.12), transparent 60%);
+}
+
+body.work-variant.variant-v6 .topbar {
+  border-color: rgba(28, 26, 23, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(247, 240, 228, 0.94));
+  box-shadow:
+    0 24px 58px rgba(28, 26, 23, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+}
+
+body.work-variant.variant-v6 .brand-mark {
+  min-width: 196px;
+}
+
+body.work-variant.variant-v6 .brand-name,
+body.work-variant.variant-v6 .page-intro h1 {
+  font-family: "Bodoni Moda", "Cormorant Garamond", serif;
+  letter-spacing: 0.02em;
+}
+
+body.work-variant.variant-v6 .surface-header h2,
+body.work-variant.variant-v6 .workspace-header h2,
+body.work-variant.variant-v6 .surface-header .eyebrow,
+body.work-variant.variant-v6 .queue-group-label {
+  font-family: "Archivo Black", "Bebas Neue", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+body.work-variant.variant-v6 .page-subtitle,
+body.work-variant.variant-v6 .surface-copy,
+body.work-variant.variant-v6 .queue-item-copy,
+body.work-variant.variant-v6 .event-card-copy,
+body.work-variant.variant-v6 .session-brief-copy,
+body.work-variant.variant-v6 .story-copy,
+body.work-variant.variant-v6 .queue-insight-copy {
+  color: var(--v6-ink-soft);
+}
+
+body.work-variant.variant-v6 .topbar-main {
+  align-items: center;
+}
+
+body.work-variant.variant-v6 .page-kicker,
+body.work-variant.variant-v6 .section-code,
+body.work-variant.variant-v6 .brand-kicker,
+body.work-variant.variant-v6 .queue-insight-label,
+body.work-variant.variant-v6 .event-kicker,
+body.work-variant.variant-v6 .queue-item-label,
+body.work-variant.variant-v6 .timeline-meta {
+  font-family: "IBM Plex Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+body.work-variant.variant-v6 .brand-status,
+body.work-variant.variant-v6 .live-pill {
+  border-color: rgba(28, 26, 23, 0.14);
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--v6-ink-soft);
+}
+
+body.work-variant.variant-v6 .tab-nav,
+body.work-variant.variant-v6 .mobile-nav {
+  border-color: rgba(28, 26, 23, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(244, 239, 230, 0.95));
+}
+
+body.work-variant.variant-v6 .tab-nav-link,
+body.work-variant.variant-v6 .mobile-nav-link {
+  border-color: rgba(28, 26, 23, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--v6-muted);
+  box-shadow: 0 8px 22px rgba(28, 26, 23, 0.04);
+}
+
+body.work-variant.variant-v6 .tab-nav-link.is-active,
+body.work-variant.variant-v6 .mobile-nav-link.is-active {
+  background:
+    linear-gradient(180deg, rgba(195, 56, 56, 0.96), rgba(149, 38, 38, 0.96));
+  color: #fff7f2;
+  border-color: rgba(195, 56, 56, 0.55);
+  box-shadow: 0 10px 26px rgba(195, 56, 56, 0.18);
+}
+
+body.work-variant.variant-v6 .status-strip {
+  border-color: rgba(28, 26, 23, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(244, 239, 230, 0.98));
+  box-shadow:
+    0 18px 42px rgba(28, 26, 23, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.86);
+}
+
+body.work-variant.variant-v6 .status-chip {
+  border-color: rgba(28, 26, 23, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(244, 240, 232, 0.98));
+  box-shadow: 0 8px 22px rgba(28, 26, 23, 0.04);
+}
+
+body.work-variant.variant-v6 .status-label {
+  color: var(--v6-muted);
+}
+
+body.work-variant.variant-v6 .status-value {
+  font-family: "Bodoni Moda", serif;
+  font-size: 1.65rem;
+}
+
+body.work-variant.variant-v6 .content-panel {
+  padding: 14px;
+  background: transparent;
+  box-shadow: none;
+}
+
+body.work-variant.variant-v6 .work-shell {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  grid-template-areas: "workspace queue";
+  gap: 18px;
+}
+
+body.work-variant.variant-v6 .queue-panel {
+  grid-area: queue;
+  order: 2;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100dvh - 88px);
+  padding: 18px;
+  border-radius: 26px;
+  border-color: rgba(28, 26, 23, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 243, 233, 0.98));
+  box-shadow:
+    0 24px 56px rgba(28, 26, 23, 0.09),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.92);
+}
+
+body.work-variant.variant-v6 .queue-panel::before {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(28, 26, 23, 0.08);
+  pointer-events: none;
+}
+
+body.work-variant.variant-v6 .workspace-panel {
+  grid-area: workspace;
+  order: 1;
+  padding: 20px;
+  border-radius: 28px;
+  border-color: rgba(28, 26, 23, 0.12);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(195, 56, 56, 0.06), transparent 18%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 242, 233, 0.98));
+  box-shadow:
+    0 28px 62px rgba(28, 26, 23, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+
+body.work-variant.variant-v6 .workspace-panel::after {
+  background:
+    linear-gradient(90deg, rgba(195, 56, 56, 0.04), transparent 18%, transparent 82%, rgba(29, 95, 191, 0.04));
+}
+
+body.work-variant.variant-v6 .queue-panel-header,
+body.work-variant.variant-v6 .workspace-header {
+  padding-bottom: 14px;
+  border-bottom-color: rgba(28, 26, 23, 0.08);
+}
+
+body.work-variant.variant-v6 .queue-panel .surface-header h2,
+body.work-variant.variant-v6 .workspace-header h2 {
+  font-family: "Bodoni Moda", "Cormorant Garamond", serif;
+  font-size: clamp(1.4rem, 2vw, 2rem);
+  color: var(--v6-ink);
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+body.work-variant.variant-v6 .queue-panel .surface-copy,
+body.work-variant.variant-v6 .workspace-header .surface-copy {
+  max-width: 34ch;
+}
+
+body.work-variant.variant-v6 .surface-header .eyebrow {
+  color: var(--v6-accent);
+}
+
+body.work-variant.variant-v6 .search-input {
+  border-radius: 12px;
+  border-color: rgba(28, 26, 23, 0.12);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+body.work-variant.variant-v6 .chip,
+body.work-variant.variant-v6 .ghost-btn,
+body.work-variant.variant-v6 .chip-link {
+  border-color: rgba(28, 26, 23, 0.12);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--v6-muted);
+  box-shadow: 0 8px 20px rgba(28, 26, 23, 0.04);
+}
+
+body.work-variant.variant-v6 .chip.is-active,
+body.work-variant.variant-v6 .ghost-btn.is-active {
+  background:
+    linear-gradient(180deg, rgba(29, 95, 191, 0.95), rgba(21, 74, 155, 0.95));
+  color: #f7fbff;
+  border-color: rgba(29, 95, 191, 0.45);
+}
+
+body.work-variant.variant-v6 .queue-insights {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body.work-variant.variant-v6 .queue-insight {
+  border-radius: 16px;
+  border-color: rgba(28, 26, 23, 0.12);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+body.work-variant.variant-v6 .queue-insight-value {
+  font-family: "Bodoni Moda", serif;
+  font-size: 1.7rem;
+}
+
+body.work-variant.variant-v6 .queue-group-label {
+  color: var(--v6-accent);
+  letter-spacing: 0.2em;
+}
+
+body.work-variant.variant-v6 .queue-item {
+  border-radius: 20px;
+  border-color: rgba(28, 26, 23, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 242, 233, 0.98));
+  box-shadow:
+    0 14px 32px rgba(28, 26, 23, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+body.work-variant.variant-v6 .queue-item::before {
+  width: 4px;
+  top: 14px;
+  bottom: 14px;
+  background: linear-gradient(180deg, rgba(29, 95, 191, 0.08), rgba(29, 95, 191, 0.7), rgba(195, 56, 56, 0.8));
+}
+
+body.work-variant.variant-v6 .queue-item.is-active {
+  transform: translateX(4px);
+  border-color: rgba(29, 95, 191, 0.38);
+  background:
+    linear-gradient(135deg, rgba(29, 95, 191, 0.08), rgba(195, 56, 56, 0.05)),
+    rgba(255, 255, 255, 0.96);
+}
+
+body.work-variant.variant-v6 .queue-item.is-live::after {
+  animation-duration: 3.2s;
+}
+
+body.work-variant.variant-v6 .queue-item-heading strong,
+body.work-variant.variant-v6 .session-brief-card strong,
+body.work-variant.variant-v6 .story-card strong,
+body.work-variant.variant-v6 .session-summary-card strong {
+  font-family: "Manrope", "IBM Plex Sans", sans-serif;
+}
+
+body.work-variant.variant-v6 .workspace-summary {
+  border-radius: 18px;
+  border-color: rgba(28, 26, 23, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+body.work-variant.variant-v6 .workspace-console {
+  border-radius: 18px;
+  border-color: rgba(28, 26, 23, 0.1);
+  background:
+    linear-gradient(90deg, rgba(29, 95, 191, 0.04), transparent 24%, transparent 76%, rgba(195, 56, 56, 0.05)),
+    rgba(255, 255, 255, 0.92);
+}
+
+body.work-variant.variant-v6 .session-brief-card,
+body.work-variant.variant-v6 .story-card,
+body.work-variant.variant-v6 .session-summary-card {
+  border-radius: 14px;
+  border-color: rgba(28, 26, 23, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+body.work-variant.variant-v6 .session-brief-card.is-primary {
+  background:
+    linear-gradient(180deg, rgba(195, 56, 56, 0.08), rgba(29, 95, 191, 0.05)),
+    rgba(255, 255, 255, 0.92);
+}
+
+body.work-variant.variant-v6 .workspace-stage {
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 340px);
+  gap: 18px;
+}
+
+body.work-variant.variant-v6 .timeline-panel,
+body.work-variant.variant-v6 .inspector-panel {
+  border-radius: 22px;
+  border-color: rgba(28, 26, 23, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 243, 234, 0.98));
+  box-shadow:
+    0 22px 50px rgba(28, 26, 23, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.92);
+}
+
+body.work-variant.variant-v6 .timeline-panel::before {
+  background:
+    radial-gradient(circle at top left, rgba(195, 56, 56, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.4), transparent 18%),
+    repeating-linear-gradient(90deg, transparent 0 38px, rgba(28, 26, 23, 0.02) 38px 39px);
+}
+
+body.work-variant.variant-v6 .timeline-panel::after {
+  background: linear-gradient(90deg, rgba(29, 95, 191, 0), rgba(29, 95, 191, 0.78), rgba(195, 56, 56, 0));
+}
+
+body.work-variant.variant-v6 .timeline-toolbar {
+  border-bottom-color: rgba(28, 26, 23, 0.08);
+}
+
+body.work-variant.variant-v6 .timeline-toolbar::after {
+  content: "PRESS LAYOUT";
+  color: var(--v6-accent-2);
+}
+
+body.work-variant.variant-v6 .timeline-list {
+  padding: 22px 18px 22px 74px;
+}
+
+body.work-variant.variant-v6 .timeline-list::before {
+  left: 38px;
+  width: 3px;
+  background:
+    linear-gradient(180deg, rgba(29, 95, 191, 0.4), rgba(29, 95, 191, 0.96) 26%, rgba(195, 56, 56, 0.76));
+}
+
+body.work-variant.variant-v6 .event-card,
+body.work-variant.variant-v6 .bundle-row .event-card {
+  border-radius: 16px;
+  border-color: rgba(28, 26, 23, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 242, 233, 0.98));
+  box-shadow:
+    0 16px 30px rgba(28, 26, 23, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+}
+
+body.work-variant.variant-v6 .event-card::before {
+  left: -44px;
+  border-color: rgba(29, 95, 191, 0.62);
+  background: #fffdf8;
+}
+
+body.work-variant.variant-v6 .event-card::after {
+  background: linear-gradient(90deg, rgba(29, 95, 191, 0.36), rgba(29, 95, 191, 0));
+}
+
+body.work-variant.variant-v6 .event-card.is-selected {
+  border-color: rgba(29, 95, 191, 0.36);
+  background:
+    linear-gradient(135deg, rgba(29, 95, 191, 0.08), rgba(195, 56, 56, 0.05)),
+    rgba(255, 255, 255, 0.98);
+}
+
+body.work-variant.variant-v6 .event-card.toned-danger {
+  border-color: rgba(195, 56, 56, 0.24);
+}
+
+body.work-variant.variant-v6 .event-card.toned-danger::before {
+  border-color: rgba(195, 56, 56, 0.72);
+}
+
+body.work-variant.variant-v6 .event-title,
+body.work-variant.variant-v6 .bundle-summary,
+body.work-variant.variant-v6 .inspector-title-row h3 {
+  font-family: "Bodoni Moda", "Cormorant Garamond", serif;
+  color: var(--v6-ink);
+  font-size: 1.9rem;
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+body.work-variant.variant-v6 .event-emoji,
+body.work-variant.variant-v6 .inspector-emoji {
+  border-color: rgba(28, 26, 23, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 243, 235, 0.96));
+  box-shadow: 0 10px 22px rgba(28, 26, 23, 0.06);
+}
+
+body.work-variant.variant-v6 .event-meta,
+body.work-variant.variant-v6 .queue-meta,
+body.work-variant.variant-v6 .inspector-chip-row {
+  color: var(--v6-muted);
+}
+
+body.work-variant.variant-v6 .event-bundle {
+  border-radius: 18px;
+  border-color: rgba(28, 26, 23, 0.1);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+body.work-variant.variant-v6 .event-bundle.bundle-fragments {
+  border-color: rgba(29, 95, 191, 0.18);
+}
+
+body.work-variant.variant-v6 .inspector-panel {
+  padding: 18px;
+}
+
+body.work-variant.variant-v6 .inspector-chip {
+  border-color: rgba(28, 26, 23, 0.12);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--v6-muted);
+}
+
+body.work-variant.variant-v6 .inspector-chip.is-active {
+  border-color: rgba(29, 95, 191, 0.28);
+  background: linear-gradient(180deg, rgba(29, 95, 191, 0.12), rgba(29, 95, 191, 0.06));
+  color: var(--v6-accent-2);
+}
+
+body.work-variant.variant-v6 .queue-list::-webkit-scrollbar,
+body.work-variant.variant-v6 .timeline-list::-webkit-scrollbar,
+body.work-variant.variant-v6 .inspector-panel::-webkit-scrollbar {
+  width: 10px;
+}
+
+body.work-variant.variant-v6 .queue-list::-webkit-scrollbar-thumb,
+body.work-variant.variant-v6 .timeline-list::-webkit-scrollbar-thumb,
+body.work-variant.variant-v6 .inspector-panel::-webkit-scrollbar-thumb {
+  background: rgba(28, 26, 23, 0.16);
+  border-radius: 999px;
+}
+
+body.work-variant.variant-v6 .empty-state {
+  color: var(--v6-muted);
+}
+
+@media (max-width: 1180px) {
+  body.work-variant.variant-v6 .work-shell {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "workspace"
+      "queue";
+  }
+
+  body.work-variant.variant-v6 .queue-panel {
+    position: relative;
+    top: 0;
+    max-height: none;
+  }
+
+  body.work-variant.variant-v6 .workspace-stage {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  body.work-variant.variant-v6 .content-panel,
+  body.work-variant.variant-v6 .workspace-panel,
+  body.work-variant.variant-v6 .queue-panel {
+    border-radius: 20px;
+  }
+
+  body.work-variant.variant-v6 .queue-insights,
+  body.work-variant.variant-v6 .story-grid,
+  body.work-variant.variant-v6 .session-summary-grid,
+  body.work-variant.variant-v6 .status-strip {
+    grid-template-columns: 1fr;
+  }
+
+  body.work-variant.variant-v6 .workspace-console {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  body.work-variant.variant-v6 .workspace-console .chip-row:last-child {
+    justify-content: flex-start;
+  }
+
+  body.work-variant.variant-v6 .timeline-list {
+    padding: 18px 16px 18px 54px;
+  }
+
+  body.work-variant.variant-v6 .timeline-list::before {
+    left: 26px;
+  }
+
+  body.work-variant.variant-v6 .event-card::before {
+    left: -30px;
+  }
+}

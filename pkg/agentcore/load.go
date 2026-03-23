@@ -560,7 +560,6 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 		return
 	}
 	if len(cfg.EnabledTools) == 0 {
-		// Unset enabled_tools means "all built-in tools".
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:memory")
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:fs")
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:runtime")
@@ -568,6 +567,13 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 		cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "cron")
 		if !cfg.DisableDefaultSearchMCP {
 			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "group:web")
+		}
+		if hasMinimaxAPIKey() {
+			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "minimax_t2a")
+			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "minimax_image")
+			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "minimax_video")
+			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "minimax_music")
+			cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "minimax_understand_image")
 		}
 		return
 	}
@@ -578,6 +584,10 @@ func applyDefaultEnabledTools(cfg *AgentConfig) {
 	}
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_search")
 	cfg.EnabledTools = appendUniqueTool(cfg.EnabledTools, "web_fetch")
+}
+
+func hasMinimaxAPIKey() bool {
+	return strings.TrimSpace(os.Getenv("MINIMAX_API_KEY")) != ""
 }
 
 func shouldEnableApplyPatchForModelPolicy(modelPolicy string) bool {

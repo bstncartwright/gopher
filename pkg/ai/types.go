@@ -26,6 +26,7 @@ const (
 	ProviderZAI           Provider = "zai"
 	ProviderOllama        Provider = "ollama"
 	ProviderAnthropic     Provider = "anthropic"
+	ProviderMinimax       Provider = "minimax"
 )
 
 type ThinkingLevel string

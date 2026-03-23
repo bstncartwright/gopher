@@ -1409,6 +1409,77 @@ func TestPanelCronFragmentRendersJobs(t *testing.T) {
 	}
 }
 
+func TestPanelAutomationsAPIEndpoint(t *testing.T) {
+	tempDir := t.TempDir()
+	cronStorePath := filepath.Join(tempDir, "cron", "jobs.json")
+	if err := os.MkdirAll(filepath.Dir(cronStorePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	blob := `{
+  "jobs": [
+    {
+      "id": "cron-audit",
+      "session_id": "sess-audit",
+      "message": "Run a nightly audit",
+      "cron_expr": "0 1 * * *",
+      "timezone": "UTC",
+      "enabled": true,
+      "created_by": "ops",
+      "updated_at": "2026-03-05T00:00:00Z",
+      "next_run_at": "2026-03-06T01:00:00Z",
+      "last_run_status": "completed"
+    },
+    {
+      "id": "cron-import",
+      "session_id": "sess-import",
+      "message": "Resume tenant import lane",
+      "cron_expr": "*/10 * * * *",
+      "timezone": "America/Denver",
+      "enabled": false,
+      "created_by": "scheduler",
+      "updated_at": "2026-03-05T00:10:00Z",
+      "last_run_status": "failed"
+    }
+  ]
+}`
+	if err := os.WriteFile(cronStorePath, []byte(blob), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	srv, err := NewServer(ServerOptions{
+		ListenAddr:    "127.0.0.1:29329",
+		CronStorePath: cronStorePath,
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/automations", nil)
+	srv.newMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload automationsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if !payload.HasCronStore {
+		t.Fatalf("expected cron store to be available")
+	}
+	if payload.Summary.Total != 2 || payload.Summary.Enabled != 1 || payload.Summary.Paused != 1 || payload.Summary.Failed != 1 {
+		t.Fatalf("unexpected summary: %+v", payload.Summary)
+	}
+	if len(payload.AttentionJobs) != 1 || payload.AttentionJobs[0].ID != "cron-import" {
+		t.Fatalf("unexpected attention jobs: %+v", payload.AttentionJobs)
+	}
+	if len(payload.ScheduledJobs) != 1 || payload.ScheduledJobs[0].ID != "cron-audit" {
+		t.Fatalf("unexpected scheduled jobs: %+v", payload.ScheduledJobs)
+	}
+}
+
 func TestPanelSessionStreamCatchupAndLive(t *testing.T) {
 	store := newFakeSessionStore()
 	now := time.Now().UTC()

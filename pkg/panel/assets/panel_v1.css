@@ -1,0 +1,384 @@
+body.work-variant.variant-v1 {
+  --panel-bg: #081018;
+  --panel-surface: rgba(10, 18, 26, 0.92);
+  --panel-surface-strong: #0d1721;
+  --panel-border: rgba(110, 214, 255, 0.22);
+  --panel-border-strong: rgba(110, 214, 255, 0.42);
+  --panel-text: #eaf6ff;
+  --panel-muted: #7da5be;
+  --panel-accent: #7df0ff;
+  --panel-accent-2: #ffb84d;
+  --panel-danger: #ff6b6b;
+  --panel-shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+  --panel-radius: 18px;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(125, 240, 255, 0.18), transparent 22%),
+    radial-gradient(circle at 85% 10%, rgba(255, 184, 77, 0.14), transparent 18%),
+    linear-gradient(180deg, #071018 0%, #04080c 100%);
+  color: var(--panel-text);
+  font-family: "IBM Plex Sans", "Manrope", "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0.01em;
+}
+
+body.work-variant.variant-v1 .noise-layer,
+body.work-variant.variant-v1 .scanline-layer {
+  opacity: 0.55;
+}
+
+body.work-variant.variant-v1 .bg-orbit {
+  filter: blur(14px);
+  opacity: 0.6;
+}
+
+body.work-variant.variant-v1 .topbar {
+  margin: 20px 20px 0;
+  padding: 20px 22px;
+  border: 1px solid var(--panel-border-strong);
+  border-radius: calc(var(--panel-radius) + 8px);
+  background:
+    linear-gradient(180deg, rgba(13, 23, 33, 0.94), rgba(6, 11, 16, 0.94)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(125, 240, 255, 0.04) 0,
+      rgba(125, 240, 255, 0.04) 1px,
+      transparent 1px,
+      transparent 18px
+    );
+  box-shadow: var(--panel-shadow);
+}
+
+body.work-variant.variant-v1 .brand-mark {
+  min-width: 240px;
+}
+
+body.work-variant.variant-v1 .brand-kicker,
+body.work-variant.variant-v1 .page-kicker,
+body.work-variant.variant-v1 .eyebrow,
+body.work-variant.variant-v1 .section-code {
+  color: var(--panel-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  font-size: 0.7rem;
+}
+
+body.work-variant.variant-v1 .brand-name,
+body.work-variant.variant-v1 .page-intro h1,
+body.work-variant.variant-v1 .surface-header h2 {
+  font-family: "Bebas Neue", "Archivo Black", "Chakra Petch", Impact, sans-serif;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  line-height: 0.9;
+}
+
+body.work-variant.variant-v1 .page-intro h1 {
+  font-size: clamp(2.6rem, 5vw, 5rem);
+}
+
+body.work-variant.variant-v1 .surface-header h2 {
+  font-size: clamp(1.8rem, 3vw, 3.1rem);
+}
+
+body.work-variant.variant-v1 .topbar-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 24px;
+}
+
+body.work-variant.variant-v1 .page-subtitle,
+body.work-variant.variant-v1 .surface-copy,
+body.work-variant.variant-v1 .queue-insight-copy,
+body.work-variant.variant-v1 .timeline-meta,
+body.work-variant.variant-v1 .empty-state {
+  color: var(--panel-muted);
+}
+
+body.work-variant.variant-v1 .tab-nav,
+body.work-variant.variant-v1 .status-strip,
+body.work-variant.variant-v1 .app-shell {
+  margin-inline: 20px;
+}
+
+body.work-variant.variant-v1 .tab-nav {
+  gap: 10px;
+  margin-top: 16px;
+  padding: 0;
+}
+
+body.work-variant.variant-v1 .tab-nav-link {
+  min-width: 0;
+  padding: 14px 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 165, 190, 0.24);
+  background: rgba(7, 13, 18, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+body.work-variant.variant-v1 .tab-nav-link.is-active {
+  background: linear-gradient(180deg, rgba(125, 240, 255, 0.2), rgba(125, 240, 255, 0.08));
+  border-color: var(--panel-border-strong);
+  box-shadow: 0 0 0 1px rgba(125, 240, 255, 0.18), 0 16px 30px rgba(0, 0, 0, 0.25);
+}
+
+body.work-variant.variant-v1 .status-strip {
+  gap: 12px;
+  padding: 16px 0 0;
+}
+
+body.work-variant.variant-v1 .status-chip {
+  min-width: 0;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(10, 18, 26, 0.96), rgba(7, 12, 18, 0.96));
+  border: 1px solid rgba(125, 240, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+body.work-variant.variant-v1 .status-label {
+  color: var(--panel-muted);
+  letter-spacing: 0.18em;
+}
+
+body.work-variant.variant-v1 .status-value {
+  font-family: "Bebas Neue", "Archivo Black", "Chakra Petch", Impact, sans-serif;
+  font-size: 2rem;
+  letter-spacing: 0.08em;
+}
+
+body.work-variant.variant-v1 .app-shell {
+  padding: 20px 0 28px;
+}
+
+body.work-variant.variant-v1 .content-panel {
+  padding: 0;
+}
+
+body.work-variant.variant-v1 .work-app {
+  display: block;
+}
+
+body.work-variant.variant-v1 .work-shell {
+  display: grid;
+  grid-template-columns: minmax(290px, 21rem) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  min-height: 72vh;
+}
+
+body.work-variant.variant-v1 .surface {
+  border-radius: var(--panel-radius);
+  border: 1px solid var(--panel-border);
+  background:
+    linear-gradient(180deg, rgba(11, 19, 28, 0.94), rgba(5, 9, 14, 0.96)),
+    radial-gradient(circle at 20% 0%, rgba(125, 240, 255, 0.12), transparent 24%);
+  box-shadow: var(--panel-shadow);
+}
+
+body.work-variant.variant-v1 .queue-panel {
+  position: sticky;
+  top: 18px;
+  max-height: calc(100vh - 160px);
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+  overflow: hidden;
+}
+
+body.work-variant.variant-v1 .queue-panel-header,
+body.work-variant.variant-v1 .workspace-header {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid rgba(125, 240, 255, 0.12);
+}
+
+body.work-variant.variant-v1 .queue-panel .filter-sheet {
+  padding: 0 18px 10px;
+}
+
+body.work-variant.variant-v1 .queue-panel .search-input,
+body.work-variant.variant-v1 .chip,
+body.work-variant.variant-v1 .ghost-btn {
+  border-radius: 12px;
+  background: rgba(7, 13, 18, 0.82);
+  border: 1px solid rgba(125, 165, 190, 0.22);
+  color: var(--panel-text);
+}
+
+body.work-variant.variant-v1 .chip.is-active,
+body.work-variant.variant-v1 .ghost-btn:hover {
+  border-color: var(--panel-border-strong);
+  background: linear-gradient(180deg, rgba(125, 240, 255, 0.16), rgba(125, 240, 255, 0.08));
+}
+
+body.work-variant.variant-v1 .queue-insights {
+  padding: 0 18px 12px;
+  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body.work-variant.variant-v1 .queue-insight {
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(8, 14, 20, 0.9);
+  border: 1px solid rgba(125, 165, 190, 0.14);
+}
+
+body.work-variant.variant-v1 .queue-insight-value {
+  font-family: "Bebas Neue", "Archivo Black", "Chakra Petch", Impact, sans-serif;
+  font-size: 2.2rem;
+}
+
+body.work-variant.variant-v1 .queue-list {
+  padding: 12px;
+  overflow: auto;
+}
+
+body.work-variant.variant-v1 .session-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid rgba(125, 165, 190, 0.2);
+  background:
+    linear-gradient(180deg, rgba(13, 23, 33, 0.96), rgba(6, 11, 16, 0.98)),
+    radial-gradient(circle at 0 0, rgba(125, 240, 255, 0.1), transparent 26%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+body.work-variant.variant-v1 .session-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: linear-gradient(180deg, var(--panel-accent), transparent 85%);
+}
+
+body.work-variant.variant-v1 .session-card.is-active,
+body.work-variant.variant-v1 .session-card:hover {
+  border-color: rgba(125, 240, 255, 0.42);
+  transform: translateX(2px);
+}
+
+body.work-variant.variant-v1 .session-card-title,
+body.work-variant.variant-v1 .workspace-summary .story-title,
+body.work-variant.variant-v1 .timeline-item-title,
+body.work-variant.variant-v1 .inspector-title {
+  font-family: "Bebas Neue", "Archivo Black", "Chakra Petch", Impact, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+body.work-variant.variant-v1 .workspace-panel {
+  min-height: calc(100vh - 220px);
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+}
+
+body.work-variant.variant-v1 .workspace-summary {
+  padding: 18px 20px 8px;
+  border-bottom: 1px solid rgba(125, 240, 255, 0.12);
+}
+
+body.work-variant.variant-v1 .workspace-console {
+  padding: 14px 20px 18px;
+  border-bottom: 1px solid rgba(125, 240, 255, 0.12);
+  display: grid;
+  gap: 12px;
+}
+
+body.work-variant.variant-v1 .workspace-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+  gap: 16px;
+  padding: 16px;
+  min-height: 0;
+}
+
+body.work-variant.variant-v1 .timeline-panel,
+body.work-variant.variant-v1 .inspector-panel {
+  border-radius: 16px;
+  border: 1px solid rgba(125, 165, 190, 0.16);
+  background: rgba(6, 11, 16, 0.7);
+  overflow: hidden;
+}
+
+body.work-variant.variant-v1 .timeline-toolbar,
+body.work-variant.variant-v1 .inspector-panel {
+  padding: 14px 16px;
+}
+
+body.work-variant.variant-v1 .timeline-list {
+  padding: 12px 12px 18px;
+}
+
+body.work-variant.variant-v1 .timeline-card,
+body.work-variant.variant-v1 .timeline-row,
+body.work-variant.variant-v1 .message-bubble,
+body.work-variant.variant-v1 .detail-card {
+  border-radius: 14px;
+  border: 1px solid rgba(125, 165, 190, 0.14);
+  background: linear-gradient(180deg, rgba(10, 18, 26, 0.96), rgba(5, 9, 14, 0.96));
+}
+
+body.work-variant.variant-v1 .timeline-card.is-selected,
+body.work-variant.variant-v1 .detail-card.is-selected {
+  border-color: rgba(125, 240, 255, 0.42);
+  box-shadow: 0 0 0 1px rgba(125, 240, 255, 0.14);
+}
+
+body.work-variant.variant-v1 .message-bubble.user {
+  background: linear-gradient(180deg, rgba(125, 240, 255, 0.14), rgba(15, 28, 37, 0.96));
+}
+
+body.work-variant.variant-v1 .message-bubble.agent {
+  background: linear-gradient(180deg, rgba(255, 184, 77, 0.14), rgba(18, 22, 26, 0.96));
+}
+
+body.work-variant.variant-v1 .message-bubble.error,
+body.work-variant.variant-v1 .timeline-card.is-anomaly {
+  border-color: rgba(255, 107, 107, 0.34);
+  background: linear-gradient(180deg, rgba(52, 14, 14, 0.96), rgba(18, 8, 8, 0.96));
+}
+
+body.work-variant.variant-v1 .mobile-nav {
+  margin: 0 20px 20px;
+  border-radius: 14px;
+  background: rgba(6, 11, 16, 0.92);
+}
+
+@media (max-width: 1200px) {
+  body.work-variant.variant-v1 .work-shell {
+    grid-template-columns: 1fr;
+  }
+
+  body.work-variant.variant-v1 .queue-panel {
+    position: relative;
+    top: auto;
+    max-height: none;
+  }
+
+  body.work-variant.variant-v1 .workspace-stage {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  body.work-variant.variant-v1 .topbar,
+  body.work-variant.variant-v1 .tab-nav,
+  body.work-variant.variant-v1 .status-strip,
+  body.work-variant.variant-v1 .app-shell,
+  body.work-variant.variant-v1 .mobile-nav {
+    margin-inline: 12px;
+  }
+
+  body.work-variant.variant-v1 .topbar-main {
+    grid-template-columns: 1fr;
+  }
+
+  body.work-variant.variant-v1 .queue-insights {
+    grid-template-columns: 1fr;
+  }
+
+  body.work-variant.variant-v1 .workspace-stage {
+    padding: 12px;
+  }
+}

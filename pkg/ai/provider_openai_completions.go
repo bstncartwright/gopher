@@ -650,7 +650,8 @@ func detectOpenAICompletionsCompat(model Model) resolvedOpenAICompletionsCompat 
 			provider == "mistral" || strings.Contains(baseURL, "mistral.ai") ||
 			strings.Contains(baseURL, "chutes.ai") || strings.Contains(baseURL, "deepseek.com") ||
 			isZAI || isGitHubCopilot || provider == "opencode" || strings.Contains(baseURL, "opencode.ai") ||
-			provider == ProviderOllama || strings.Contains(baseURL, "localhost:11434")
+			provider == ProviderOllama || strings.Contains(baseURL, "localhost:11434") ||
+			provider == ProviderMinimax || strings.Contains(baseURL, "api.minimax.io")
 	useMaxTokens := provider == "mistral" || strings.Contains(baseURL, "mistral.ai") || strings.Contains(baseURL, "chutes.ai") || provider == ProviderOllama
 	isGrok := provider == "xai" || strings.Contains(baseURL, "api.x.ai")
 	isMistral := provider == "mistral" || strings.Contains(baseURL, "mistral.ai")

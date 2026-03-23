@@ -202,3 +202,13 @@ func TestRunRestartPassesRoleFlag(t *testing.T) {
 		t.Fatalf("restart target = %q, want %q", fake.restartOpts.Target, serviceTargetNode)
 	}
 }
+
+func TestRunPanelHelp(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"panel", "help"}, &out, io.Discard); err != nil {
+		t.Fatalf("run(panel help) error: %v", err)
+	}
+	if !strings.Contains(out.String(), "gopher panel mock") {
+		t.Fatalf("unexpected panel help output: %q", out.String())
+	}
+}

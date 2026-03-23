@@ -1,0 +1,173 @@
+body.work-variant {
+  margin: 0;
+  min-height: 100vh;
+  color: #f4f6f8;
+  background:
+    radial-gradient(circle at top left, rgba(91, 120, 148, 0.2), transparent 36%),
+    radial-gradient(circle at right, rgba(180, 126, 54, 0.12), transparent 34%),
+    #0a0f13;
+}
+
+body.work-variant::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 24%),
+    repeating-linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.025) 0,
+      rgba(255, 255, 255, 0.025) 1px,
+      transparent 1px,
+      transparent 8px
+    );
+  opacity: 0.5;
+}
+
+.variant-skip-link {
+  position: absolute;
+  left: -999px;
+  top: 1rem;
+}
+
+.variant-skip-link:focus {
+  left: 1rem;
+  z-index: 100;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  color: #111;
+}
+
+.variant-lab {
+  position: relative;
+  z-index: 1;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+.variant-masthead {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 24px;
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  background: rgba(9, 14, 18, 0.86);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(20px);
+}
+
+.variant-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.variant-home-link,
+.variant-kicker,
+.variant-label,
+.variant-switch {
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.variant-home-link {
+  color: inherit;
+  text-decoration: none;
+  font: 600 0.72rem/1.2 "IBM Plex Mono", monospace;
+  opacity: 0.8;
+}
+
+.brand-status.variant-home-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.variant-kicker {
+  font: 600 0.72rem/1.2 "IBM Plex Mono", monospace;
+  color: rgba(215, 224, 230, 0.7);
+}
+
+.variant-heading {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.variant-label {
+  margin: 0 0 0.4rem;
+  font: 600 0.76rem/1.2 "IBM Plex Mono", monospace;
+  color: rgba(224, 196, 126, 0.86);
+}
+
+.variant-heading h1 {
+  margin: 0;
+  font: 700 clamp(2.2rem, 5vw, 4.8rem)/0.92 "Teko", sans-serif;
+}
+
+.variant-tagline {
+  margin: 0;
+  max-width: 60ch;
+  color: rgba(229, 234, 237, 0.78);
+  font: 500 1rem/1.5 "IBM Plex Sans", sans-serif;
+}
+
+.variant-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.variant-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  padding: 0.8rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: inherit;
+  text-decoration: none;
+  font: 600 0.78rem/1 "IBM Plex Mono", monospace;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.variant-switch.is-active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+body.work-variant #work-app {
+  position: relative;
+}
+
+body.work-variant .work-shell {
+  min-height: calc(100vh - 260px);
+}
+
+@media (max-width: 820px) {
+  .variant-lab {
+    padding: 16px 14px 28px;
+  }
+
+  .variant-masthead {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .variant-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .variant-switcher {
+    gap: 0.45rem;
+  }
+
+  .variant-switch {
+    min-width: 56px;
+    padding: 0.72rem 0.88rem;
+  }
+}

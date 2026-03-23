@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,22 @@ import (
 
 type staticExecutor struct {
 	text string
+}
+
+func eventMessageFields(event sessionrt.Event) (string, sessionrt.ActorID, bool) {
+	if event.Type != sessionrt.EventMessage {
+		return "", "", false
+	}
+	switch payload := event.Payload.(type) {
+	case sessionrt.Message:
+		return payload.Content, payload.TargetActorID, true
+	case map[string]any:
+		content, _ := payload["content"].(string)
+		target, _ := payload["target_actor_id"].(string)
+		return content, sessionrt.ActorID(target), true
+	default:
+		return "", "", false
+	}
 }
 
 func (e *staticExecutor) Step(_ context.Context, input sessionrt.AgentInput) (sessionrt.AgentOutput, error) {
@@ -92,7 +109,7 @@ func TestGatewayRecoveryReplaysAndContinues(t *testing.T) {
 	}
 }
 
-func TestRecoveryClearsInFlightAndKeepsSessionActive(t *testing.T) {
+func TestRecoveryResumesInterruptedSessionAndKeepsSessionActive(t *testing.T) {
 	ctx := context.Background()
 	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: t.TempDir()})
 	if err != nil {
@@ -109,6 +126,14 @@ func TestRecoveryClearsInFlightAndKeepsSessionActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession() error: %v", err)
 	}
+	if err := managerA.SendEvent(ctx, sessionrt.Event{
+		SessionID: created.ID,
+		From:      "user:me",
+		Type:      sessionrt.EventMessage,
+		Payload:   sessionrt.Message{Role: sessionrt.RoleUser, Content: "resume me"},
+	}); err != nil {
+		t.Fatalf("SendEvent() error: %v", err)
+	}
 
 	record, err := store.GetSessionRecord(ctx, created.ID)
 	if err != nil {
@@ -116,11 +141,14 @@ func TestRecoveryClearsInFlightAndKeepsSessionActive(t *testing.T) {
 	}
 	record.InFlight = true
 	record.Status = sessionrt.SessionActive
+	record.ResumeTriggerSeq = 2
+	record.ResumeActorIDs = []sessionrt.ActorID{"agent:a"}
 	if err := store.UpsertSession(ctx, record); err != nil {
 		t.Fatalf("UpsertSession() error: %v", err)
 	}
 
-	managerB, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store, RecoverOnStart: true})
+	exec := &staticExecutor{text: "ack"}
+	managerB, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store, Executor: exec, RecoverOnStart: true})
 	if err != nil {
 		t.Fatalf("NewManager(B) error: %v", err)
 	}
@@ -136,8 +164,32 @@ func TestRecoveryClearsInFlightAndKeepsSessionActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() error: %v", err)
 	}
-	if len(events) < 1 {
-		t.Fatalf("expected session events to remain intact, got %d", len(events))
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events after recovery, got %d", len(events))
+	}
+	recoveryPrompts := 0
+	agentReplies := 0
+	for _, event := range events {
+		content, targetActorID, ok := eventMessageFields(event)
+		if !ok || event.Type != sessionrt.EventMessage {
+			continue
+		}
+		if event.From == sessionrt.SystemActorID && strings.Contains(content, "[resume after interruption]") {
+			recoveryPrompts++
+			if targetActorID != "agent:a" {
+				t.Fatalf("recovery prompt target = %q, want agent:a", targetActorID)
+			}
+			continue
+		}
+		if event.From == "agent:a" && content == "ack" {
+			agentReplies++
+		}
+	}
+	if recoveryPrompts != 1 {
+		t.Fatalf("recovery prompts = %d, want 1", recoveryPrompts)
+	}
+	if agentReplies != 1 {
+		t.Fatalf("agent replies = %d, want 1", agentReplies)
 	}
 
 	recoveredRecord, err := store.GetSessionRecord(ctx, created.ID)
@@ -146,6 +198,184 @@ func TestRecoveryClearsInFlightAndKeepsSessionActive(t *testing.T) {
 	}
 	if recoveredRecord.InFlight {
 		t.Fatalf("expected recovered session in_flight=false")
+	}
+	if recoveredRecord.PendingResume {
+		t.Fatalf("expected recovered session pending_resume=false")
+	}
+}
+
+func TestRecoveryReplaysExistingRecoveryPromptWithoutDuplicatingIt(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewFileEventStore() error: %v", err)
+	}
+	managerA, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewManager(A) error: %v", err)
+	}
+	created, err := managerA.CreateSession(ctx, sessionrt.CreateSessionOptions{Participants: []sessionrt.Participant{
+		{ID: "agent:a", Type: sessionrt.ActorAgent},
+		{ID: "user:me", Type: sessionrt.ActorHuman},
+	}})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := managerA.SendEvent(ctx, sessionrt.Event{
+		SessionID: created.ID,
+		From:      "user:me",
+		Type:      sessionrt.EventMessage,
+		Payload:   sessionrt.Message{Role: sessionrt.RoleUser, Content: "one"},
+	}); err != nil {
+		t.Fatalf("SendEvent() error: %v", err)
+	}
+
+	record, err := store.GetSessionRecord(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	record.InFlight = true
+	record.Status = sessionrt.SessionActive
+	record.ResumeTriggerSeq = 2
+	record.ResumeActorIDs = []sessionrt.ActorID{"agent:a"}
+	if err := store.UpsertSession(ctx, record); err != nil {
+		t.Fatalf("UpsertSession() error: %v", err)
+	}
+
+	if _, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store, RecoverOnStart: true}); err != nil {
+		t.Fatalf("NewManager(B) error: %v", err)
+	}
+
+	midEvents, err := store.List(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("List(mid) error: %v", err)
+	}
+	if len(midEvents) != 3 {
+		t.Fatalf("expected one persisted recovery prompt before replay, got %d events", len(midEvents))
+	}
+
+	managerC, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store, Executor: &staticExecutor{text: "ack"}, RecoverOnStart: true})
+	if err != nil {
+		t.Fatalf("NewManager(C) error: %v", err)
+	}
+	loaded, err := managerC.GetSession(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSession(recovered) error: %v", err)
+	}
+	if loaded.Status != sessionrt.SessionActive {
+		t.Fatalf("expected active recovered session, got %v", loaded.Status)
+	}
+
+	events, err := store.List(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("List(final) error: %v", err)
+	}
+	recoveryPrompts := 0
+	agentReplies := 0
+	for _, event := range events {
+		content, _, ok := eventMessageFields(event)
+		if !ok || event.Type != sessionrt.EventMessage {
+			continue
+		}
+		if event.From == sessionrt.SystemActorID && strings.Contains(content, "[resume after interruption]") {
+			recoveryPrompts++
+		}
+		if event.From == "agent:a" && content == "ack" {
+			agentReplies++
+		}
+	}
+	if recoveryPrompts != 1 {
+		t.Fatalf("recovery prompts = %d, want 1", recoveryPrompts)
+	}
+	if agentReplies != 1 {
+		t.Fatalf("agent replies = %d, want 1", agentReplies)
+	}
+}
+
+func TestRecoveryResumesFromPartialPersistedHistoryWithoutDuplicatingOutput(t *testing.T) {
+	ctx := context.Background()
+	store, err := storepkg.NewFileEventStore(storepkg.FileEventStoreOptions{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("NewFileEventStore() error: %v", err)
+	}
+	managerA, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewManager(A) error: %v", err)
+	}
+	created, err := managerA.CreateSession(ctx, sessionrt.CreateSessionOptions{Participants: []sessionrt.Participant{
+		{ID: "agent:a", Type: sessionrt.ActorAgent},
+		{ID: "user:me", Type: sessionrt.ActorHuman},
+	}})
+	if err != nil {
+		t.Fatalf("CreateSession() error: %v", err)
+	}
+	if err := managerA.SendEvent(ctx, sessionrt.Event{
+		SessionID: created.ID,
+		From:      "user:me",
+		Type:      sessionrt.EventMessage,
+		Payload:   sessionrt.Message{Role: sessionrt.RoleUser, Content: "run the task"},
+	}); err != nil {
+		t.Fatalf("SendEvent() error: %v", err)
+	}
+	if err := store.Append(ctx, sessionrt.Event{
+		ID:        sessionrt.EventID(string(created.ID) + "-000003"),
+		SessionID: created.ID,
+		From:      "agent:a",
+		Type:      sessionrt.EventToolCall,
+		Payload: map[string]any{
+			"name": "read",
+			"args": map[string]any{"path": "README.md"},
+		},
+		Timestamp: time.Now().UTC(),
+		Seq:       3,
+	}); err != nil {
+		t.Fatalf("Append(tool_call) error: %v", err)
+	}
+
+	record, err := store.GetSessionRecord(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRecord() error: %v", err)
+	}
+	record.InFlight = true
+	record.Status = sessionrt.SessionActive
+	record.LastSeq = 3
+	record.ResumeTriggerSeq = 2
+	record.ResumeActorIDs = []sessionrt.ActorID{"agent:a"}
+	if err := store.UpsertSession(ctx, record); err != nil {
+		t.Fatalf("UpsertSession() error: %v", err)
+	}
+
+	if _, err := sessionrt.NewManager(sessionrt.ManagerOptions{Store: store, Executor: &staticExecutor{text: "ack"}, RecoverOnStart: true}); err != nil {
+		t.Fatalf("NewManager(B) error: %v", err)
+	}
+
+	events, err := store.List(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	recoveryPrompts := 0
+	toolCalls := 0
+	agentReplies := 0
+	for _, event := range events {
+		content, _, ok := eventMessageFields(event)
+		if event.Type == sessionrt.EventToolCall {
+			toolCalls++
+		}
+		if ok && event.From == sessionrt.SystemActorID && strings.Contains(content, "[resume after interruption]") {
+			recoveryPrompts++
+		}
+		if ok && event.From == "agent:a" && content == "ack" {
+			agentReplies++
+		}
+	}
+	if toolCalls != 1 {
+		t.Fatalf("tool calls = %d, want 1 preserved partial output", toolCalls)
+	}
+	if recoveryPrompts != 1 {
+		t.Fatalf("recovery prompts = %d, want 1", recoveryPrompts)
+	}
+	if agentReplies != 1 {
+		t.Fatalf("agent replies = %d, want 1", agentReplies)
 	}
 }
 

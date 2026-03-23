@@ -290,7 +290,7 @@ func (s *FileEventStore) UpsertSession(ctx context.Context, record sessionrt.Ses
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = record.CreatedAt
 	}
-	s.sessions[record.SessionID] = record
+	s.sessions[record.SessionID] = sessionrt.CloneSessionRecord(record)
 	return s.persistSessionRegistryLocked()
 }
 
@@ -310,7 +310,7 @@ func (s *FileEventStore) GetSessionRecord(ctx context.Context, sessionID session
 	if !ok {
 		return sessionrt.SessionRecord{}, sessionrt.ErrSessionNotFound
 	}
-	return record, nil
+	return sessionrt.CloneSessionRecord(record), nil
 }
 
 func (s *FileEventStore) ListSessions(ctx context.Context) ([]sessionrt.SessionRecord, error) {
@@ -330,7 +330,7 @@ func (s *FileEventStore) ListSessions(ctx context.Context) ([]sessionrt.SessionR
 	}
 	records := make([]sessionrt.SessionRecord, 0, len(s.sessions))
 	for _, record := range s.sessions {
-		records = append(records, record)
+		records = append(records, sessionrt.CloneSessionRecord(record))
 	}
 	s.mu.Unlock()
 
@@ -360,7 +360,7 @@ func (s *FileEventStore) loadSessionRegistry() error {
 		return fmt.Errorf("decode session registry: %w", err)
 	}
 	for _, record := range records {
-		s.sessions[record.SessionID] = record
+		s.sessions[record.SessionID] = sessionrt.CloneSessionRecord(record)
 	}
 	return nil
 }
@@ -401,7 +401,7 @@ func (s *FileEventStore) reconcileSessionsFromEventsLocked() error {
 		record := deriveSessionRecord(events)
 		existing, ok := s.sessions[sessionID]
 		if !ok || existing.LastSeq < record.LastSeq || existing.UpdatedAt.IsZero() {
-			s.sessions[sessionID] = record
+			s.sessions[sessionID] = sessionrt.CloneSessionRecord(record)
 			changed = true
 		}
 	}
@@ -417,7 +417,7 @@ func (s *FileEventStore) reconcileSessionsFromEventsLocked() error {
 func (s *FileEventStore) persistSessionRegistryLocked() error {
 	records := make([]sessionrt.SessionRecord, 0, len(s.sessions))
 	for _, record := range s.sessions {
-		records = append(records, record)
+		records = append(records, sessionrt.CloneSessionRecord(record))
 	}
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].SessionID < records[j].SessionID

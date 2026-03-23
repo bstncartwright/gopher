@@ -110,6 +110,7 @@ func loadGeneratedModels() {
 	out[ProviderOpenAICodex]["gpt-5.4"] = gpt54
 
 	mergeGitHubCopilotModels(out)
+	mergeMinimaxModels(out)
 
 	modelRegistry = out
 }
@@ -254,6 +255,42 @@ func mergeGitHubCopilotModels(out map[Provider]map[string]Model) {
 			ThinkingFormat:          "openai",
 		},
 	})
+}
+
+func mergeMinimaxModels(out map[Provider]map[string]Model) {
+	if _, ok := out[ProviderMinimax]; !ok {
+		out[ProviderMinimax] = map[string]Model{}
+	}
+
+	baseURL := "https://api.minimax.io/v1"
+	addModel := func(id, name string, reasoning bool) {
+		out[ProviderMinimax][id] = Model{
+			ID:            id,
+			Name:          name,
+			API:           APIOpenAICompletions,
+			Provider:      ProviderMinimax,
+			BaseURL:       baseURL,
+			Reasoning:     reasoning,
+			Input:         []string{"text"},
+			Cost:          ModelCost{},
+			ContextWindow: 204800,
+			MaxTokens:     8192,
+			Compat: &OpenAICompletionsCompat{
+				SupportsStore:           boolPtr(false),
+				SupportsDeveloperRole:   boolPtr(false),
+				SupportsReasoningEffort: boolPtr(true),
+				ThinkingFormat:          "openai",
+			},
+		}
+	}
+
+	addModel("MiniMax-M2.7", "MiniMax M2.7", true)
+	addModel("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed", true)
+	addModel("MiniMax-M2.5", "MiniMax M2.5", true)
+	addModel("MiniMax-M2.5-highspeed", "MiniMax M2.5 Highspeed", true)
+	addModel("MiniMax-M2.1", "MiniMax M2.1", true)
+	addModel("MiniMax-M2.1-highspeed", "MiniMax M2.1 Highspeed", true)
+	addModel("MiniMax-M2", "MiniMax M2", true)
 }
 
 func githubCopilotCompat(reasoning bool) *OpenAICompletionsCompat {

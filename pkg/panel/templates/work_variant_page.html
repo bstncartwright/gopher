@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111619">
+  <title>Gopher Admin Lab {{.VariantLabel}}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Bebas+Neue&family=Bodoni+Moda:opsz,wght@6..96,500;6..96,700&family=Chakra+Petch:wght@500;600;700&family=Cormorant+Garamond:wght@500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Manrope:wght@500;700;800&family=Rajdhani:wght@500;600;700&family=Teko:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{.PanelRoot}}/assets/panel.css">
+  <link rel="stylesheet" href="{{.PanelRoot}}/assets/variant-base.css">
+  <link rel="stylesheet" href="{{.PanelRoot}}/assets/variant.css">
+</head>
+<body class="section-work work-variant variant-{{.Variant}}" data-panel-root="{{.PanelRoot}}">
+  <div class="noise-layer" aria-hidden="true"></div>
+  <div class="scanline-layer" aria-hidden="true"></div>
+  <div class="bg-orbit bg-orbit-a" aria-hidden="true"></div>
+  <div class="bg-orbit bg-orbit-b" aria-hidden="true"></div>
+
+  <a class="skip-link variant-skip-link" href="#main-content">Skip to main content</a>
+
+  <header class="topbar">
+    <div class="brand-mark">
+      <span class="brand-kicker">Gopher Lab</span>
+      <strong class="brand-name">{{.VariantLabel}}</strong>
+      <a class="brand-status variant-home-link" href="{{.CanonicalHref}}">
+        <span class="signal-dot" aria-hidden="true"></span>
+        <span>Back to Canonical Admin</span>
+      </a>
+    </div>
+    <div class="topbar-main">
+      <div class="page-intro">
+        <p class="page-kicker">Workbench Variant</p>
+        <h1>{{.VariantName}}</h1>
+        <p class="page-subtitle">{{.VariantTagline}}</p>
+      </div>
+      <div class="topbar-side">
+        <div class="live-pill">
+          <span class="signal-dot" aria-hidden="true"></span>
+          <span>Compare All Eight</span>
+        </div>
+        <div class="section-code">{{.Variant}}</div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tab-nav variant-switcher" aria-label="Workbench design variants">
+    {{range .Variants}}
+    <a class="tab-nav-link variant-switch{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
+    {{end}}
+  </nav>
+
+  <div class="status-strip" aria-label="Runtime summary">
+    {{range .StatusStrip}}
+    <div class="status-chip tone-{{.Tone}}">
+      <span class="status-label">{{.Label}}</span>
+      <strong class="status-value">{{.Value}}</strong>
+    </div>
+    {{end}}
+  </div>
+
+  <div class="app-shell">
+    <main id="main-content" class="content-panel">
+      {{template "work_page.html" .}}
+    </main>
+  </div>
+
+  <nav class="mobile-nav variant-switcher" aria-label="Workbench design variants">
+    {{range .Variants}}
+    <a class="mobile-nav-link variant-switch{{if .Active}} is-active{{end}}" href="{{.Href}}"{{if .Active}} aria-current="page"{{end}}>{{.Label}}</a>
+    {{end}}
+  </nav>
+
+  <script>
+    (function () {
+      function formatRelative(value) {
+        var text = String(value || "").trim();
+        if (!text || text === "-") return "-";
+        var timestamp = Date.parse(text);
+        if (!isFinite(timestamp)) return text;
+        var diffSeconds = Math.round((Date.now() - timestamp) / 1000);
+        var future = diffSeconds < 0;
+        var abs = Math.abs(diffSeconds);
+        if (abs < 8) return "just now";
+        var amount = 0;
+        var unit = "";
+        if (abs < 60) { amount = abs; unit = "s"; }
+        else if (abs < 3600) { amount = Math.floor(abs / 60); unit = "m"; }
+        else if (abs < 86400) { amount = Math.floor(abs / 3600); unit = "h"; }
+        else { amount = Math.floor(abs / 86400); unit = "d"; }
+        return future ? "in " + amount + unit : amount + unit + " ago";
+      }
+      function applyRelativeTimes(root) {
+        var scope = root || document;
+        var nodes = scope.querySelectorAll("[data-relative-time]");
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          var absolute = node.getAttribute("data-absolute-time") || node.getAttribute("datetime") || "";
+          if (!absolute) continue;
+          node.textContent = formatRelative(absolute);
+          node.setAttribute("title", absolute);
+        }
+      }
+      applyRelativeTimes(document);
+      window.GopherPanelTime = { applyRelativeTimes: applyRelativeTimes, formatRelative: formatRelative };
+      window.setInterval(function () { applyRelativeTimes(document); }, 60000);
+    }());
+  </script>
+  <script src="{{.PanelRoot}}/assets/work.js"></script>
+</body>
+</html>

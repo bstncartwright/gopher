@@ -166,6 +166,7 @@ func (s *CronService) Pause(_ context.Context, jobID string) (CronJob, error) {
 	job.Enabled = false
 	job.UpdatedAt = now
 	job.NextRunAt = nil
+	job.ActiveScheduledFor = nil
 	job.ActiveRunID = ""
 	job.LastRunStatus = ""
 	job.LastRunSummary = ""
@@ -193,6 +194,7 @@ func (s *CronService) Resume(_ context.Context, jobID string) (CronJob, error) {
 	job.Enabled = true
 	job.UpdatedAt = now
 	job.NextRunAt = ptrTime(nextRun)
+	job.ActiveScheduledFor = nil
 	job.ActiveRunID = ""
 	job.LastRunStatus = ""
 	job.LastRunSummary = ""
@@ -292,11 +294,16 @@ func (s *CronService) PrepareOnStart(ctx context.Context) error {
 
 func (s *CronService) dispatchJob(ctx context.Context, job CronJob, now time.Time) {
 	dispatchJob := cloneCronJob(job)
+	scheduledFor := now
+	if job.NextRunAt != nil && !job.NextRunAt.IsZero() {
+		scheduledFor = job.NextRunAt.UTC()
+	}
 	slog.Info("cron_service: dispatching job", "job_id", job.ID, "session_id", job.SessionID, "mode", job.Mode, "now", now.Format(time.RFC3339Nano))
 	job.LastRunStatus = CronRunStatusRunning
 	job.LastRunSummary = ""
 	job.LastRunError = ""
 	job.ActiveRunID = ""
+	job.ActiveScheduledFor = ptrTime(scheduledFor)
 	job.UpdatedAt = now
 	job.NextRunAt = nil
 	if err := s.store.Update(job); err != nil {
@@ -311,7 +318,7 @@ func (s *CronService) dispatchJob(ctx context.Context, job CronJob, now time.Tim
 			Status:  CronRunStatusFailed,
 			Error:   err.Error(),
 			Summary: err.Error(),
-		}, now)
+		}, now, scheduledFor)
 		return
 	}
 	if !validCronRunStatus(result.Status) || strings.TrimSpace(result.Status) == "" {
@@ -330,7 +337,7 @@ func (s *CronService) dispatchJob(ctx context.Context, job CronJob, now time.Tim
 		slog.Info("cron_service: job running", "job_id", job.ID, "active_run_id", job.ActiveRunID)
 		return
 	}
-	s.finalizeJob(job, result, now)
+	s.finalizeJob(job, result, now, scheduledFor)
 }
 
 func (s *CronService) reconcileRunning(ctx context.Context, now time.Time, jobs []CronJob) {
@@ -345,7 +352,7 @@ func (s *CronService) reconcileRunning(ctx context.Context, now time.Time, jobs 
 				Status:  CronRunStatusFailed,
 				Error:   "scheduled task run lost active run id",
 				Summary: "scheduled task run lost active run id",
-			}, now)
+			}, now, resolvedScheduledFor(job, now))
 			continue
 		}
 		result, err := s.dispatcher.Poll(ctx, job, now)
@@ -355,28 +362,29 @@ func (s *CronService) reconcileRunning(ctx context.Context, now time.Time, jobs 
 				Status:  CronRunStatusFailed,
 				Error:   err.Error(),
 				Summary: err.Error(),
-			}, now)
+			}, now, resolvedScheduledFor(job, now))
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(result.Status), CronRunStatusRunning) || strings.TrimSpace(result.Status) == "" {
 			continue
 		}
 		slog.Info("cron_service: running job completed during poll", "job_id", job.ID, "status", result.Status)
-		s.finalizeJob(job, result, now)
+		s.finalizeJob(job, result, now, resolvedScheduledFor(job, now))
 	}
 }
 
-func (s *CronService) finalizeJob(job CronJob, result CronDispatchResult, now time.Time) {
+func (s *CronService) finalizeJob(job CronJob, result CronDispatchResult, now time.Time, scheduledFor time.Time) {
 	status := strings.ToLower(strings.TrimSpace(result.Status))
 	if !validCronRunStatus(status) || status == "" {
 		status = CronRunStatusCompleted
 	}
-	nextRun, err := nextCronRun(job.CronExpr, job.Timezone, now)
+	nextRun, err := nextCronRun(job.CronExpr, job.Timezone, scheduledFor)
 	if err != nil {
 		slog.Error("cron_service: failed to compute next run while finalizing job", "job_id", job.ID, "error", err)
 		return
 	}
 	job.ActiveRunID = ""
+	job.ActiveScheduledFor = nil
 	job.LastRunStatus = status
 	job.LastRunSummary = strings.TrimSpace(result.Summary)
 	job.LastRunError = strings.TrimSpace(result.Error)
@@ -387,7 +395,8 @@ func (s *CronService) finalizeJob(job CronJob, result CronDispatchResult, now ti
 		slog.Error("cron_service: failed to persist finalized job", "job_id", job.ID, "status", status, "error", err)
 		return
 	}
-	slog.Info("cron_service: job finalized", "job_id", job.ID, "status", status, "next_run_at", job.NextRunAt)
+	overdue := job.NextRunAt != nil && !job.NextRunAt.After(now)
+	slog.Info("cron_service: job finalized", "job_id", job.ID, "status", status, "next_run_at", job.NextRunAt, "scheduled_for", scheduledFor.Format(time.RFC3339Nano), "backlog_remaining", overdue)
 }
 
 func (s *CronService) newJobID() string {
@@ -398,4 +407,11 @@ func (s *CronService) newJobID() string {
 func ptrTime(value time.Time) *time.Time {
 	utc := value.UTC()
 	return &utc
+}
+
+func resolvedScheduledFor(job CronJob, fallback time.Time) time.Time {
+	if job.ActiveScheduledFor != nil && !job.ActiveScheduledFor.IsZero() {
+		return job.ActiveScheduledFor.UTC()
+	}
+	return fallback.UTC()
 }

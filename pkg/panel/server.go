@@ -100,6 +100,7 @@ type ServerOptions struct {
 	RemoteSnapshot  func() []RemoteInfo
 	ControlDir      string
 	CronStorePath   string
+	DevSPAURL       string
 }
 
 type Server struct {
@@ -113,6 +114,7 @@ type Server struct {
 	remoteSnapshot  func() []RemoteInfo
 	controlDir      string
 	cronStorePath   string
+	devSPAURL       string
 	templates       *template.Template
 	assets          fs.FS
 }
@@ -355,7 +357,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if cronStorePath == "" && controlDir != "" {
 		cronStorePath = filepath.Join(filepath.Dir(controlDir), "cron", "jobs.json")
 	}
-	slog.Info("panel_server: created", "listen_addr", listenAddr, "has_store", opts.Store != nil)
+	slog.Info("panel_server: created", "listen_addr", listenAddr, "has_store", opts.Store != nil, "dev_spa_url", opts.DevSPAURL)
 	return &Server{
 		listenAddr:      listenAddr,
 		store:           opts.Store,
@@ -367,6 +369,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		remoteSnapshot:  remoteSnapshot,
 		controlDir:      controlDir,
 		cronStorePath:   cronStorePath,
+		devSPAURL:       strings.TrimSpace(opts.DevSPAURL),
 		templates:       tpl,
 		assets:          assetsFS,
 	}, nil
@@ -432,18 +435,37 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 
 func (s *Server) newMux() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+adminRoot, s.handleAdminEntry)
-	mux.HandleFunc("GET "+adminRoot+"/work", s.handleWorkPage)
-	mux.HandleFunc("GET "+adminRoot+"/work/{sessionID}", s.handleWorkPage)
-	mux.HandleFunc("GET "+adminRoot+"/automations", s.handleAutomationsPage)
-	mux.HandleFunc("GET "+adminRoot+"/fleet", s.handleFleetPage)
+	if s.devSPAURL != "" {
+		mux.HandleFunc("GET /sessions", s.redirectToSPA("/sessions"))
+		mux.HandleFunc("GET /sessions/work", s.redirectToSPA("/sessions"))
+		mux.HandleFunc("GET /sessions/work/{sessionID}", s.redirectToSPA("/sessions"))
+		mux.HandleFunc("GET /automations", s.redirectToSPA("/automations"))
+		mux.HandleFunc("GET "+chatRoot, s.redirectToSPA(chatRoot))
+	} else {
+		mux.HandleFunc("GET "+adminRoot, s.handleAdminEntry)
+		mux.HandleFunc("GET "+adminRoot+"/work", s.handleWorkPage)
+		mux.HandleFunc("GET "+adminRoot+"/work/{sessionID}", s.handleWorkPage)
+		mux.HandleFunc("GET "+adminRoot+"/automations", s.handleAutomationsPage)
+		mux.HandleFunc("GET "+adminRoot+"/fleet", s.handleFleetPage)
+		mux.HandleFunc("GET "+chatRoot, s.handleChatPage)
+	}
+	mux.HandleFunc("GET /{variant}"+adminRoot, s.handleWorkVariantEntry)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/work", s.handleWorkVariantPage)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/work/{sessionID}", s.handleWorkVariantPage)
 	mux.HandleFunc("GET "+adminRoot+"/health", s.handleHealth)
 	mux.HandleFunc("GET "+adminRoot+"/nodes", s.handleNodes)
 	mux.HandleFunc("GET "+adminRoot+"/api/work/sessions", s.handleWorkSessionsAPI)
+	mux.HandleFunc("GET "+adminRoot+"/api/automations", s.handleAutomationsAPI)
 	mux.HandleFunc("GET "+adminRoot+"/api/work/session/{sessionID}", s.handleWorkSessionAPI)
 	mux.HandleFunc("GET "+adminRoot+"/api/work/session/{sessionID}/events", s.handleWorkSessionEventsAPI)
 	mux.HandleFunc("GET "+adminRoot+"/api/work/session/{sessionID}/events/{seq}", s.handleWorkEventDetailAPI)
 	mux.HandleFunc("GET "+adminRoot+"/api/work/session/{sessionID}/stream", s.handleSessionStream)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/api/work/sessions", s.handleWorkSessionsAPI)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/api/automations", s.handleAutomationsAPI)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/api/work/session/{sessionID}", s.handleWorkSessionAPI)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/api/work/session/{sessionID}/events", s.handleWorkSessionEventsAPI)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/api/work/session/{sessionID}/events/{seq}", s.handleWorkEventDetailAPI)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/api/work/session/{sessionID}/stream", s.handleSessionStream)
 	mux.HandleFunc("GET "+adminRoot+"/fragments/control", s.handleControl)
 	mux.HandleFunc("GET "+adminRoot+"/fragments/nodes-table", s.handleNodesFragment)
 	mux.HandleFunc("GET "+adminRoot+"/fragments/control-actions", s.handleControlActions)
@@ -456,8 +478,11 @@ func (s *Server) newMux() http.Handler {
 	mux.HandleFunc("GET "+adminRoot+"/stream/session/{sessionID}", s.handleSessionStream)
 	mux.HandleFunc("GET "+adminRoot+"/assets/panel.css", s.handleCSS)
 	mux.HandleFunc("GET "+adminRoot+"/assets/work.js", s.handleWorkJS)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/assets/panel.css", s.handleCSS)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/assets/variant-base.css", s.handleWorkVariantBaseCSS)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/assets/variant.css", s.handleWorkVariantCSS)
+	mux.HandleFunc("GET /{variant}"+adminRoot+"/assets/work.js", s.handleWorkJS)
 
-	mux.HandleFunc("GET "+chatRoot, s.handleChatPage)
 	mux.HandleFunc("GET "+chatRoot+"/api/sessions", s.handleChatSessionsAPI)
 	mux.HandleFunc("POST "+chatRoot+"/api/sessions", s.handleChatCreateSessionAPI)
 	mux.HandleFunc("GET "+chatRoot+"/api/session/{sessionID}", s.handleChatSessionAPI)
@@ -1008,6 +1033,16 @@ func (s *Server) handleCSS(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("content-type", "text/css; charset=utf-8")
 	_, _ = w.Write(blob)
+}
+
+func (s *Server) redirectToSPA(path string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		target := s.devSPAURL + path
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusFound)
+	}
 }
 
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data any) {

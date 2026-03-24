@@ -185,7 +185,7 @@ jobs:
           node-version: "latest"
 
       - name: build frontend
-        run: npm ci && npm run build
+        run: npm install && npm run build
         working-directory: frontend/admin
 
       - name: generate spa assets

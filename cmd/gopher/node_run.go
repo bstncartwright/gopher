@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -80,6 +82,7 @@ type nodeAdminService struct {
 	mu             sync.Mutex
 	cfg            config.NodeConfig
 	primaryPath    string
+	workspace      string
 	runtime        *node.Runtime
 	requestRestart func(string)
 }
@@ -330,6 +333,8 @@ func (s *nodeAdminService) HandleAdmin(req node.AdminRequest) node.AdminResponse
 		return s.handleRestart()
 	case string(node.AdminActionUpdate):
 		return s.handleUpdate(req.Update)
+	case string(node.AdminActionPushWorkspace):
+		return s.handlePushWorkspace(req.PushWorkspace)
 	default:
 		return node.AdminResponse{OK: false, Error: fmt.Sprintf("unsupported action %q", req.Action)}
 	}
@@ -423,6 +428,100 @@ func (s *nodeAdminService) handleUpdate(req *node.AdminUpdateRequest) node.Admin
 	return node.AdminResponse{OK: true, UpdateRequested: true}
 }
 
+func (s *nodeAdminService) handlePushWorkspace(req *node.AdminPushWorkspaceRequest) node.AdminResponse {
+	if req == nil {
+		return node.AdminResponse{OK: false, Error: "push_workspace payload is required"}
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		return node.AdminResponse{OK: false, Error: "agent_id is required"}
+	}
+	if len(req.WorkspaceTar) == 0 {
+		return node.AdminResponse{OK: false, Error: "workspace_tar is required"}
+	}
+
+	s.mu.Lock()
+	workspace := s.workspace
+	s.mu.Unlock()
+
+	if workspace == "" {
+		return node.AdminResponse{OK: false, Error: "node workspace is not available"}
+	}
+
+	targetDir := filepath.Join(workspace, "agents", agentID)
+	if err := os.RemoveAll(targetDir); err != nil && !os.IsNotExist(err) {
+		return node.AdminResponse{OK: false, Error: fmt.Sprintf("remove existing workspace: %v", err)}
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return node.AdminResponse{OK: false, Error: fmt.Sprintf("create agent directory: %v", err)}
+	}
+
+	gr, err := gzip.NewReader(bytes.NewReader(req.WorkspaceTar))
+	if err != nil {
+		return node.AdminResponse{OK: false, Error: fmt.Sprintf("create gzip reader: %v", err)}
+	}
+	defer gr.Close()
+
+	tr := tar.NewReader(gr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return node.AdminResponse{OK: false, Error: fmt.Sprintf("read tar: %v", err)}
+		}
+
+		relPath := strings.TrimSpace(header.Name)
+		if relPath == "" || relPath == "." {
+			continue
+		}
+		if strings.Contains(relPath, "..") {
+			return node.AdminResponse{OK: false, Error: "tar contains path traversal"}
+		}
+
+		targetPath := filepath.Join(targetDir, relPath)
+		if !strings.HasPrefix(targetPath, targetDir+string(filepath.Separator)) && targetPath != targetDir {
+			return node.AdminResponse{OK: false, Error: "tar contains path outside target directory"}
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, 0o755); err != nil {
+				return node.AdminResponse{OK: false, Error: fmt.Sprintf("create directory %s: %v", relPath, err)}
+			}
+		case tar.TypeReg:
+			parentDir := filepath.Dir(targetPath)
+			if err := os.MkdirAll(parentDir, 0o755); err != nil {
+				return node.AdminResponse{OK: false, Error: fmt.Sprintf("create parent directory: %v", err)}
+			}
+			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			if err != nil {
+				return node.AdminResponse{OK: false, Error: fmt.Sprintf("create file %s: %v", relPath, err)}
+			}
+			if _, err := io.Copy(outFile, tr); err != nil {
+				outFile.Close()
+				return node.AdminResponse{OK: false, Error: fmt.Sprintf("write file %s: %v", relPath, err)}
+			}
+			outFile.Close()
+		default:
+		}
+	}
+
+	slog.Info("node_admin: pushed workspace", "agent_id", agentID, "target_dir", targetDir)
+
+	if req.Restart {
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			if s.requestRestart != nil {
+				s.requestRestart("remote admin push_workspace request")
+			}
+		}()
+		return node.AdminResponse{OK: true, RestartRequested: true}
+	}
+	return node.AdminResponse{OK: true}
+}
+
 func newNodeAdminService(cfg config.NodeConfig, workingDir string, requestRestart func(string)) (*nodeAdminService, error) {
 	primaryPath, err := resolvePrimaryNodeConfigPath(cfg, workingDir)
 	if err != nil {
@@ -432,6 +531,7 @@ func newNodeAdminService(cfg config.NodeConfig, workingDir string, requestRestar
 	return &nodeAdminService{
 		cfg:            cfg,
 		primaryPath:    primaryPath,
+		workspace:      workingDir,
 		requestRestart: requestRestart,
 	}, nil
 }

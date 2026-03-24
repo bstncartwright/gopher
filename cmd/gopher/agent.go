@@ -1,6 +1,10 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"flag"
@@ -13,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bstncartwright/gopher/pkg/node"
 )
 
 type agentRecord struct {
@@ -50,6 +56,8 @@ func runAgentSubcommand(args []string, stdout, stderr io.Writer) (err error) {
 		return runAgentList(args[1:], stdout)
 	case "delete", "remove", "rm":
 		return runAgentDelete(args[1:], stdout)
+	case "push":
+		return runAgentPush(args[1:], stdout, stderr)
 	default:
 		printAgentUsage(stderr)
 		return fmt.Errorf("unknown agent command %q", args[0])
@@ -61,6 +69,7 @@ func printAgentUsage(out io.Writer) {
 	fmt.Fprintln(out, "  gopher agent create --id <agent_id> [--user-id <id>] [--workspace <path>]")
 	fmt.Fprintln(out, "  gopher agent list")
 	fmt.Fprintln(out, "  gopher agent delete --id <agent_id> [--hard]")
+	fmt.Fprintln(out, "  gopher agent push --source <path> --node <node_id> [--agent-id <id>]")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "shared flags:")
 	fmt.Fprintln(out, "  --registry-path <path>  override agent registry path (default: ~/.gopher/agents/index.json)")
@@ -262,6 +271,151 @@ func runAgentDelete(args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "deleted agent %s (soft)\n", id)
 	return nil
+}
+
+type agentPushInputs struct {
+	Source            string
+	TargetNode        string
+	AgentID           string
+	GatewayConfigPath string
+	Restart           bool
+}
+
+func runAgentPush(args []string, stdout, stderr io.Writer) error {
+	slog.Debug("agent: push requested", "args_count", len(args))
+	flags := flag.NewFlagSet("agent push", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	source := flags.String("source", "", "source workspace path (required)")
+	targetNode := flags.String("node", "", "target node id (required)")
+	agentID := flags.String("agent-id", "", "target agent id on node (default: derived from source)")
+	gatewayConfig := flags.String("gateway-config", defaultGatewayConfigPath, "gateway config path")
+	restart := flags.Bool("restart", true, "restart agent after push")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if len(flags.Args()) > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+
+	sourcePath := strings.TrimSpace(*source)
+	if sourcePath == "" {
+		return fmt.Errorf("--source is required")
+	}
+	targetNodeID := strings.TrimSpace(*targetNode)
+	if targetNodeID == "" {
+		return fmt.Errorf("--node is required")
+	}
+
+	sourcePath, err := expandAndAbsPath(sourcePath)
+	if err != nil {
+		return fmt.Errorf("resolve source path: %w", err)
+	}
+	if err := os.MkdirAll(sourcePath, 0o755); err != nil {
+		return fmt.Errorf("source workspace: %w", err)
+	}
+
+	derivedAgentID := filepath.Base(sourcePath)
+	if err := validateAgentID(derivedAgentID); err != nil {
+		derivedAgentID = ""
+	}
+	agentIDVal := strings.TrimSpace(*agentID)
+	if agentIDVal == "" {
+		agentIDVal = derivedAgentID
+	}
+	if agentIDVal == "" {
+		return fmt.Errorf("--agent-id is required (could not derive from source path)")
+	}
+
+	slog.Info("agent: push workspace",
+		"source", sourcePath,
+		"target_node", targetNodeID,
+		"agent_id", agentIDVal,
+	)
+
+	tarBlob, err := tarGzipWorkspace(sourcePath)
+	if err != nil {
+		return fmt.Errorf("create workspace tar: %w", err)
+	}
+
+	clientOpts, err := resolveNodeAdminClientOptions(strings.TrimSpace(*gatewayConfig), "")
+	if err != nil {
+		return fmt.Errorf("resolve admin client options: %w", err)
+	}
+	fabric, closeClient, err := newNodeAdminClient(clientOpts)
+	if err != nil {
+		return fmt.Errorf("connect control plane nats: %w", err)
+	}
+	defer closeClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	response, err := sendNodeAdminRequest(ctx, fabric, targetNodeID, node.AdminRequest{
+		Action: node.AdminActionPushWorkspace,
+		PushWorkspace: &node.AdminPushWorkspaceRequest{
+			AgentID:      agentIDVal,
+			WorkspaceTar: tarBlob,
+			Restart:      *restart,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(stdout, "pushed agent %s to node %s\n", agentIDVal, targetNodeID)
+	if response.RestartRequested {
+		fmt.Fprintf(stdout, "agent restart requested on node\n")
+	}
+	return nil
+}
+
+func tarGzipWorkspace(workspace string) ([]byte, error) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	workspace = strings.TrimRight(workspace, string(filepath.Separator))
+	if err := filepath.Walk(workspace, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(workspace, path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return nil
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = relPath
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			if _, err := io.Copy(tw, f); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func validateAgentID(id string) error {

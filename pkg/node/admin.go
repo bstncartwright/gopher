@@ -3,9 +3,10 @@ package node
 type AdminAction string
 
 const (
-	AdminActionConfigure AdminAction = "configure"
-	AdminActionRestart   AdminAction = "restart"
-	AdminActionUpdate    AdminAction = "update"
+	AdminActionConfigure     AdminAction = "configure"
+	AdminActionRestart       AdminAction = "restart"
+	AdminActionUpdate        AdminAction = "update"
+	AdminActionPushWorkspace AdminAction = "push_workspace"
 )
 
 type AdminConfigureNATS struct {
@@ -29,10 +30,17 @@ type AdminUpdateRequest struct {
 	TargetVersion *string `json:"target_version,omitempty"`
 }
 
+type AdminPushWorkspaceRequest struct {
+	AgentID      string `json:"agent_id"`
+	WorkspaceTar []byte `json:"workspace_tar"`
+	Restart      bool   `json:"restart"`
+}
+
 type AdminRequest struct {
-	Action    AdminAction            `json:"action"`
-	Configure *AdminConfigureRequest `json:"configure,omitempty"`
-	Update    *AdminUpdateRequest    `json:"update,omitempty"`
+	Action        AdminAction                `json:"action"`
+	Configure     *AdminConfigureRequest     `json:"configure,omitempty"`
+	Update        *AdminUpdateRequest        `json:"update,omitempty"`
+	PushWorkspace *AdminPushWorkspaceRequest `json:"push_workspace,omitempty"`
 }
 
 type AdminResponse struct {

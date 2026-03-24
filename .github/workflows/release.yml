@@ -82,6 +82,17 @@ jobs:
         with:
           go-version: 1.26.1
 
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "latest"
+          cache: "npm"
+          cache-dependency-path: frontend/admin/package-lock.json
+
+      - name: build frontend
+        run: npm ci && npm run build
+        working-directory: frontend/admin
+
       - name: refresh model catalog
         run: go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
 

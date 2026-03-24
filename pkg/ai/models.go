@@ -262,7 +262,7 @@ func mergeMinimaxModels(out map[Provider]map[string]Model) {
 		out[ProviderMinimax] = map[string]Model{}
 	}
 
-	baseURL := "https://api.minimax.io/v1"
+	baseURL := "https://api.minimaxi.com/anthropic"
 	addModel := func(id, name string, reasoning bool) {
 		out[ProviderMinimax][id] = Model{
 			ID:            id,

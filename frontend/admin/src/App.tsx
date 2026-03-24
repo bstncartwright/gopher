@@ -1383,8 +1383,8 @@ function App() {
                   </div>
                 </CardHeader>
 
-                <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  <ScrollArea className="flex-1 overflow-hidden pr-3">
+                <CardContent className="min-h-0 flex-1 overflow-hidden">
+                  <ScrollArea className="h-[calc(100svh-22rem)] pr-3 xl:h-[calc(100svh-14rem)]">
                     <div className="space-y-4">
                       {chatLoadingDetail && !chatDetail ? (
                         <EmptyPanel copy="Loading chat transcript..." />
@@ -1468,8 +1468,8 @@ function App() {
                     Live thread status and current context.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="h-full min-h-0 overflow-hidden">
-                  <ScrollArea className="h-full pr-3">
+                <CardContent className="min-h-0 overflow-hidden">
+                  <ScrollArea className="h-[calc(100svh-16rem)] pr-3">
                     <div className="space-y-5">
                       <div className="space-y-3">
                         <div className="text-[11px] tracking-[0.22em] text-muted-foreground uppercase">

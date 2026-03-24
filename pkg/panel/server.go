@@ -41,7 +41,7 @@ const (
 //go:embed templates/*.html assets/*
 var panelFiles embed.FS
 
-//go:generate cp -r ../../frontend/admin/dist ./spa_assets
+//go:generate sh -c "mkdir -p spa_assets && cp -r ../../frontend/admin/dist/. ./spa_assets/"
 
 //go:embed spa_assets
 var spaFiles embed.FS
@@ -451,6 +451,8 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 func (s *Server) newMux() http.Handler {
 	mux := http.NewServeMux()
 	if s.serveSPA {
+		mux.HandleFunc("GET /assets/", s.serveSPAAssets("/assets/"))
+		mux.HandleFunc("GET /vite.svg", s.serveSPARootFile("vite.svg"))
 		mux.HandleFunc("GET /admin/assets/", s.serveSPAAssets("/admin/assets/"))
 		mux.HandleFunc("GET /chat/assets/", s.serveSPAAssets("/chat/assets/"))
 		mux.HandleFunc("GET /admin/", s.serveSPAIndex)
@@ -1066,7 +1068,7 @@ func (s *Server) serveSPAAssets(urlPathPrefix string) func(http.ResponseWriter, 
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		assetPath := filepath.Join("spa_assets", relPath)
+		assetPath := filepath.Join("spa_assets", "assets", relPath)
 		data, err := fs.ReadFile(s.spaAssets, assetPath)
 		if err != nil {
 			http.Error(w, "asset not found: "+relPath, http.StatusNotFound)
@@ -1092,6 +1094,24 @@ func (s *Server) serveSPAIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(data)
+}
+
+func (s *Server) serveSPARootFile(filename string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.spaAssets == nil {
+			http.Error(w, "SPA not available", http.StatusServiceUnavailable)
+			return
+		}
+		data, err := fs.ReadFile(s.spaAssets, "spa_assets/"+filename)
+		if err != nil {
+			http.Error(w, filename+" not found", http.StatusNotFound)
+			return
+		}
+		contentType := guessContentType(filename)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = w.Write(data)
+	}
 }
 
 func guessContentType(path string) string {

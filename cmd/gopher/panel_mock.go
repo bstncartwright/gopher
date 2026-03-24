@@ -271,6 +271,7 @@ func buildMockPanelFixture(listenAddr, dataDir, devSPAURL string) (*mockPanelFix
 		ControlDir:    controlDir,
 		CronStorePath: cronStorePath,
 		DevSPAURL:     devSPAURL,
+		ServeSPA:      true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create mock panel server: %w", err)

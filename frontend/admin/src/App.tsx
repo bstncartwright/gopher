@@ -84,13 +84,6 @@ const automationFilters = [
   { value: "paused", label: "Held" },
 ] as const
 
-const quickPrompts = [
-  "Summarize the riskiest active session and tell me what I should review next.",
-  "Draft a status update for the current automation failures in plain English.",
-  "Compare the latest waiting sessions and tell me which one is blocked on human input.",
-  "Write a recovery checklist for the paused cron jobs before we resume them.",
-] as const
-
 function normalize(value: string) {
   return value.trim().toLowerCase()
 }
@@ -1368,58 +1361,59 @@ function App() {
               </Card>
 
               <Card className="min-h-0 border-border bg-card/80 shadow-xl shadow-black/20">
-                <CardHeader className="gap-4 border-b border-border/60">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div className="space-y-1">
-                      <CardTitle className="text-base">
-                        {chatDetail?.session.title || "New thread"}
-                      </CardTitle>
-                      <CardDescription>{chatStatus}</CardDescription>
+                <div className="grid h-full grid-rows-[auto_minmax(0,1fr)_auto]">
+                  <CardHeader className="gap-4 border-b border-border/60">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <CardTitle className="text-base">
+                          {chatDetail?.session.title || "New thread"}
+                        </CardTitle>
+                        <CardDescription>{chatStatus}</CardDescription>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "border px-3 py-1 text-[10px] tracking-[0.18em] uppercase",
+                          toneClasses(
+                            chatDetail?.session.working ? "active" : "neutral"
+                          )
+                        )}
+                      >
+                        {chatDetail?.session.working ? "Streaming" : "Idle"}
+                      </Badge>
                     </div>
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        "border px-3 py-1 text-[10px] tracking-[0.18em] uppercase",
-                        toneClasses(
-                          chatDetail?.session.working ? "active" : "neutral"
-                        )
-                      )}
-                    >
-                      {chatDetail?.session.working ? "Streaming" : "Idle"}
-                    </Badge>
-                  </div>
-                </CardHeader>
+                  </CardHeader>
 
-                <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-                  <ScrollArea className="min-h-0 flex-1 pr-3">
-                    <div className="space-y-4">
-                      {chatLoadingDetail && !chatDetail ? (
-                        <EmptyPanel copy="Loading chat transcript..." />
-                      ) : null}
+                  <CardContent className="min-h-0">
+                    <ScrollArea className="h-full pr-3">
+                      <div className="space-y-4">
+                        {chatLoadingDetail && !chatDetail ? (
+                          <EmptyPanel copy="Loading chat transcript..." />
+                        ) : null}
 
-                      {!selectedChatSessionId && !chatDetail?.messages?.length ? (
-                        <div className="border border-dashed border-border bg-background/40 p-6">
-                          <div className="max-w-xl space-y-3">
-                            <div className="text-lg font-medium">
-                              Start a new operator thread.
+                        {!selectedChatSessionId && !chatDetail?.messages?.length ? (
+                          <div className="border border-dashed border-border bg-background/40 p-6">
+                            <div className="max-w-xl space-y-3">
+                              <div className="text-lg font-medium">
+                                Start a new operator thread.
+                              </div>
+                              <p className="text-sm leading-6 text-muted-foreground">
+                                Type directly below to open a new local thread
+                                backed by the session runtime.
+                              </p>
                             </div>
-                            <p className="text-sm leading-6 text-muted-foreground">
-                              Use the prompts on the right, or type directly below
-                              to open a new local thread backed by the session
-                              runtime.
-                            </p>
                           </div>
-                        </div>
-                      ) : null}
+                        ) : null}
 
-                      {(chatDetail?.messages || []).map((message) => (
-                        <ChatBubble key={message.seq} message={message} />
-                      ))}
-                      <div ref={transcriptEndRef} />
-                    </div>
-                  </ScrollArea>
+                        {(chatDetail?.messages || []).map((message) => (
+                          <ChatBubble key={message.seq} message={message} />
+                        ))}
+                        <div ref={transcriptEndRef} />
+                      </div>
+                    </ScrollArea>
+                  </CardContent>
 
-                  <div className="grid gap-3 border-t border-border/60 pt-4">
+                  <div className="grid gap-3 border-t border-border/60 p-4">
                     {!selectedChatSessionId ? (
                       <Input
                         value={chatTitle}
@@ -1438,7 +1432,7 @@ function App() {
                         }
                       }}
                       placeholder="Ask for a summary, inspect a session, or draft an operator response."
-                      className="min-h-36 resize-none border border-border bg-background/50 px-4 py-4 text-sm leading-6 outline-none placeholder:text-muted-foreground focus:border-ring"
+                      className="min-h-24 resize-none border border-border bg-background/50 px-4 py-4 text-sm leading-6 outline-none placeholder:text-muted-foreground focus:border-ring"
                     />
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <p className="text-xs text-muted-foreground">
@@ -1466,95 +1460,79 @@ function App() {
                       </div>
                     </div>
                   </div>
-                </CardContent>
+                </div>
               </Card>
 
               <Card className="border-border bg-card/80 shadow-xl shadow-black/20">
                 <CardHeader className="border-b border-border/60">
                   <CardTitle className="text-base">Thread Desk</CardTitle>
                   <CardDescription>
-                    Quick prompts, live thread status, and current thread context.
+                    Live thread status and current context.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-5">
-                  <div className="space-y-3">
-                    <div className="text-[11px] tracking-[0.22em] text-muted-foreground uppercase">
-                      Quick Prompts
-                    </div>
-                    <div className="space-y-2">
-                      {quickPrompts.map((prompt) => (
-                        <button
-                          key={prompt}
-                          type="button"
-                          onClick={() => setChatDraft(prompt)}
-                          className="w-full border border-border bg-background/40 px-4 py-3 text-left text-sm leading-6 text-muted-foreground transition hover:border-foreground/15 hover:bg-muted/20"
-                        >
-                          {prompt}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <Separator className="bg-border/60" />
-
-                  <div className="space-y-3">
-                    <div className="text-[11px] tracking-[0.22em] text-muted-foreground uppercase">
-                      Current Thread
-                    </div>
-                    {chatDetail ? (
+                <CardContent className="h-full min-h-0 overflow-hidden">
+                  <ScrollArea className="h-full pr-3">
+                    <div className="space-y-5">
                       <div className="space-y-3">
-                        <InfoTile
-                          label="Session"
-                          value={chatDetail.session.session_id}
-                        />
-                        <InfoTile
-                          label="Updated"
-                          value={formatAbsoluteTime(
-                            chatDetail.session.updated_at
-                          )}
-                        />
-                        <InfoTile
-                          label="Messages"
-                          value={String(chatDetail.messages.length)}
-                        />
-                        <InfoTile
-                          label="Status"
-                          value={
-                            chatDetail.session.working
-                              ? "Agent responding"
-                              : chatDetail.session.status
-                          }
-                        />
+                        <div className="text-[11px] tracking-[0.22em] text-muted-foreground uppercase">
+                          Current Thread
+                        </div>
+                        {chatDetail ? (
+                          <div className="space-y-3">
+                            <InfoTile
+                              label="Session"
+                              value={chatDetail.session.session_id}
+                            />
+                            <InfoTile
+                              label="Updated"
+                              value={formatAbsoluteTime(
+                                chatDetail.session.updated_at
+                              )}
+                            />
+                            <InfoTile
+                              label="Messages"
+                              value={String(chatDetail.messages.length)}
+                            />
+                            <InfoTile
+                              label="Status"
+                              value={
+                                chatDetail.session.working
+                                  ? "Agent responding"
+                                  : chatDetail.session.status
+                              }
+                            />
+                          </div>
+                        ) : (
+                          <EmptyPanel copy="Pick an existing thread or start a new one." />
+                        )}
                       </div>
-                    ) : (
-                      <EmptyPanel copy="Pick an existing thread or start a new one." />
-                    )}
-                  </div>
 
-                  <Separator className="bg-border/60" />
+                      <Separator className="bg-border/60" />
 
-                  <div className="space-y-3">
-                    <div className="text-[11px] tracking-[0.22em] text-muted-foreground uppercase">
-                      Chat Surface
+                      <div className="space-y-3">
+                        <div className="text-[11px] tracking-[0.22em] text-muted-foreground uppercase">
+                          Chat Surface
+                        </div>
+                        <div className="grid gap-3">
+                          <FeatureChip
+                            icon={Lightning}
+                            title="Live updates"
+                            copy="Thread changes follow the backend stream and refresh the transcript automatically."
+                          />
+                          <FeatureChip
+                            icon={ListBullets}
+                            title="Markdown aware"
+                            copy="Agent replies render links, lists, code blocks, and tables directly in the transcript."
+                          />
+                          <FeatureChip
+                            icon={CalendarDots}
+                            title="Persistent"
+                            copy="Creating or replying still produces real local session data, not mock-only UI state."
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div className="grid gap-3">
-                      <FeatureChip
-                        icon={Lightning}
-                        title="Live updates"
-                        copy="Thread changes follow the backend stream and refresh the transcript automatically."
-                      />
-                      <FeatureChip
-                        icon={ListBullets}
-                        title="Markdown aware"
-                        copy="Agent replies render links, lists, code blocks, and tables directly in the transcript."
-                      />
-                      <FeatureChip
-                        icon={CalendarDots}
-                        title="Persistent"
-                        copy="Creating or replying still produces real local session data, not mock-only UI state."
-                      />
-                    </div>
-                  </div>
+                  </ScrollArea>
                 </CardContent>
               </Card>
             </div>

@@ -1360,104 +1360,102 @@ function App() {
                 </CardContent>
               </Card>
 
-              <Card className="min-h-0 border-border bg-card/80 shadow-xl shadow-black/20">
-                <div className="grid h-full grid-rows-[auto_minmax(0,1fr)_auto]">
-                  <CardHeader className="gap-4 border-b border-border/60">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div className="space-y-1">
-                        <CardTitle className="text-base">
-                          {chatDetail?.session.title || "New thread"}
-                        </CardTitle>
-                        <CardDescription>{chatStatus}</CardDescription>
-                      </div>
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          "border px-3 py-1 text-[10px] tracking-[0.18em] uppercase",
-                          toneClasses(
-                            chatDetail?.session.working ? "active" : "neutral"
-                          )
-                        )}
-                      >
-                        {chatDetail?.session.working ? "Streaming" : "Idle"}
-                      </Badge>
+              <Card className="flex min-h-0 flex-col border-border bg-card/80 shadow-xl shadow-black/20">
+                <CardHeader className="shrink-0 gap-4 border-b border-border/60">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <CardTitle className="text-base">
+                        {chatDetail?.session.title || "New thread"}
+                      </CardTitle>
+                      <CardDescription>{chatStatus}</CardDescription>
                     </div>
-                  </CardHeader>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "border px-3 py-1 text-[10px] tracking-[0.18em] uppercase",
+                        toneClasses(
+                          chatDetail?.session.working ? "active" : "neutral"
+                        )
+                      )}
+                    >
+                      {chatDetail?.session.working ? "Streaming" : "Idle"}
+                    </Badge>
+                  </div>
+                </CardHeader>
 
-                  <CardContent className="min-h-0">
-                    <ScrollArea className="h-full pr-3">
-                      <div className="space-y-4">
-                        {chatLoadingDetail && !chatDetail ? (
-                          <EmptyPanel copy="Loading chat transcript..." />
-                        ) : null}
+                <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                  <ScrollArea className="flex-1 overflow-hidden pr-3">
+                    <div className="space-y-4">
+                      {chatLoadingDetail && !chatDetail ? (
+                        <EmptyPanel copy="Loading chat transcript..." />
+                      ) : null}
 
-                        {!selectedChatSessionId && !chatDetail?.messages?.length ? (
-                          <div className="border border-dashed border-border bg-background/40 p-6">
-                            <div className="max-w-xl space-y-3">
-                              <div className="text-lg font-medium">
-                                Start a new operator thread.
-                              </div>
-                              <p className="text-sm leading-6 text-muted-foreground">
-                                Type directly below to open a new local thread
-                                backed by the session runtime.
-                              </p>
+                      {!selectedChatSessionId && !chatDetail?.messages?.length ? (
+                        <div className="border border-dashed border-border bg-background/40 p-6">
+                          <div className="max-w-xl space-y-3">
+                            <div className="text-lg font-medium">
+                              Start a new operator thread.
                             </div>
+                            <p className="text-sm leading-6 text-muted-foreground">
+                              Type directly below to open a new local thread
+                              backed by the session runtime.
+                            </p>
                           </div>
-                        ) : null}
+                        </div>
+                      ) : null}
 
-                        {(chatDetail?.messages || []).map((message) => (
-                          <ChatBubble key={message.seq} message={message} />
-                        ))}
-                        <div ref={transcriptEndRef} />
-                      </div>
-                    </ScrollArea>
-                  </CardContent>
+                      {(chatDetail?.messages || []).map((message) => (
+                        <ChatBubble key={message.seq} message={message} />
+                      ))}
+                      <div ref={transcriptEndRef} />
+                    </div>
+                  </ScrollArea>
+                </CardContent>
 
-                  <div className="grid gap-3 border-t border-border/60 p-4">
-                    {!selectedChatSessionId ? (
-                      <Input
-                        value={chatTitle}
-                        onChange={(event) => setChatTitle(event.target.value)}
-                        placeholder="Optional thread title"
-                        className="h-11 border-border bg-background/50"
-                      />
-                    ) : null}
-                    <textarea
-                      value={chatDraft}
-                      onChange={(event) => setChatDraft(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && !event.shiftKey) {
-                          event.preventDefault()
-                          void handleSendChat()
-                        }
-                      }}
-                      placeholder="Ask for a summary, inspect a session, or draft an operator response."
-                      className="min-h-24 resize-none border border-border bg-background/50 px-4 py-4 text-sm leading-6 outline-none placeholder:text-muted-foreground focus:border-ring"
+                <div className="shrink-0 grid gap-3 border-t border-border/60 p-4">
+                  {!selectedChatSessionId ? (
+                    <Input
+                      value={chatTitle}
+                      onChange={(event) => setChatTitle(event.target.value)}
+                      placeholder="Optional thread title"
+                      className="h-11 border-border bg-background/50"
                     />
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-xs text-muted-foreground">
-                        Enter sends immediately. Shift+Enter adds a newline.
-                      </p>
-                      <div className="flex items-center gap-2">
-                        {!selectedChatSessionId ? (
-                          <Button
-                            variant="outline"
-                            className="border-border bg-background/50"
-                            onClick={() => void handleCreateEmptyThread()}
-                            disabled={chatSending}
-                          >
-                            <Plus className="size-4" />
-                            New Empty Thread
-                          </Button>
-                        ) : null}
+                  ) : null}
+                  <textarea
+                    value={chatDraft}
+                    onChange={(event) => setChatDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault()
+                        void handleSendChat()
+                      }
+                    }}
+                    placeholder="Ask for a summary, inspect a session, or draft an operator response."
+                    className="min-h-24 resize-none border border-border bg-background/50 px-4 py-4 text-sm leading-6 outline-none placeholder:text-muted-foreground focus:border-ring"
+                  />
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs text-muted-foreground">
+                      Enter sends immediately. Shift+Enter adds a newline.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      {!selectedChatSessionId ? (
                         <Button
-                          onClick={() => void handleSendChat()}
-                          disabled={chatSending || !chatDraft.trim()}
+                          variant="outline"
+                          className="border-border bg-background/50"
+                          onClick={() => void handleCreateEmptyThread()}
+                          disabled={chatSending}
                         >
-                          <PaperPlaneTilt className="size-4" />
-                          {selectedChatSessionId ? "Send" : "Create and Send"}
+                          <Plus className="size-4" />
+                          New Empty Thread
                         </Button>
-                      </div>
+                      ) : null}
+                      <Button
+                        onClick={() => void handleSendChat()}
+                        disabled={chatSending || !chatDraft.trim()}
+                      >
+                        <PaperPlaneTilt className="size-4" />
+                        {selectedChatSessionId ? "Send" : "Create and Send"}
+                      </Button>
                     </div>
                   </div>
                 </div>

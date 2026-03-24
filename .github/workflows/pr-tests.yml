@@ -137,6 +137,36 @@ jobs:
       - name: run actionlint
         uses: rhysd/actionlint@v1.7.11
 
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "latest"
+          cache: "npm"
+          cache-dependency-path: frontend/admin/package-lock.json
+
+      - name: install
+        run: npm ci
+        working-directory: frontend/admin
+
+      - name: typecheck
+        run: npm run typecheck
+        working-directory: frontend/admin
+
+      - name: lint
+        run: npm run lint
+        working-directory: frontend/admin
+
+      - name: build
+        run: npm run build
+        working-directory: frontend/admin
+
   test:
     name: go-test
     runs-on: ubuntu-latest

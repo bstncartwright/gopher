@@ -1,2 +1,3 @@
 .env
 cmd/gopher/logs
+pkg/panel/spa_assets

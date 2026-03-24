@@ -65,6 +65,7 @@ type TelegramWebhookConfig struct {
 type PanelConfig struct {
 	ListenAddr      string
 	CaptureThinking bool
+	ServeSPA        bool
 }
 
 type CronConfig struct {
@@ -126,6 +127,7 @@ type GatewayOverrides struct {
 	TelegramWebhookSecret *string
 	PanelListenAddr       *string
 	PanelCaptureThinking  *bool
+	PanelServeSPA         *bool
 	CronEnabled           *bool
 	CronPollInterval      *time.Duration
 	CronTimezone          *string
@@ -198,6 +200,7 @@ type rawTelegramWebhookConfig struct {
 type rawPanelConfig struct {
 	ListenAddr      *string `toml:"listen_addr"`
 	CaptureThinking *bool   `toml:"capture_thinking"`
+	ServeSPA        *bool   `toml:"serve_spa"`
 }
 
 type rawCronConfig struct {
@@ -438,6 +441,7 @@ func defaultGatewayConfig() GatewayConfig {
 		Panel: PanelConfig{
 			ListenAddr:      "127.0.0.1:29329",
 			CaptureThinking: true,
+			ServeSPA:        true,
 		},
 		Cron: CronConfig{
 			Enabled:         true,
@@ -617,6 +621,9 @@ func applyRawGatewayConfig(cfg *GatewayConfig, raw rawGatewayRoot) error {
 		}
 		if gateway.Panel.CaptureThinking != nil {
 			cfg.Panel.CaptureThinking = *gateway.Panel.CaptureThinking
+		}
+		if gateway.Panel.ServeSPA != nil {
+			cfg.Panel.ServeSPA = *gateway.Panel.ServeSPA
 		}
 	}
 	if gateway.Cron != nil {
@@ -969,6 +976,9 @@ func applyGatewayOverrides(cfg *GatewayConfig, overrides GatewayOverrides) error
 	}
 	if overrides.PanelCaptureThinking != nil {
 		cfg.Panel.CaptureThinking = *overrides.PanelCaptureThinking
+	}
+	if overrides.PanelServeSPA != nil {
+		cfg.Panel.ServeSPA = *overrides.PanelServeSPA
 	}
 	if overrides.CronEnabled != nil {
 		cfg.Cron.Enabled = *overrides.CronEnabled

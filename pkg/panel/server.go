@@ -41,6 +41,11 @@ const (
 //go:embed templates/*.html assets/*
 var panelFiles embed.FS
 
+//go:generate cp -r ../../frontend/admin/dist ./spa_assets
+
+//go:embed spa_assets
+var spaFiles embed.FS
+
 type SessionStore interface {
 	List(ctx context.Context, sessionID sessionrt.SessionID) ([]sessionrt.Event, error)
 	Stream(ctx context.Context, sessionID sessionrt.SessionID) (<-chan sessionrt.Event, error)
@@ -101,6 +106,7 @@ type ServerOptions struct {
 	ControlDir      string
 	CronStorePath   string
 	DevSPAURL       string
+	ServeSPA        bool
 }
 
 type Server struct {
@@ -115,8 +121,10 @@ type Server struct {
 	controlDir      string
 	cronStorePath   string
 	devSPAURL       string
+	serveSPA        bool
 	templates       *template.Template
 	assets          fs.FS
+	spaAssets       fs.FS
 }
 
 type overviewNode struct {
@@ -357,7 +365,12 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if cronStorePath == "" && controlDir != "" {
 		cronStorePath = filepath.Join(filepath.Dir(controlDir), "cron", "jobs.json")
 	}
-	slog.Info("panel_server: created", "listen_addr", listenAddr, "has_store", opts.Store != nil, "dev_spa_url", opts.DevSPAURL)
+	serveSPA := opts.ServeSPA
+	var spaAssetsFS fs.FS
+	if serveSPA {
+		spaAssetsFS = spaFiles
+	}
+	slog.Info("panel_server: created", "listen_addr", listenAddr, "has_store", opts.Store != nil, "dev_spa_url", opts.DevSPAURL, "serve_spa", serveSPA)
 	return &Server{
 		listenAddr:      listenAddr,
 		store:           opts.Store,
@@ -370,8 +383,10 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		controlDir:      controlDir,
 		cronStorePath:   cronStorePath,
 		devSPAURL:       strings.TrimSpace(opts.DevSPAURL),
+		serveSPA:        serveSPA,
 		templates:       tpl,
 		assets:          assetsFS,
+		spaAssets:       spaAssetsFS,
 	}, nil
 }
 
@@ -435,7 +450,14 @@ func (s *Server) RunWithRetry(ctx context.Context) error {
 
 func (s *Server) newMux() http.Handler {
 	mux := http.NewServeMux()
-	if s.devSPAURL != "" {
+	if s.serveSPA {
+		mux.HandleFunc("GET /admin/assets/", s.serveSPAAssets("/admin/assets/"))
+		mux.HandleFunc("GET /chat/assets/", s.serveSPAAssets("/chat/assets/"))
+		mux.HandleFunc("GET /admin/", s.serveSPAIndex)
+		mux.HandleFunc("GET /chat/", s.serveSPAIndex)
+		mux.HandleFunc("GET /admin", s.serveSPAIndex)
+		mux.HandleFunc("GET /chat", s.serveSPAIndex)
+	} else if s.devSPAURL != "" {
 		mux.HandleFunc("GET /sessions", s.redirectToSPA("/sessions"))
 		mux.HandleFunc("GET /sessions/work", s.redirectToSPA("/sessions"))
 		mux.HandleFunc("GET /sessions/work/{sessionID}", s.redirectToSPA("/sessions"))
@@ -1029,6 +1051,80 @@ func (s *Server) redirectToSPA(path string) func(http.ResponseWriter, *http.Requ
 			target += "?" + r.URL.RawQuery
 		}
 		http.Redirect(w, r, target, http.StatusFound)
+	}
+}
+
+func (s *Server) serveSPAAssets(urlPathPrefix string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.spaAssets == nil {
+			http.Error(w, "SPA assets not available", http.StatusServiceUnavailable)
+			return
+		}
+		relPath := strings.TrimPrefix(r.URL.Path, urlPathPrefix)
+		relPath = strings.TrimPrefix(relPath, "/")
+		if relPath == "" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		assetPath := filepath.Join("spa_assets", relPath)
+		data, err := fs.ReadFile(s.spaAssets, assetPath)
+		if err != nil {
+			http.Error(w, "asset not found: "+relPath, http.StatusNotFound)
+			return
+		}
+		contentType := guessContentType(relPath)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		_, _ = w.Write(data)
+	}
+}
+
+func (s *Server) serveSPAIndex(w http.ResponseWriter, r *http.Request) {
+	if s.spaAssets == nil {
+		http.Error(w, "SPA not available", http.StatusServiceUnavailable)
+		return
+	}
+	data, err := fs.ReadFile(s.spaAssets, "spa_assets/index.html")
+	if err != nil {
+		http.Error(w, "index.html not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(data)
+}
+
+func guessContentType(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".js":
+		return "application/javascript"
+	case ".css":
+		return "text/css"
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".json":
+		return "application/json"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".svg":
+		return "image/svg+xml"
+	case ".woff", ".woff2":
+		return "font/woff2"
+	case ".ttf":
+		return "font/ttf"
+	case ".eot":
+		return "application/vnd.ms-fontobject"
+	case ".ico":
+		return "image/x-icon"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	default:
+		return "application/octet-stream"
 	}
 }
 

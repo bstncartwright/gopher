@@ -267,7 +267,7 @@ func mergeMinimaxModels(out map[Provider]map[string]Model) {
 		out[ProviderMinimax][id] = Model{
 			ID:            id,
 			Name:          name,
-			API:           APIOpenAICompletions,
+			API:           APIAnthropicMessages,
 			Provider:      ProviderMinimax,
 			BaseURL:       baseURL,
 			Reasoning:     reasoning,
@@ -275,12 +275,6 @@ func mergeMinimaxModels(out map[Provider]map[string]Model) {
 			Cost:          ModelCost{},
 			ContextWindow: 204800,
 			MaxTokens:     8192,
-			Compat: &OpenAICompletionsCompat{
-				SupportsStore:           boolPtr(false),
-				SupportsDeveloperRole:   boolPtr(false),
-				SupportsReasoningEffort: boolPtr(true),
-				ThinkingFormat:          "openai",
-			},
 		}
 	}
 

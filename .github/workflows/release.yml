@@ -85,6 +85,9 @@ jobs:
       - name: refresh model catalog
         run: go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
 
+      - name: generate spa assets
+        run: go generate ./pkg/panel/...
+
       - name: run tests
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: go test ./...

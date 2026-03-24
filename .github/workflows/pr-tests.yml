@@ -179,5 +179,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: generate spa assets
+        run: go generate ./pkg/panel/...
+
       - name: run go tests
         run: go test ./...

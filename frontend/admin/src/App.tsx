@@ -790,8 +790,8 @@ function App() {
   ] as const
 
   return (
-    <div className="min-h-svh bg-background text-foreground">
-      <div className="mx-auto flex min-h-svh max-w-[1820px] flex-col gap-4 px-4 py-3">
+    <div className="h-svh overflow-hidden bg-background text-foreground">
+      <div className="mx-auto flex h-full max-w-[1820px] flex-col gap-4 px-4 py-3">
         <header className="flex items-center justify-between border border-border bg-card/80 px-4 py-2 shadow-sm">
           <div className="flex items-center gap-4">
             <span className="inline-flex items-center gap-2 text-sm font-medium">

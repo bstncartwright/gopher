@@ -1787,14 +1787,14 @@ function WorkTimelineCard({
           </Tabs>
         </div>
       </CardHeader>
-      <CardContent className="min-h-0">
+      <CardContent className="min-h-0 flex-1 flex flex-col">
         {detailError ? <InlineError>{detailError}</InlineError> : null}
 
         {loadingDetail && !detail ? (
           <EmptyPanel copy="Loading session detail..." />
         ) : null}
 
-        <ScrollArea className="h-[calc(100svh-38rem)] pr-3 xl:h-[calc(100svh-31rem)]">
+        <ScrollArea className="h-full min-h-0 flex-1 pr-3">
           <div className="space-y-3">
             {filteredEvents.map((event) => (
               <button

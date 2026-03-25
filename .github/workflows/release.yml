@@ -181,7 +181,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          cd release
           gh release create "${{ needs.prepare.outputs.tag }}" \
             --title "${{ needs.prepare.outputs.tag }}" \
             --target "${{ github.sha }}" \
-            --dir release
+            .

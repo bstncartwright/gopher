@@ -82,7 +82,6 @@ jobs:
 
   test:
     name: run-tests
-    needs: frontend
     runs-on: ubuntu-latest
     steps:
       - name: checkout
@@ -93,14 +92,8 @@ jobs:
         with:
           go-version: 1.26.1
 
-      - name: download frontend artifact
-        uses: actions/download-artifact@v5
-        with:
-          name: frontend-dist
-          path: frontend/admin
-
-      - name: generate spa assets
-        run: go generate ./pkg/panel/...
+      - name: create mock spa assets for tests
+        run: mkdir -p pkg/panel/spa_assets && echo "mock" > pkg/panel/spa_assets/index.html && mkdir -p pkg/panel/spa_assets/assets && echo "mock" > pkg/panel/spa_assets/assets/mock.css
 
       - name: run tests
         run: go test ./...

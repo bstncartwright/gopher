@@ -59,9 +59,54 @@ jobs:
 
           echo "tag=${candidate}" >> "$GITHUB_OUTPUT"
 
+  frontend:
+    name: build-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v1
+
+      - name: build frontend
+        run: bun install && bun run build
+        working-directory: frontend/admin
+
+      - name: upload frontend artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/admin/dist
+          if-no-files-found: error
+
+  test:
+    name: run-tests
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.1
+
+      - name: download frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+
+      - name: generate spa assets
+        run: go generate ./pkg/panel/...
+
+      - name: run tests
+        run: go test ./...
+
   build:
     name: build-${{ matrix.goos }}-${{ matrix.goarch }}
-    needs: prepare
+    needs: [prepare, test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -82,22 +127,16 @@ jobs:
         with:
           go-version: 1.26.1
 
-      - name: setup bun
-        uses: oven-sh/setup-bun@v1
-
-      - name: build frontend
-        run: bun install && bun run build
-        working-directory: frontend/admin
+      - name: download frontend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
 
       - name: refresh model catalog
         run: go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go
 
       - name: generate spa assets
         run: go generate ./pkg/panel/...
-
-      - name: run tests
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        run: go test ./...
 
       - name: build binary
         env:
@@ -112,7 +151,7 @@ jobs:
           sha256sum "${output}" > "${output}.sha256"
 
       - name: upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -127,10 +166,15 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
       - name: download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: dist
+          merge-multiple: true
 
       - name: prepare release files
         run: |
@@ -139,10 +183,10 @@ jobs:
           find dist -type f -name 'gopher-*.sha256' -print | sort | xargs cat > release/checksums.txt
 
       - name: create github release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: ${{ needs.prepare.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          files: |
-            release/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --title "${{ needs.prepare.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --dir release

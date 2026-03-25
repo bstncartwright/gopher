@@ -97,6 +97,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-dist
+          path: frontend/admin
 
       - name: generate spa assets
         run: go generate ./pkg/panel/...
@@ -131,6 +132,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-dist
+          path: frontend/admin
 
       - name: refresh model catalog
         run: go run ./cmd/modelcataloggen -out ./pkg/ai/models_generated.go

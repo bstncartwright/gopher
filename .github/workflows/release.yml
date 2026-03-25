@@ -100,7 +100,7 @@ jobs:
 
   build:
     name: build-${{ matrix.goos }}-${{ matrix.goarch }}
-    needs: [prepare, test]
+    needs: [prepare, frontend]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

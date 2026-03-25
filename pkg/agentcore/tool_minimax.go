@@ -14,11 +14,12 @@ import (
 )
 
 const (
-	minimaxBaseURL       = "https://api.minimax.io"
-	minimaxT2AEndpoint   = "/v1/t2a_v2"
-	minimaxImageEndpoint = "/v1/image_generation"
-	minimaxVideoEndpoint = "/v1/video_generation"
-	minimaxMusicEndpoint = "/v1/music_generation"
+	minimaxBaseURL              = "https://api.minimax.io"
+	minimaxT2AEndpoint          = "/v1/t2a_v2"
+	minimaxImageEndpoint        = "/v1/image_generation"
+	minimaxVideoEndpoint        = "/v1/video_generation"
+	minimaxMusicEndpoint        = "/v1/music_generation"
+	minimaxFileRetrieveEndpoint = "/v1/files/retrieve"
 )
 
 type minimaxClient struct {

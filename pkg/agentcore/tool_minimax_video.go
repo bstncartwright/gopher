@@ -207,7 +207,29 @@ func (t *minimaxVideoStatusTool) Run(ctx context.Context, input ToolInput) (Tool
 
 	if fileID != "" && status == "Success" {
 		output["file_id"] = fileID
-		output["message"] = "Video generation complete. Use file_id to download the video."
+
+		fileResult, err := t.client.doRequestWithQuery(ctx, "GET", minimaxFileRetrieveEndpoint, nil, map[string]string{"file_id": fileID})
+		if err != nil {
+			output["message"] = "Video generation complete but failed to fetch download URL: " + err.Error()
+			return ToolOutput{Status: ToolStatusOK, Result: output}, nil
+		}
+
+		if fileObj, ok := fileResult["file"].(map[string]any); ok {
+			if downloadURL, ok := fileObj["download_url"].(string); ok && downloadURL != "" {
+				output["download_url"] = downloadURL
+			}
+			if filename, ok := fileObj["filename"].(string); ok {
+				output["filename"] = filename
+			}
+			if bytes, ok := fileObj["bytes"].(float64); ok {
+				output["bytes"] = int(bytes)
+			}
+			if createdAt, ok := fileObj["created_at"].(float64); ok {
+				output["created_at"] = int(createdAt)
+			}
+		}
+
+		output["message"] = "Video generation complete. Use download_url to download the video (valid for 1 hour)."
 	}
 
 	return ToolOutput{Status: ToolStatusOK, Result: output}, nil
